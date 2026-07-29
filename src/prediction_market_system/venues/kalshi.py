@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from prediction_market_system.domain import MarketSnapshot
 
 KALSHI_PRODUCTION_API = "https://external-api.kalshi.com/trade-api/v2"
+CandlestickPeriod = Literal[1, 60, 1440]
+FeeType = Literal["quadratic", "quadratic_with_maker_fees", "flat"]
 
 
 class KalshiAPIError(RuntimeError):
@@ -53,6 +55,13 @@ class KalshiMarket(_KalshiModel):
     no_ask_dollars: Decimal
     yes_bid_size_fp: Decimal
     yes_ask_size_fp: Decimal
+    created_time: datetime | None = None
+    updated_time: datetime | None = None
+    open_time: datetime | None = None
+    result: Literal["yes", "no", "scalar", ""] = ""
+    settlement_value_dollars: Decimal | None = None
+    settlement_ts: datetime | None = None
+    expiration_value: str = ""
 
     @property
     def expiry(self) -> datetime:
@@ -93,6 +102,62 @@ class KalshiMarketResponse(_KalshiModel):
 
 class KalshiMarketsResponse(_KalshiModel):
     markets: list[KalshiMarket]
+    cursor: str = ""
+
+
+class KalshiBidAskDistribution(_KalshiModel):
+    open: Decimal
+    low: Decimal
+    high: Decimal
+    close: Decimal
+
+
+class KalshiPriceDistribution(_KalshiModel):
+    open: Decimal | None = None
+    low: Decimal | None = None
+    high: Decimal | None = None
+    close: Decimal | None = None
+    mean: Decimal | None = None
+    previous: Decimal | None = None
+
+
+class KalshiCandlestick(_KalshiModel):
+    end_period_ts: int
+    yes_bid: KalshiBidAskDistribution
+    yes_ask: KalshiBidAskDistribution
+    price: KalshiPriceDistribution
+    volume: Decimal
+    open_interest: Decimal
+
+
+class KalshiCandlesticksResponse(_KalshiModel):
+    ticker: str
+    candlesticks: list[KalshiCandlestick]
+
+
+class KalshiSeriesFeeChange(_KalshiModel):
+    id: str
+    series_ticker: str
+    fee_type: FeeType
+    fee_multiplier: float
+    scheduled_ts: datetime
+
+
+class KalshiSeriesFeeChangesResponse(_KalshiModel):
+    series_fee_change_arr: list[KalshiSeriesFeeChange]
+
+
+class KalshiEventFeeChange(_KalshiModel):
+    id: str
+    event_ticker: str
+    series_ticker: str
+    fee_type_override: FeeType | None
+    fee_multiplier_override: float | None
+    scheduled_ts: datetime
+
+
+class KalshiEventFeeChangesResponse(_KalshiModel):
+    event_fee_changes: list[KalshiEventFeeChange]
     cursor: str = ""
 
 
@@ -219,13 +284,97 @@ class KalshiClient:
         limit: int = 100,
         cursor: str | None = None,
     ) -> KalshiMarketsResponse:
-        params: dict[str, str | int] = {"status": status, "limit": limit}
+        params: dict[str, str | int | bool] = {"status": status, "limit": limit}
         if series_ticker:
             params["series_ticker"] = series_ticker
         if cursor:
             params["cursor"] = cursor
         response = await self._get("/markets", params=params)
         return KalshiMarketsResponse.model_validate(response.json())
+
+    async def get_historical_market(self, ticker: str) -> KalshiMarket:
+        response = await self._get(f"/historical/markets/{ticker}")
+        return KalshiMarketResponse.model_validate(response.json()).market
+
+    async def list_historical_markets(
+        self,
+        *,
+        tickers: list[str] | None = None,
+        event_ticker: str | None = None,
+        series_ticker: str | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> KalshiMarketsResponse:
+        filters = (bool(tickers), event_ticker is not None, series_ticker is not None)
+        if sum(filters) > 1:
+            raise ValueError("historical market filters are mutually exclusive")
+        params: dict[str, str | int | bool] = {"limit": limit}
+        if tickers:
+            params["tickers"] = ",".join(tickers)
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if cursor:
+            params["cursor"] = cursor
+        response = await self._get("/historical/markets", params=params)
+        return KalshiMarketsResponse.model_validate(response.json())
+
+    async def get_historical_candlesticks(
+        self,
+        ticker: str,
+        *,
+        start_ts: int,
+        end_ts: int,
+        period_interval: CandlestickPeriod,
+    ) -> list[KalshiCandlestick]:
+        if start_ts > end_ts:
+            raise ValueError("candlestick start timestamp must not exceed end timestamp")
+        response = await self._get(
+            f"/historical/markets/{ticker}/candlesticks",
+            params={
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "period_interval": period_interval,
+            },
+        )
+        payload = KalshiCandlesticksResponse.model_validate(response.json())
+        if payload.ticker != ticker:
+            raise KalshiAPIError(
+                f"Kalshi returned candlesticks for {payload.ticker} while requesting {ticker}"
+            )
+        return payload.candlesticks
+
+    async def get_series_fee_changes(
+        self,
+        series_ticker: str,
+        *,
+        show_historical: bool = True,
+    ) -> list[KalshiSeriesFeeChange]:
+        response = await self._get(
+            "/series/fee_changes",
+            params={
+                "series_ticker": series_ticker,
+                "show_historical": show_historical,
+            },
+        )
+        return KalshiSeriesFeeChangesResponse.model_validate(response.json()).series_fee_change_arr
+
+    async def get_event_fee_changes(
+        self,
+        event_ticker: str,
+        *,
+        limit: int = 1000,
+        cursor: str | None = None,
+    ) -> KalshiEventFeeChangesResponse:
+        params: dict[str, str | int | bool] = {
+            "event_ticker": event_ticker,
+            "limit": limit,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        response = await self._get("/events/fee_changes", params=params)
+        return KalshiEventFeeChangesResponse.model_validate(response.json())
 
     async def close(self) -> None:
         if self._owns_client:
@@ -235,7 +384,7 @@ class KalshiClient:
         self,
         path: str,
         *,
-        params: dict[str, str | int] | None = None,
+        params: dict[str, str | int | bool] | None = None,
     ) -> httpx.Response:
         try:
             response = await self._client.get(path, params=params)

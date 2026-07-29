@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from pydantic import HttpUrl
@@ -20,9 +21,13 @@ from prediction_market_system.domain import (
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
 from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.venues.kalshi import (
+    CandlestickPeriod,
     KalshiAPIError,
+    KalshiCandlestick,
     KalshiClient,
+    KalshiEventFeeChange,
     KalshiMarket,
+    KalshiSeriesFeeChange,
     UnsupportedMarketError,
 )
 
@@ -32,6 +37,15 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+@dataclass(frozen=True)
+class _KalshiHistoryBatch:
+    observed_at: datetime
+    markets: list[KalshiMarket]
+    candlesticks: dict[str, list[KalshiCandlestick]]
+    series_fee_changes: list[KalshiSeriesFeeChange]
+    event_fee_changes: list[KalshiEventFeeChange]
 
 
 def _parse_timestamp(value: str | None) -> datetime:
@@ -229,6 +243,75 @@ def kalshi_evaluate(
     _persist_and_maybe_alert(settings, opportunity, send_discord)
 
 
+@app.command("kalshi-sync-history")
+def kalshi_sync_history(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker to archive.")],
+    start: Annotated[str, typer.Option(help="Inclusive ISO-8601 candlestick start.")],
+    end: Annotated[str, typer.Option(help="Inclusive ISO-8601 candlestick end.")],
+    period: Annotated[
+        int,
+        typer.Option(help="Candlestick length in minutes: 1, 60, or 1440."),
+    ] = 60,
+    max_markets: Annotated[
+        int,
+        typer.Option(min=1, max=10_000, help="Maximum archived markets to fetch."),
+    ] = 100,
+) -> None:
+    """Persist archived Kalshi markets and their point-in-time research data."""
+    if period not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--period")
+    start_at = _parse_timestamp(start)
+    end_at = _parse_timestamp(end)
+    if start_at > end_at:
+        raise typer.BadParameter("must not precede --start", param_hint="--end")
+
+    series_ticker = series.upper()
+    period_interval = cast(CandlestickPeriod, period)
+    batch = _load_kalshi_history(
+        series_ticker,
+        start_at,
+        end_at,
+        period_interval,
+        max_markets,
+    )
+
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    written = repository.save_kalshi_history(
+        series_ticker=series_ticker,
+        observed_at=batch.observed_at,
+        markets=batch.markets,
+        candlesticks=batch.candlesticks,
+        period_interval=period_interval,
+        series_fee_changes=batch.series_fee_changes,
+        event_fee_changes=batch.event_fee_changes,
+    )
+
+    candle_count = sum(len(candles) for candles in batch.candlesticks.values())
+    resolution_count = sum(bool(market.result) for market in batch.markets)
+    table = Table(title=f"Kalshi historical sync: {series_ticker}")
+    table.add_column("Dataset")
+    table.add_column("Fetched", justify="right")
+    table.add_column("Inserted", justify="right")
+    table.add_row("Market snapshots", str(len(batch.markets)), str(written.market_snapshots))
+    table.add_row("Candlesticks", str(candle_count), str(written.candlesticks))
+    table.add_row("Rule snapshots", str(len(batch.markets)), str(written.rule_snapshots))
+    table.add_row("Resolutions", str(resolution_count), str(written.resolutions))
+    table.add_row(
+        "Series fee changes",
+        str(len(batch.series_fee_changes)),
+        str(written.series_fee_changes),
+    )
+    table.add_row(
+        "Event fee overrides",
+        str(len(batch.event_fee_changes)),
+        str(written.event_fee_changes),
+    )
+    console.print(table)
+    console.print(f"Stored in [bold]{settings.database_path}[/bold]")
+
+
 @app.command()
 def history(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
@@ -288,6 +371,28 @@ def _load_kalshi_markets(series: str | None, limit: int) -> list[KalshiMarket]:
         raise typer.Exit(code=1) from exc
 
 
+def _load_kalshi_history(
+    series_ticker: str,
+    start_at: datetime,
+    end_at: datetime,
+    period_interval: CandlestickPeriod,
+    max_markets: int,
+) -> _KalshiHistoryBatch:
+    try:
+        return asyncio.run(
+            _fetch_kalshi_history(
+                series_ticker,
+                start_at,
+                end_at,
+                period_interval,
+                max_markets,
+            )
+        )
+    except KalshiAPIError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
 async def _fetch_kalshi_markets(
     series: str | None,
     limit: int,
@@ -307,6 +412,68 @@ async def _fetch_kalshi_market(ticker: str) -> tuple[KalshiMarket, MarketSnapsho
     client = KalshiClient()
     try:
         return await client.get_market_snapshot(ticker)
+    finally:
+        await client.close()
+
+
+async def _fetch_kalshi_history(
+    series_ticker: str,
+    start_at: datetime,
+    end_at: datetime,
+    period_interval: CandlestickPeriod,
+    max_markets: int,
+) -> _KalshiHistoryBatch:
+    client = KalshiClient()
+    try:
+        markets: list[KalshiMarket] = []
+        cursor: str | None = None
+        while len(markets) < max_markets:
+            page = await client.list_historical_markets(
+                series_ticker=series_ticker,
+                limit=min(1000, max_markets - len(markets)),
+                cursor=cursor,
+            )
+            markets.extend(page.markets[: max_markets - len(markets)])
+            if not page.cursor or not page.markets:
+                break
+            if page.cursor == cursor:
+                raise KalshiAPIError("Kalshi repeated a historical-markets cursor")
+            cursor = page.cursor
+
+        start_ts = int(start_at.timestamp())
+        end_ts = int(end_at.timestamp())
+        candlesticks: dict[str, list[KalshiCandlestick]] = {}
+        for market in markets:
+            candlesticks[market.ticker] = await client.get_historical_candlesticks(
+                market.ticker,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                period_interval=period_interval,
+            )
+
+        series_fee_changes = await client.get_series_fee_changes(series_ticker)
+        event_fee_changes: list[KalshiEventFeeChange] = []
+        for event_ticker in sorted({market.event_ticker for market in markets}):
+            event_cursor: str | None = None
+            while True:
+                fee_page = await client.get_event_fee_changes(
+                    event_ticker,
+                    cursor=event_cursor,
+                )
+                event_fee_changes.extend(fee_page.event_fee_changes)
+                if not fee_page.cursor:
+                    break
+                if fee_page.cursor == event_cursor:
+                    raise KalshiAPIError("Kalshi repeated an event-fee cursor")
+                event_cursor = fee_page.cursor
+
+        return _KalshiHistoryBatch(
+            observed_at=datetime.now(UTC),
+            markets=markets,
+            candlesticks=candlesticks,
+            series_fee_changes=series_fee_changes,
+            event_fee_changes=event_fee_changes,
+        )
     finally:
         await client.close()
 

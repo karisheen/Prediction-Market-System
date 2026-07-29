@@ -30,13 +30,60 @@ def market_payload(*, can_close_early: bool = False) -> dict[str, object]:
         "strike_type": "greater",
         "floor_strike": 100000,
         "rules_primary": "Resolves YES from the benchmark at expiry.",
-        "rules_secondary": "",
+        "rules_secondary": "The benchmark's final value controls.",
         "yes_bid_dollars": "0.4200",
         "yes_ask_dollars": "0.4400",
         "no_bid_dollars": "0.5600",
         "no_ask_dollars": "0.5800",
         "yes_bid_size_fp": "13.00",
         "yes_ask_size_fp": "17.00",
+    }
+
+
+def historical_market_payload() -> dict[str, object]:
+    return {
+        **market_payload(),
+        "status": "finalized",
+        "created_time": "2030-01-01T00:00:00Z",
+        "updated_time": "2031-01-01T00:01:00Z",
+        "open_time": "2030-01-01T00:00:00Z",
+        "result": "yes",
+        "settlement_value_dollars": "1.0000",
+        "settlement_ts": "2031-01-01T00:00:00Z",
+        "expiration_value": "101234.56",
+    }
+
+
+def candlestick_payload() -> dict[str, object]:
+    return {
+        "ticker": "KXBTCTEST-30DEC31-T100000",
+        "candlesticks": [
+            {
+                "end_period_ts": 1_924_991_940,
+                "yes_bid": {
+                    "open": "0.4000",
+                    "low": "0.3900",
+                    "high": "0.4300",
+                    "close": "0.4200",
+                },
+                "yes_ask": {
+                    "open": "0.4200",
+                    "low": "0.4100",
+                    "high": "0.4500",
+                    "close": "0.4400",
+                },
+                "price": {
+                    "open": None,
+                    "low": None,
+                    "high": None,
+                    "close": None,
+                    "mean": None,
+                    "previous": "0.4100",
+                },
+                "volume": "12.50",
+                "open_interest": "200.00",
+            }
+        ],
     }
 
 
@@ -109,6 +156,79 @@ async def test_lists_open_markets_by_series() -> None:
     assert len(result.markets) == 1
     assert result.markets[0].ticker == "KXBTCTEST-30DEC31-T100000"
     assert result.cursor == "next-page"
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fetches_historical_research_inputs_and_fee_changes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/historical/markets"):
+            assert request.url.params["series_ticker"] == "KXBTCTEST"
+            return httpx.Response(
+                200,
+                json={"markets": [historical_market_payload()], "cursor": ""},
+            )
+        if path.endswith("/candlesticks"):
+            assert request.url.params["period_interval"] == "60"
+            return httpx.Response(200, json=candlestick_payload())
+        if path.endswith("/series/fee_changes"):
+            assert request.url.params["show_historical"] == "true"
+            return httpx.Response(
+                200,
+                json={
+                    "series_fee_change_arr": [
+                        {
+                            "id": "series-fee-1",
+                            "series_ticker": "KXBTCTEST",
+                            "fee_type": "quadratic",
+                            "fee_multiplier": 0.07,
+                            "scheduled_ts": "2030-01-01T00:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/events/fee_changes"):
+            return httpx.Response(
+                200,
+                json={
+                    "event_fee_changes": [
+                        {
+                            "id": "event-fee-1",
+                            "event_ticker": "KXBTCTEST-30DEC31",
+                            "series_ticker": "KXBTCTEST",
+                            "fee_type_override": None,
+                            "fee_multiplier_override": None,
+                            "scheduled_ts": "2030-06-01T00:00:00Z",
+                        }
+                    ],
+                    "cursor": "",
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(client=http_client)
+
+    markets = await client.list_historical_markets(series_ticker="KXBTCTEST")
+    candles = await client.get_historical_candlesticks(
+        markets.markets[0].ticker,
+        start_ts=1_924_988_400,
+        end_ts=1_924_991_940,
+        period_interval=60,
+    )
+    series_fees = await client.get_series_fee_changes("KXBTCTEST")
+    event_fees = await client.get_event_fee_changes("KXBTCTEST-30DEC31")
+
+    assert markets.markets[0].result == "yes"
+    assert markets.markets[0].settlement_value_dollars == Decimal("1.0000")
+    assert candles[0].price.close is None
+    assert candles[0].price.previous == Decimal("0.4100")
+    assert series_fees[0].fee_multiplier == pytest.approx(0.07)
+    assert event_fees.event_fee_changes[0].fee_type_override is None
     await http_client.aclose()
 
 

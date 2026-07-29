@@ -15,9 +15,12 @@ asset be above a specified price at expiry?” It does **not** place trades.
   fractional Kelly sizing, and a no-trade `WATCH` state.
 - An unauthenticated Kalshi REST adapter for market metadata and executable
   order-book quotes.
-- Append-oriented SQLite storage for forecasts, recommendations, and alert events.
+- Historical Kalshi ingestion for archived markets, candlesticks, rule snapshots,
+  resolutions, and scheduled series/event fee changes.
+- Append-oriented SQLite storage for forecasts, recommendations, alert events, and
+  point-in-time venue research data.
 - Discord webhook delivery with idempotent retries and in-place market updates.
-- A CLI for manual point-in-time evaluations and paper alerts.
+- A CLI for manual evaluations, historical ingestion, and paper alerts.
 
 The current model is a testable baseline, not evidence of a durable trading edge.
 It must be calibrated and validated on untouched historical and forward data
@@ -31,6 +34,10 @@ Market snapshot ─┐
 Crypto snapshot ─┘                              │
                                                ├─> SQLite audit history
                                                └─> Discord manual-review alert
+
+Kalshi archive ──> markets + candles + rules + resolutions + fee changes
+                                                 │
+                                                 └─> SQLite point-in-time store
 ```
 
 The SQLite history is authoritative. Discord is only a notification surface and
@@ -110,6 +117,31 @@ mathematically wrong.
 See [the venue decision](docs/venue-decision.md) for why Kalshi is first and
 Polymarket is planned as a second read-only signal source.
 
+## Historical Kalshi ingestion
+
+Archive a bounded set of settled markets and hourly candlesticks from a Kalshi
+series:
+
+```bash
+uv run pms kalshi-sync-history \
+  --series KXBTC \
+  --start "2025-01-01T00:00:00Z" \
+  --end "2025-12-31T23:59:59Z" \
+  --period 60 \
+  --max-markets 100
+```
+
+`--period` accepts Kalshi's 1-minute, 60-minute, or 1440-minute intervals. The
+start and end timestamps are inclusive and must include a timezone. The sync uses
+Kalshi's public historical endpoints and does not require credentials.
+
+Each run records a point-in-time market and rule snapshot. Settled outcomes are
+materialized separately with settlement values and timestamps. Candlesticks and
+scheduled fee-change records use source identifiers as stable keys, so rerunning
+the same range does not duplicate those immutable rows. Event fee records preserve
+explicit `null` overrides because they mean “clear the event override and inherit
+the series fee.”
+
 ## Discord delivery
 
 For the initial one-way notifier:
@@ -137,8 +169,9 @@ Add `--send-discord` to `pms evaluate` to send an actionable `ENTER YES` or
 All settings use the `PMS_` prefix. See `.env.example` for the available risk and
 cost assumptions. Defaults are deliberately conservative but are not universally
 correct. The initial Kalshi fee coefficient approximates the published general
-taker formula; series/event overrides, fee rounding, and fill behavior must be
-retrieved and modeled before forward validation.
+taker formula; the historical store now preserves scheduled series and event fee
+changes, but backtests must apply the effective fee at each evaluation timestamp
+and reproduce Kalshi's fee rounding.
 
 ## Development
 
@@ -151,13 +184,11 @@ uv run pytest
 
 ## Next build stages
 
-1. Add Kalshi historical markets, candlesticks, rules, fee overrides, and
-   resolutions to the point-in-time store.
-2. Add a point-in-time adapter for spot, volatility, derivatives, and event data.
-3. Backtest with executable quotes, latency, partial fills, and walk-forward splits.
-4. Add a barrier-hitting model for supported early-close crypto contracts.
-5. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
-6. Run Discord-delivered paper alerts through multiple market regimes.
+1. Add a point-in-time adapter for spot, volatility, derivatives, and event data.
+2. Backtest with executable quotes, latency, partial fills, and walk-forward splits.
+3. Add a barrier-hitting model for supported early-close crypto contracts.
+4. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
+5. Run Discord-delivered paper alerts through multiple market regimes.
 
 Prediction markets involve financial, legal, venue, resolution, and counterparty
 risk. This software is for research and manual decision support, not a guarantee
