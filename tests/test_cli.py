@@ -1,9 +1,16 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from prediction_market_system.cli import app
+from prediction_market_system.cli import _ResearchDataBatch, app
+from prediction_market_system.research import (
+    DerivativesSnapshot,
+    FundingObservation,
+    SpotCandle,
+    VolatilityObservation,
+)
 from prediction_market_system.venues.kalshi import (
     KalshiMarket,
     KalshiOrderBook,
@@ -118,3 +125,126 @@ def test_kalshi_evaluate_rejects_early_close_contract(monkeypatch: object) -> No
 
     assert result.exit_code == 2
     assert "path-dependent" in result.output
+
+
+def test_research_sync_and_context_commands(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+    end_at = start_at + timedelta(days=1)
+    candles = []
+    for offset in range(25):
+        candle_start = start_at - timedelta(hours=1) + timedelta(hours=offset)
+        price = Decimal(100 + offset)
+        candles.append(
+            SpotCandle(
+                provider="coinbase",
+                product_id="BTC-USD",
+                interval_seconds=3600,
+                start_at=candle_start,
+                end_at=candle_start + timedelta(hours=1),
+                open=price,
+                high=price + 1,
+                low=price - 1,
+                close=price,
+                volume=Decimal("10"),
+                retrieved_at=end_at,
+                raw_payload={"offset": offset},
+            )
+        )
+    batch = _ResearchDataBatch(
+        spot_candles=candles,
+        volatility_observations=[
+            VolatilityObservation(
+                provider="deribit",
+                symbol="BTC",
+                kind="implied",
+                window_seconds=3600,
+                source_start_at=end_at - timedelta(hours=1),
+                observed_at=end_at,
+                annualized_volatility=0.45,
+                retrieved_at=end_at,
+                raw_payload={"close": 45.0},
+            )
+        ],
+        funding_observations=[
+            FundingObservation(
+                provider="deribit",
+                instrument_name="BTC-PERPETUAL",
+                observed_at=end_at,
+                index_price=123.0,
+                previous_index_price=122.0,
+                funding_rate_1h=0.0001,
+                funding_rate_8h=0.0008,
+                retrieved_at=end_at,
+                raw_payload={"interest_1h": 0.0001},
+            )
+        ],
+        derivatives_snapshots=[
+            DerivativesSnapshot(
+                provider="deribit",
+                instrument_name="BTC-PERPETUAL",
+                observed_at=end_at,
+                index_price=123.0,
+                mark_price=123.1,
+                basis=(123.1 / 123.0) - 1,
+                open_interest=5000.0,
+                current_funding=0.00001,
+                funding_rate_8h=0.00008,
+                retrieved_at=end_at,
+                raw_payload={"open_interest": 5000.0},
+            )
+        ],
+        event_snapshots=[],
+    )
+
+    async def fake_fetch(*args: object, **kwargs: object) -> _ResearchDataBatch:
+        return batch
+
+    monkeypatch.setattr(
+        "prediction_market_system.cli._fetch_research_data",
+        fake_fetch,
+    )
+    database_path = tmp_path / "research-cli.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+
+    sync = runner.invoke(
+        app,
+        [
+            "sync-research-data",
+            "--symbol",
+            "BTC",
+            "--start",
+            start_at.isoformat(),
+            "--end",
+            end_at.isoformat(),
+            "--interval",
+            "60",
+            "--realized-window-days",
+            "1",
+        ],
+    )
+    context = runner.invoke(
+        app,
+        [
+            "research-context",
+            "--symbol",
+            "BTC",
+            "--as-of",
+            end_at.isoformat(),
+            "--interval",
+            "60",
+            "--realized-window-days",
+            "1",
+        ],
+    )
+
+    assert sync.exit_code == 0, sync.output
+    assert "Coinbase spot candles" in sync.output
+    assert context.exit_code == 0, context.output
+    assert "Point-in-time research context" in context.output
+    assert "45.00%" in context.output

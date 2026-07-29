@@ -17,10 +17,15 @@ asset be above a specified price at expiry?” It does **not** place trades.
   order-book quotes.
 - Historical Kalshi ingestion for archived markets, candlesticks, rule snapshots,
   resolutions, and scheduled series/event fee changes.
+- Public Coinbase spot candles plus Deribit DVOL, funding history, perpetual basis,
+  and open-interest snapshots.
+- Kalshi event live-data snapshots with provider-specific payloads preserved.
+- A no-look-ahead context assembler that enforces source cutoffs, complete realized-
+  volatility windows, and explicit staleness limits.
 - Append-oriented SQLite storage for forecasts, recommendations, alert events, and
   point-in-time venue research data.
 - Discord webhook delivery with idempotent retries and in-place market updates.
-- A CLI for manual evaluations, historical ingestion, and paper alerts.
+- A CLI for manual evaluations, historical ingestion, research sync, and paper alerts.
 
 The current model is a testable baseline, not evidence of a durable trading edge.
 It must be calibrated and validated on untouched historical and forward data
@@ -35,9 +40,11 @@ Crypto snapshot ─┘                              │
                                                ├─> SQLite audit history
                                                └─> Discord manual-review alert
 
-Kalshi archive ──> markets + candles + rules + resolutions + fee changes
-                                                 │
-                                                 └─> SQLite point-in-time store
+Kalshi archive ──> markets + candles + rules + resolutions + fee changes ─┐
+Coinbase ───────> completed spot candles + realized volatility ────────────────┤
+Deribit ────────> DVOL + funding + forward derivatives snapshots ──────────────┤
+Kalshi events ──> timestamped venue context ────────────────────────────────────┤
+                                                                                 └─> SQLite point-in-time store
 ```
 
 The SQLite history is authoritative. Discord is only a notification surface and
@@ -142,6 +149,50 @@ the same range does not duplicate those immutable rows. Event fee records preser
 explicit `null` overrides because they mean “clear the event override and inherit
 the series fee.”
 
+## Point-in-time research data
+
+Synchronize completed Coinbase spot candles, Deribit DVOL and funding history, a
+current Deribit perpetual snapshot, and optional Kalshi event context:
+
+```bash
+uv run pms sync-research-data \
+  --symbol BTC \
+  --start "2025-11-30T23:00:00Z" \
+  --end "2025-12-31T23:00:00Z" \
+  --interval 60 \
+  --realized-window-days 30 \
+  --event-ticker KALSHI_EVENT_TICKER
+```
+
+The end timestamp is exclusive. `--interval` accepts 1, 60, or 1440 minutes so
+Coinbase candles and Deribit DVOL observations share a boundary. Sync runs and
+provider row counts are recorded in SQLite. Immutable source records are
+idempotent; current derivatives and event payloads are timestamped snapshots.
+
+Inspect exactly what would have been available at a historical cutoff:
+
+```bash
+uv run pms research-context \
+  --symbol BTC \
+  --as-of "2025-12-31T23:00:00Z" \
+  --interval 60 \
+  --realized-window-days 30 \
+  --event-ticker KALSHI_EVENT_TICKER
+```
+
+The assembler only selects source timestamps at or before `--as-of`. Required
+spot data fails closed when missing or stale, and realized volatility requires a
+complete trailing window. Optional DVOL, funding, derivatives, and event inputs
+are omitted with warnings when missing or stale. A current derivatives or event
+snapshot fetched during a historical sync is therefore stored for forward use
+but cannot leak into the historical context.
+
+Coinbase is a public continuous-price source, not necessarily the exact benchmark
+named in a Kalshi resolution rule. The provider and raw payload remain attached
+to every observation so that benchmark mismatch is auditable. Historical funding
+and DVOL are backfilled; basis and open interest are captured forward because the
+public Deribit ticker endpoint exposes their current state.
+
 ## Discord delivery
 
 For the initial one-way notifier:
@@ -184,11 +235,10 @@ uv run pytest
 
 ## Next build stages
 
-1. Add a point-in-time adapter for spot, volatility, derivatives, and event data.
-2. Backtest with executable quotes, latency, partial fills, and walk-forward splits.
-3. Add a barrier-hitting model for supported early-close crypto contracts.
-4. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
-5. Run Discord-delivered paper alerts through multiple market regimes.
+1. Backtest with executable quotes, latency, partial fills, and walk-forward splits.
+2. Add a barrier-hitting model for supported early-close crypto contracts.
+3. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
+4. Run Discord-delivered paper alerts through multiple market regimes.
 
 Prediction markets involve financial, legal, venue, resolution, and counterparty
 risk. This software is for research and manual decision support, not a guarantee

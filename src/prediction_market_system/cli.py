@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, cast
@@ -19,6 +20,22 @@ from prediction_market_system.domain import (
     RecommendationState,
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
+from prediction_market_system.research import (
+    DerivativesSnapshot,
+    EventDataSnapshot,
+    FundingObservation,
+    ResearchContext,
+    ResearchDataUnavailable,
+    SpotCandle,
+    VolatilityObservation,
+)
+from prediction_market_system.research_storage import ResearchWriteResult
+from prediction_market_system.sources import (
+    CoinbaseClient,
+    CoinbaseDataError,
+    DeribitClient,
+    DeribitDataError,
+)
 from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
@@ -46,6 +63,15 @@ class _KalshiHistoryBatch:
     candlesticks: dict[str, list[KalshiCandlestick]]
     series_fee_changes: list[KalshiSeriesFeeChange]
     event_fee_changes: list[KalshiEventFeeChange]
+
+
+@dataclass(frozen=True)
+class _ResearchDataBatch:
+    spot_candles: list[SpotCandle]
+    volatility_observations: list[VolatilityObservation]
+    funding_observations: list[FundingObservation]
+    derivatives_snapshots: list[DerivativesSnapshot]
+    event_snapshots: list[EventDataSnapshot]
 
 
 def _parse_timestamp(value: str | None) -> datetime:
@@ -312,6 +338,231 @@ def kalshi_sync_history(
     console.print(f"Stored in [bold]{settings.database_path}[/bold]")
 
 
+@app.command("sync-research-data")
+def sync_research_data(
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    start: Annotated[str, typer.Option(help="Inclusive ISO-8601 data start.")],
+    end: Annotated[str, typer.Option(help="Exclusive ISO-8601 data end.")],
+    interval: Annotated[
+        int,
+        typer.Option(help="Candle and volatility interval in minutes: 1, 60, or 1440."),
+    ] = 60,
+    realized_window_days: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Trailing realized-volatility window."),
+    ] = 30,
+    event_ticker: Annotated[
+        str | None,
+        typer.Option(help="Optional Kalshi event live-data ticker."),
+    ] = None,
+) -> None:
+    """Synchronize timestamped spot, volatility, derivatives, and event inputs."""
+    if interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--interval")
+    start_at = _parse_timestamp(start)
+    end_at = _parse_timestamp(end)
+    if start_at >= end_at:
+        raise typer.BadParameter("must be after --start", param_hint="--end")
+
+    normalized_symbol = symbol.upper()
+    normalized_event = event_ticker.upper() if event_ticker else None
+    interval_seconds = interval * 60
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    run_id = repository.begin_research_sync(
+        symbol=normalized_symbol,
+        event_ticker=normalized_event,
+        request={
+            "start": start_at.isoformat(),
+            "end": end_at.isoformat(),
+            "interval_seconds": interval_seconds,
+            "realized_window_days": realized_window_days,
+        },
+    )
+
+    try:
+        batch = asyncio.run(
+            _fetch_research_data(
+                normalized_symbol,
+                start_at,
+                end_at,
+                interval_seconds,
+                normalized_event,
+            )
+        )
+        written = repository.save_research_data(
+            spot_candles=batch.spot_candles,
+            volatility_observations=batch.volatility_observations,
+            funding_observations=batch.funding_observations,
+            derivatives_snapshots=batch.derivatives_snapshots,
+            event_snapshots=batch.event_snapshots,
+        )
+        context: ResearchContext | None = None
+        with suppress(ResearchDataUnavailable):
+            context = repository.research_context_as_of(
+                symbol=normalized_symbol,
+                event_ticker=normalized_event,
+                as_of=end_at,
+                interval_seconds=interval_seconds,
+                realized_window_seconds=realized_window_days * 24 * 60 * 60,
+                optional_max_age_seconds=2 * interval_seconds,
+            )
+        if context is not None:
+            realized_written = repository.save_research_data(
+                volatility_observations=[context.realized_volatility]
+            )
+            written = ResearchWriteResult(
+                spot_candles=written.spot_candles,
+                volatility_observations=(
+                    written.volatility_observations + realized_written.volatility_observations
+                ),
+                funding_observations=written.funding_observations,
+                derivatives_snapshots=written.derivatives_snapshots,
+                event_snapshots=written.event_snapshots,
+            )
+        repository.complete_research_sync(run_id, result=written)
+    except Exception as exc:
+        repository.complete_research_sync(run_id, error=str(exc))
+        if isinstance(
+            exc,
+            (CoinbaseDataError, DeribitDataError, KalshiAPIError, ValueError),
+        ):
+            console.print(f"[red]Research-data sync failed: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        raise
+
+    table = Table(title=f"Research data sync: {normalized_symbol}")
+    table.add_column("Dataset")
+    table.add_column("Fetched", justify="right")
+    table.add_column("Inserted", justify="right")
+    table.add_row("Coinbase spot candles", str(len(batch.spot_candles)), str(written.spot_candles))
+    table.add_row(
+        "Volatility observations",
+        str(len(batch.volatility_observations) + (1 if context else 0)),
+        str(written.volatility_observations),
+    )
+    table.add_row(
+        "Funding observations",
+        str(len(batch.funding_observations)),
+        str(written.funding_observations),
+    )
+    table.add_row(
+        "Derivatives snapshots",
+        str(len(batch.derivatives_snapshots)),
+        str(written.derivatives_snapshots),
+    )
+    table.add_row(
+        "Kalshi event snapshots",
+        str(len(batch.event_snapshots)),
+        str(written.event_snapshots),
+    )
+    console.print(table)
+    if context is None:
+        console.print(
+            "[yellow]Realized volatility was not materialized: "
+            "the database does not yet contain a complete trailing window.[/yellow]"
+        )
+    console.print(f"Sync run [bold]{run_id}[/bold] stored in {settings.database_path}")
+
+
+@app.command("research-context")
+def research_context(
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    as_of: Annotated[str, typer.Option(help="Point-in-time ISO-8601 cutoff.")],
+    event_ticker: Annotated[
+        str | None,
+        typer.Option(help="Optional Kalshi event ticker."),
+    ] = None,
+    interval: Annotated[
+        int,
+        typer.Option(help="Stored spot-candle interval in minutes."),
+    ] = 60,
+    realized_window_days: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Trailing volatility window."),
+    ] = 30,
+    max_age_minutes: Annotated[
+        int,
+        typer.Option(min=1, help="Maximum optional-input age."),
+    ] = 120,
+) -> None:
+    """Inspect provenance and staleness for one no-look-ahead research context."""
+    if interval not in {1, 5, 15, 30, 60, 120, 360, 1440}:
+        raise typer.BadParameter("unsupported stored candle interval", param_hint="--interval")
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    try:
+        context = repository.research_context_as_of(
+            symbol=symbol.upper(),
+            event_ticker=event_ticker.upper() if event_ticker else None,
+            as_of=_parse_timestamp(as_of),
+            interval_seconds=interval * 60,
+            realized_window_seconds=realized_window_days * 24 * 60 * 60,
+            optional_max_age_seconds=max_age_minutes * 60,
+        )
+    except ResearchDataUnavailable as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title=f"Point-in-time research context: {context.symbol}")
+    table.add_column("Input")
+    table.add_column("Value")
+    table.add_column("Source time (UTC)")
+    table.add_column("Provider")
+    table.add_row("As of", context.as_of.isoformat(), context.as_of.isoformat(), "—")
+    table.add_row(
+        "Spot close",
+        f"${float(context.spot.close):,.2f}",
+        context.spot.end_at.isoformat(),
+        context.spot.provider,
+    )
+    table.add_row(
+        "Realized volatility",
+        f"{context.realized_volatility.annualized_volatility:.2%}",
+        context.realized_volatility.observed_at.isoformat(),
+        context.realized_volatility.provider,
+    )
+    table.add_row(
+        "Implied volatility",
+        "—"
+        if context.implied_volatility is None
+        else f"{context.implied_volatility.annualized_volatility:.2%}",
+        "—"
+        if context.implied_volatility is None
+        else context.implied_volatility.observed_at.isoformat(),
+        "—" if context.implied_volatility is None else context.implied_volatility.provider,
+    )
+    table.add_row(
+        "Funding (1h)",
+        "—" if context.funding is None else f"{context.funding.funding_rate_1h:.6%}",
+        "—" if context.funding is None else context.funding.observed_at.isoformat(),
+        "—" if context.funding is None else context.funding.provider,
+    )
+    table.add_row(
+        "Perpetual basis",
+        "—" if context.derivatives is None else f"{context.derivatives.basis:.4%}",
+        "—" if context.derivatives is None else context.derivatives.observed_at.isoformat(),
+        "—" if context.derivatives is None else context.derivatives.provider,
+    )
+    table.add_row(
+        "Open interest",
+        "—" if context.derivatives is None else f"{context.derivatives.open_interest:,.2f}",
+        "—" if context.derivatives is None else context.derivatives.observed_at.isoformat(),
+        "—" if context.derivatives is None else context.derivatives.provider,
+    )
+    table.add_row(
+        "Event data",
+        "—" if context.event_data is None else context.event_data.data_type,
+        "—" if context.event_data is None else context.event_data.observed_at.isoformat(),
+        "—" if context.event_data is None else context.event_data.provider,
+    )
+    console.print(table)
+    for warning in context.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+
 @app.command()
 def history(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
@@ -476,6 +727,66 @@ async def _fetch_kalshi_history(
         )
     finally:
         await client.close()
+
+
+async def _fetch_research_data(
+    symbol: str,
+    start_at: datetime,
+    end_at: datetime,
+    interval_seconds: int,
+    event_ticker: str | None,
+) -> _ResearchDataBatch:
+    coinbase = CoinbaseClient()
+    deribit = DeribitClient()
+    kalshi = KalshiClient()
+    try:
+        spot_candles = await coinbase.get_candles(
+            f"{symbol}-USD",
+            start_at=start_at,
+            end_at=end_at,
+            interval_seconds=interval_seconds,
+        )
+        volatility_observations = await deribit.get_dvol_history(
+            symbol,
+            start_at=start_at,
+            end_at=end_at,
+            resolution_seconds=interval_seconds,
+        )
+        funding_observations = await deribit.get_funding_history(
+            f"{symbol}-PERPETUAL",
+            start_at=start_at,
+            end_at=end_at,
+        )
+        derivatives_snapshots = [await deribit.get_derivatives_snapshot(f"{symbol}-PERPETUAL")]
+        event_snapshots: list[EventDataSnapshot] = []
+        if event_ticker:
+            live_data = await kalshi.get_event_live_data(event_ticker)
+            retrieved_at = datetime.now(UTC)
+            event_snapshots.append(
+                EventDataSnapshot(
+                    provider="kalshi",
+                    event_ticker=event_ticker,
+                    data_type=live_data.type,
+                    observed_at=retrieved_at,
+                    retrieved_at=retrieved_at,
+                    is_historical=live_data.is_historical,
+                    details=live_data.details,
+                    raw_payload=live_data.model_dump(mode="json"),
+                )
+            )
+        return _ResearchDataBatch(
+            spot_candles=spot_candles,
+            volatility_observations=volatility_observations,
+            funding_observations=funding_observations,
+            derivatives_snapshots=derivatives_snapshots,
+            event_snapshots=event_snapshots,
+        )
+    finally:
+        await asyncio.gather(
+            coinbase.close(),
+            deribit.close(),
+            kalshi.close(),
+        )
 
 
 def _persist_and_maybe_alert(

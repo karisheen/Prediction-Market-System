@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from prediction_market_system.domain import Opportunity, ProbabilityForecast
+from prediction_market_system.research_storage import RESEARCH_SCHEMA, ResearchRepositoryMixin
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
     KalshiCandlestick,
@@ -45,7 +46,7 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-class SQLiteRepository:
+class SQLiteRepository(ResearchRepositoryMixin):
     """Append-oriented forecast, alert, and venue-history audit storage."""
 
     def __init__(self, database_path: Path | str) -> None:
@@ -180,6 +181,7 @@ class SQLiteRepository:
                 ON kalshi_event_fee_changes (event_ticker, scheduled_at);
                 """
             )
+            connection.executescript(RESEARCH_SCHEMA)
 
     def save_evaluation(
         self,

@@ -232,6 +232,45 @@ async def test_fetches_historical_research_inputs_and_fee_changes() -> None:
     await http_client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_fetches_flexible_kalshi_event_live_data() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/live_data/events/KXBTCTEST-30DEC31")
+        assert request.url.params["range"] == "1h"
+        return httpx.Response(
+            200,
+            json={
+                "live_data": {
+                    "type": "crypto",
+                    "details": {
+                        "coin": "BTC",
+                        "maturity_ts_ms": 1_924_991_940_000,
+                        "provider_specific": {"preserved": True},
+                    },
+                    "is_historical": True,
+                    "default_range": "1h",
+                    "range_options": ["15min", "1h"],
+                }
+            },
+        )
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(client=http_client)
+
+    live_data = await client.get_event_live_data(
+        "KXBTCTEST-30DEC31",
+        range_hint="1h",
+    )
+
+    assert live_data.type == "crypto"
+    assert live_data.is_historical is True
+    assert live_data.details["provider_specific"] == {"preserved": True}
+    await http_client.aclose()
+
+
 def test_rejects_path_dependent_market_for_terminal_model() -> None:
     market = KalshiMarket.model_validate(market_payload(can_close_early=True))
 

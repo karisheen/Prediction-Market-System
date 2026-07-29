@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -159,6 +159,18 @@ class KalshiEventFeeChange(_KalshiModel):
 class KalshiEventFeeChangesResponse(_KalshiModel):
     event_fee_changes: list[KalshiEventFeeChange]
     cursor: str = ""
+
+
+class KalshiEventLiveData(_KalshiModel):
+    type: str
+    details: dict[str, Any]
+    is_historical: bool = False
+    default_range: str | None = None
+    range_options: list[str] = Field(default_factory=list)
+
+
+class KalshiEventLiveDataResponse(_KalshiModel):
+    live_data: KalshiEventLiveData
 
 
 class KalshiOrderBook(_KalshiModel):
@@ -375,6 +387,21 @@ class KalshiClient:
             params["cursor"] = cursor
         response = await self._get("/events/fee_changes", params=params)
         return KalshiEventFeeChangesResponse.model_validate(response.json())
+
+    async def get_event_live_data(
+        self,
+        event_ticker: str,
+        *,
+        range_hint: str | None = None,
+    ) -> KalshiEventLiveData:
+        params: dict[str, str | int | bool] = {}
+        if range_hint:
+            params["range"] = range_hint
+        response = await self._get(
+            f"/live_data/events/{event_ticker}",
+            params=params or None,
+        )
+        return KalshiEventLiveDataResponse.model_validate(response.json()).live_data
 
     async def close(self) -> None:
         if self._owns_client:
