@@ -1,0 +1,164 @@
+# Prediction Market System
+
+A crypto-first research and decision-support system for estimating calibrated
+prediction-market probabilities, ranking conservative opportunities, preserving
+an audit history, and delivering manual-review alerts to Discord.
+
+This first vertical slice evaluates binary contracts of the form “Will a crypto
+asset be above a specified price at expiry?” It does **not** place trades.
+
+## What is implemented
+
+- A lognormal structural probability model for crypto price thresholds.
+- A market-anchored forecast blended in log-odds space.
+- Explicit uncertainty, fees, slippage, resolution haircuts, liquidity checks,
+  fractional Kelly sizing, and a no-trade `WATCH` state.
+- An unauthenticated Kalshi REST adapter for market metadata and executable
+  order-book quotes.
+- Append-oriented SQLite storage for forecasts, recommendations, and alert events.
+- Discord webhook delivery with idempotent retries and in-place market updates.
+- A CLI for manual point-in-time evaluations and paper alerts.
+
+The current model is a testable baseline, not evidence of a durable trading edge.
+It must be calibrated and validated on untouched historical and forward data
+before real-money use.
+
+## Architecture
+
+```text
+Market snapshot ─┐
+                 ├─> probability engine ─> conservative edge/risk checks
+Crypto snapshot ─┘                              │
+                                               ├─> SQLite audit history
+                                               └─> Discord manual-review alert
+```
+
+The SQLite history is authoritative. Discord is only a notification surface and
+never receives exchange credentials, wallet keys, or authority to trade.
+
+## Setup
+
+Requirements:
+
+- `uv`
+- Python 3.11 or newer (managed automatically by `uv`)
+
+```bash
+uv sync
+cp .env.example .env
+uv run pms init-db
+```
+
+No Discord credential is required to evaluate and store opportunities locally.
+
+## Run a paper evaluation
+
+```bash
+uv run pms evaluate \
+  --market-id btc-100k-example \
+  --question "Will BTC be above 100000 USD at expiry?" \
+  --venue example \
+  --expires-at "2030-12-31T23:59:00Z" \
+  --symbol BTC \
+  --spot 110000 \
+  --strike 100000 \
+  --volatility 0.55 \
+  --yes-bid 0.40 \
+  --yes-ask 0.42 \
+  --no-bid 0.57 \
+  --no-ask 0.59 \
+  --yes-ask-size 500 \
+  --no-ask-size 500 \
+  --resolution-rule "Resolves YES if the venue's stated BTC index is above 100000 USD at expiry."
+```
+
+Review saved evaluations:
+
+```bash
+uv run pms history
+```
+
+All inputs must represent the same point in time. The command accepts
+`--observed-at` for historical evaluations; omitting it uses the current UTC time.
+
+## Live Kalshi data
+
+Kalshi is the first venue adapter. Public REST market and order-book reads do not
+require credentials:
+
+```bash
+uv run pms kalshi-markets --series KALSHI_SERIES_TICKER
+uv run pms kalshi-inspect --ticker KALSHI_MARKET_TICKER
+```
+
+For a supported terminal price-threshold contract, fetch current Kalshi quotes
+and evaluate them against user-supplied crypto inputs:
+
+```bash
+uv run pms kalshi-evaluate \
+  --ticker KALSHI_MARKET_TICKER \
+  --symbol BTC \
+  --spot 110000 \
+  --volatility 0.55
+```
+
+The command intentionally rejects markets that can close early. Contracts that
+resolve when a price touches a barrier at any point before expiry require a
+path-dependent barrier model; applying the terminal-price model to them would be
+mathematically wrong.
+
+See [the venue decision](docs/venue-decision.md) for why Kalshi is first and
+Polymarket is planned as a second read-only signal source.
+
+## Discord delivery
+
+For the initial one-way notifier:
+
+1. Create a private Discord channel.
+2. In Discord, open **Channel Settings → Integrations → Webhooks**.
+3. Create and copy a webhook URL.
+4. Put it in your local `.env`:
+
+```dotenv
+PMS_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE_ME
+```
+
+Never commit `.env` or paste the webhook into source code. Test delivery with:
+
+```bash
+uv run pms discord-test
+```
+
+Add `--send-discord` to `pms evaluate` to send an actionable `ENTER YES` or
+`ENTER NO` result. `WATCH` evaluations are saved but do not create notifications.
+
+## Configuration
+
+All settings use the `PMS_` prefix. See `.env.example` for the available risk and
+cost assumptions. Defaults are deliberately conservative but are not universally
+correct. The initial Kalshi fee coefficient approximates the published general
+taker formula; series/event overrides, fee rounding, and fill behavior must be
+retrieved and modeled before forward validation.
+
+## Development
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest
+```
+
+## Next build stages
+
+1. Add Kalshi historical markets, candlesticks, rules, fee overrides, and
+   resolutions to the point-in-time store.
+2. Add a point-in-time adapter for spot, volatility, derivatives, and event data.
+3. Backtest with executable quotes, latency, partial fills, and walk-forward splits.
+4. Add a barrier-hitting model for supported early-close crypto contracts.
+5. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
+6. Run Discord-delivered paper alerts through multiple market regimes.
+
+Prediction markets involve financial, legal, venue, resolution, and counterparty
+risk. This software is for research and manual decision support, not a guarantee
+of profit or financial advice.
