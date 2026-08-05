@@ -20,7 +20,11 @@ from prediction_market_system.venues.kalshi import (
 runner = CliRunner()
 
 
-def kalshi_market(*, can_close_early: bool = False) -> KalshiMarket:
+def kalshi_market(
+    *,
+    can_close_early: bool = False,
+    touch_rule: bool = False,
+) -> KalshiMarket:
     return KalshiMarket.model_validate(
         {
             "ticker": "KXBTCTEST-30DEC31-T100000",
@@ -37,7 +41,11 @@ def kalshi_market(*, can_close_early: bool = False) -> KalshiMarket:
             "can_close_early": can_close_early,
             "strike_type": "greater",
             "floor_strike": 100000,
-            "rules_primary": "Resolves YES from the benchmark at expiry.",
+            "rules_primary": (
+                "Resolves YES if the benchmark reaches the threshold at any time before expiry."
+                if touch_rule
+                else "Resolves YES from the benchmark at expiry."
+            ),
             "rules_secondary": "",
             "yes_bid_dollars": "0.4200",
             "yes_ask_dollars": "0.4400",
@@ -49,8 +57,12 @@ def kalshi_market(*, can_close_early: bool = False) -> KalshiMarket:
     )
 
 
-def market_pair(*, can_close_early: bool = False) -> tuple[KalshiMarket, object]:
-    market = kalshi_market(can_close_early=can_close_early)
+def market_pair(
+    *,
+    can_close_early: bool = False,
+    touch_rule: bool = False,
+) -> tuple[KalshiMarket, object]:
+    market = kalshi_market(can_close_early=can_close_early, touch_rule=touch_rule)
     order_book = KalshiOrderBook(
         yes_dollars=[("0.4200", "13.00")],
         no_dollars=[("0.5600", "17.00")],
@@ -124,7 +136,42 @@ def test_kalshi_evaluate_rejects_early_close_contract(monkeypatch: object) -> No
     )
 
     assert result.exit_code == 2
-    assert "path-dependent" in result.output
+    assert "supported touch barrier" in result.output
+
+
+def test_kalshi_evaluate_accepts_explicit_touch_barrier(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    pair = market_pair(can_close_early=True, touch_rule=True)
+    monkeypatch.setattr(
+        "prediction_market_system.cli._load_kalshi_market",
+        lambda ticker: pair,
+    )
+    database_path = tmp_path / "kalshi-barrier.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+
+    result = runner.invoke(
+        app,
+        [
+            "kalshi-evaluate",
+            "--ticker",
+            "KXBTCTEST-30DEC31-T100000",
+            "--symbol",
+            "BTC",
+            "--spot",
+            "90000",
+            "--volatility",
+            "0.55",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Structural YES" in result.output
+    assert database_path.exists()
 
 
 def test_research_sync_and_context_commands(

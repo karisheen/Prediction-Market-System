@@ -2,7 +2,13 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from prediction_market_system.domain import CryptoSnapshot, MarketSnapshot
+from prediction_market_system.domain import (
+    CryptoSnapshot,
+    MarketSnapshot,
+    ThresholdContract,
+    ThresholdDirection,
+    ThresholdModelKind,
+)
 from prediction_market_system.engine import CryptoThresholdEngine
 from prediction_market_system.storage import (
     AlertStatus,
@@ -40,7 +46,12 @@ def build_evaluation() -> tuple[object, object]:
         strike_price=100,
         annualized_volatility=0.50,
     )
-    return CryptoThresholdEngine().evaluate(market, crypto)
+    contract = ThresholdContract(
+        model_kind=ThresholdModelKind.TERMINAL,
+        direction=ThresholdDirection.ABOVE,
+        strike_price=100.0,
+    )
+    return CryptoThresholdEngine().evaluate(market, crypto, contract)
 
 
 def historical_market() -> KalshiMarket:

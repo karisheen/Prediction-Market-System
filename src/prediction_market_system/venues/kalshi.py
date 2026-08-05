@@ -8,7 +8,12 @@ from typing import Any, Literal, Self
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prediction_market_system.domain import MarketSnapshot
+from prediction_market_system.domain import (
+    MarketSnapshot,
+    ThresholdContract,
+    ThresholdDirection,
+    ThresholdModelKind,
+)
 
 KALSHI_PRODUCTION_API = "https://external-api.kalshi.com/trade-api/v2"
 CandlestickPeriod = Literal[1, 60, 1440]
@@ -25,6 +30,37 @@ class IncompleteOrderBookError(ValueError):
 
 class UnsupportedMarketError(ValueError):
     pass
+
+
+def _has_explicit_touch_semantics(rule: str) -> bool:
+    normalized = " ".join(rule.casefold().split())
+    path_markers = (
+        "at any time",
+        "at any point",
+        "before expiration",
+        "before expiry",
+        "before the market close",
+        "prior to",
+        "during the observation",
+        "by expiration",
+        "by expiry",
+        "by the market close",
+    )
+    touch_markers = (
+        "reach",
+        "touch",
+        "hit",
+        "trade at",
+        "cross",
+        "exceed",
+        "above",
+        "below",
+        "greater than",
+        "less than",
+    )
+    return any(marker in normalized for marker in path_markers) and any(
+        marker in normalized for marker in touch_markers
+    )
 
 
 class _KalshiModel(BaseModel):
@@ -80,20 +116,35 @@ class KalshiMarket(_KalshiModel):
         rules = [rule.strip() for rule in (self.rules_primary, self.rules_secondary) if rule]
         return "\n\n".join(rules)
 
-    def terminal_threshold_strike(self, override: float | None = None) -> float:
-        if self.can_close_early:
-            raise UnsupportedMarketError(
-                "market can close early and may be path-dependent; "
-                "the terminal threshold model must not evaluate it"
-            )
-        if self.strike_type not in {"greater", "greater_or_equal"}:
+    def threshold_contract(self, override: float | None = None) -> ThresholdContract:
+        if self.strike_type in {"greater", "greater_or_equal"}:
+            direction = ThresholdDirection.ABOVE
+            metadata_strike = self.floor_strike
+        elif self.strike_type in {"less", "less_or_equal"}:
+            direction = ThresholdDirection.BELOW
+            metadata_strike = self.cap_strike
+        else:
             raise UnsupportedMarketError(
                 f"unsupported Kalshi strike type: {self.strike_type or 'missing'}"
             )
-        strike = override if override is not None else self.floor_strike
+
+        strike = override if override is not None else metadata_strike
         if strike is None or strike <= 0:
             raise UnsupportedMarketError("a positive threshold strike is required for this market")
-        return strike
+
+        model_kind = ThresholdModelKind.TERMINAL
+        if self.can_close_early:
+            if not _has_explicit_touch_semantics(self.resolution_rule):
+                raise UnsupportedMarketError(
+                    "early-close rules do not explicitly define a supported touch barrier"
+                )
+            model_kind = ThresholdModelKind.BARRIER
+
+        return ThresholdContract(
+            model_kind=model_kind,
+            direction=direction,
+            strike_price=strike,
+        )
 
 
 class KalshiMarketResponse(_KalshiModel):

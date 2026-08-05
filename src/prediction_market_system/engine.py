@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import timedelta
-from statistics import NormalDist
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,6 +14,9 @@ from prediction_market_system.domain import (
     Opportunity,
     ProbabilityForecast,
     RecommendationState,
+    ThresholdContract,
+    ThresholdDirection,
+    ThresholdModelKind,
 )
 
 _SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60
@@ -64,16 +66,73 @@ def _logistic(log_odds: float) -> float:
     return 1.0 / (1.0 + math.exp(-log_odds))
 
 
-class CryptoThresholdEngine:
-    """Evaluate binary crypto price-threshold contracts.
+def _normal_cdf(value: float) -> float:
+    return 0.5 * math.erfc(-value / math.sqrt(2.0))
 
-    The structural forecast uses a lognormal terminal-price distribution. It is
-    blended in log-odds space with the current market estimate, then widened by
-    a configurable uncertainty margin before any recommendation is considered.
+
+def _log_normal_cdf(value: float) -> float:
+    if value < -10.0:
+        inverse_square = 1.0 / (value * value)
+        correction = 1.0 - inverse_square + 3.0 * inverse_square**2 - 15.0 * inverse_square**3
+        return (
+            -0.5 * value * value
+            - math.log(-value)
+            - 0.5 * math.log(2.0 * math.pi)
+            + math.log(correction)
+        )
+    return math.log(_normal_cdf(value))
+
+
+def _scaled_normal_cdf(log_scale: float, value: float) -> float:
+    log_value = log_scale + _log_normal_cdf(value)
+    if log_value <= -745.0:
+        return 0.0
+    return min(math.exp(log_value), 1.0)
+
+
+def barrier_hitting_probability(
+    *,
+    spot_price: float,
+    strike_price: float,
+    annualized_volatility: float,
+    expected_annual_return: float,
+    years: float,
+    direction: ThresholdDirection,
+) -> float:
+    if spot_price <= 0.0 or strike_price <= 0.0:
+        raise ValueError("spot and barrier prices must be positive")
+    if annualized_volatility <= 0.0:
+        raise ValueError("annualized volatility must be positive")
+
+    direction_sign = 1.0 if direction is ThresholdDirection.ABOVE else -1.0
+    distance = direction_sign * math.log(strike_price / spot_price)
+    if distance <= 0.0:
+        return 1.0
+    if years <= 0.0:
+        return 0.0
+
+    sigma = annualized_volatility
+    transformed_drift = direction_sign * (expected_annual_return - 0.5 * sigma**2)
+    scaled_time = sigma * math.sqrt(years)
+    first_z = (transformed_drift * years - distance) / scaled_time
+    second_z = (-transformed_drift * years - distance) / scaled_time
+    reflection_scale = 2.0 * transformed_drift * distance / sigma**2
+    probability = _normal_cdf(first_z) + _scaled_normal_cdf(
+        reflection_scale,
+        second_z,
+    )
+    return min(max(probability, 0.0), 1.0)
+
+
+class CryptoThresholdEngine:
+    """Evaluate terminal and first-passage crypto threshold contracts.
+
+    The selected structural forecast is blended in log-odds space with the
+    current market estimate, then widened by a configurable uncertainty margin
+    before any recommendation is considered.
     """
 
-    model_name = "crypto-threshold-market-anchor"
-    model_version = "0.1.0"
+    model_version = "0.2.0"
 
     def __init__(self, config: EngineConfig | None = None) -> None:
         self.config = config or EngineConfig()
@@ -82,8 +141,9 @@ class CryptoThresholdEngine:
         self,
         market: MarketSnapshot,
         crypto: CryptoSnapshot,
+        contract: ThresholdContract,
     ) -> tuple[ProbabilityForecast, Opportunity]:
-        structural_probability = self._structural_probability(market, crypto)
+        structural_probability = self._structural_probability(market, crypto, contract)
         market_probability = self._market_probability(market)
         final_probability = self._blend_probabilities(
             market_probability,
@@ -97,6 +157,9 @@ class CryptoThresholdEngine:
             structural_probability,
             crypto,
         )
+        model_name = (
+            f"crypto-{contract.model_kind.value}-{contract.direction.value}-threshold-market-anchor"
+        )
 
         forecast = ProbabilityForecast(
             market_id=market.market_id,
@@ -106,7 +169,7 @@ class CryptoThresholdEngine:
             upper_probability_yes=upper_probability,
             structural_probability_yes=structural_probability,
             market_probability_yes=market_probability,
-            model_name=self.model_name,
+            model_name=model_name,
             model_version=self.model_version,
             supporting_evidence=tuple(supporting),
             opposing_evidence=tuple(opposing),
@@ -118,16 +181,36 @@ class CryptoThresholdEngine:
         self,
         market: MarketSnapshot,
         crypto: CryptoSnapshot,
+        contract: ThresholdContract,
     ) -> float:
+        if not math.isclose(crypto.strike_price, contract.strike_price):
+            raise ValueError("crypto snapshot strike does not match threshold contract")
+
         time_to_expiry = (market.expires_at - market.observed_at).total_seconds()
         years = max(time_to_expiry / _SECONDS_PER_YEAR, _EPSILON)
         sigma = crypto.annualized_volatility
+        if contract.model_kind is ThresholdModelKind.BARRIER:
+            probability = barrier_hitting_probability(
+                spot_price=crypto.spot_price,
+                strike_price=contract.strike_price,
+                annualized_volatility=sigma,
+                expected_annual_return=crypto.expected_annual_return,
+                years=years,
+                direction=contract.direction,
+            )
+            return _clamp_probability(probability)
+
         numerator = (
-            math.log(crypto.spot_price / crypto.strike_price)
+            math.log(crypto.spot_price / contract.strike_price)
             + (crypto.expected_annual_return - 0.5 * sigma**2) * years
         )
-        z_score = numerator / (sigma * math.sqrt(years))
-        return _clamp_probability(NormalDist().cdf(z_score))
+        above_probability = _normal_cdf(numerator / (sigma * math.sqrt(years)))
+        probability = (
+            above_probability
+            if contract.direction is ThresholdDirection.ABOVE
+            else 1.0 - above_probability
+        )
+        return _clamp_probability(probability)
 
     @staticmethod
     def _market_probability(market: MarketSnapshot) -> float:

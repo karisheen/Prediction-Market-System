@@ -9,7 +9,8 @@ asset be above a specified price at expiry?” It does **not** place trades.
 
 ## What is implemented
 
-- A lognormal structural probability model for crypto price thresholds.
+- Lognormal terminal-price and geometric-Brownian first-passage probability
+  models for upper and lower crypto thresholds.
 - A market-anchored forecast blended in log-odds space.
 - Explicit uncertainty, fees, slippage, resolution haircuts, liquidity checks,
   fractional Kelly sizing, and a no-trade `WATCH` state.
@@ -27,7 +28,8 @@ asset be above a specified price at expiry?” It does **not** place trades.
 - Append-oriented SQLite storage for forecasts, recommendations, alert events,
   point-in-time venue research data, and backtest runs.
 - Discord webhook delivery with idempotent retries and in-place market updates.
-- A CLI for manual evaluations, historical ingestion, research sync, and paper alerts.
+- A CLI for manual/live evaluations, ingestion, research sync, walk-forward
+  backtesting, and paper alerts.
 
 The current model is a testable baseline, not evidence of a durable trading edge.
 It must be calibrated and validated on untouched historical and forward data
@@ -108,8 +110,8 @@ uv run pms kalshi-markets --series KALSHI_SERIES_TICKER
 uv run pms kalshi-inspect --ticker KALSHI_MARKET_TICKER
 ```
 
-For a supported terminal price-threshold contract, fetch current Kalshi quotes
-and evaluate them against user-supplied crypto inputs:
+For a supported terminal price threshold or explicit early-close touch barrier,
+fetch current Kalshi quotes and evaluate them against user-supplied crypto inputs:
 
 ```bash
 uv run pms kalshi-evaluate \
@@ -119,10 +121,21 @@ uv run pms kalshi-evaluate \
   --volatility 0.55
 ```
 
-The command intentionally rejects markets that can close early. Contracts that
-resolve when a price touches a barrier at any point before expiry require a
-path-dependent barrier model; applying the terminal-price model to them would be
-mathematically wrong.
+Terminal markets use the probability of finishing beyond the strike. Early-close
+markets use the continuous-time first-passage probability of touching the strike
+before expiry. Upper and lower barriers, already-crossed barriers, physical drift,
+and numerically extreme tails are supported.
+
+Classification fails closed. An early-close market is accepted only when Kalshi's
+strike metadata identifies its direction and its resolution rules explicitly
+describe touch semantics such as reaching, touching, or trading beyond the
+threshold at any time before expiry. Ambiguous rules remain unsupported rather
+than being routed to a mathematically incorrect model.
+
+The first-passage model assumes continuous geometric Brownian motion with constant
+volatility and drift over the remaining contract life. It does not model jumps,
+discrete benchmark sampling, exchange outages, or intraperiod volatility changes.
+Those mismatches must remain part of the uncertainty and resolution-risk review.
 
 See [the venue decision](docs/venue-decision.md) for why Kalshi is first and
 Polymarket is planned as a second read-only signal source.
@@ -230,8 +243,9 @@ be partial. Each market can produce at most one filled entry.
 The backtester fails closed when point-in-time spot history or the effective fee
 schedule is unavailable. Scheduled series fees and event overrides are selected
 at signal and execution time; explicit null event overrides restore the series
-fee. Taker fees are rounded upward to cents. Fold metrics, individual fills,
-cost, P&L, return on cost, and Brier score are persisted in `backtest_runs`.
+fee. Taker fees are rounded upward to cents. Fold metrics, selected structural
+model, individual fills, cost, P&L, return on cost, and Brier score are persisted
+in `backtest_runs`.
 
 Candlestick volume is a participation constraint, not historical order-book
 depth. Adverse candle extremes provide a conservative latency/slippage bound but
@@ -278,9 +292,8 @@ uv run pytest
 
 ## Next build stages
 
-1. Add a barrier-hitting model for supported early-close crypto contracts.
-2. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
-3. Run Discord-delivered paper alerts through multiple market regimes.
+1. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
+2. Run Discord-delivered paper alerts through multiple market regimes.
 
 Prediction markets involve financial, legal, venue, resolution, and counterparty
 risk. This software is for research and manual decision support, not a guarantee

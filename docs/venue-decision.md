@@ -44,13 +44,14 @@ sufficient for manual-review alerts and avoids requesting credentials early.
 
 ## Important model boundary
 
-The current structural model estimates the probability that an asset is above a
-strike **at a specified terminal time**. A contract that resolves YES if the
-asset touches a barrier at any point before expiry is path-dependent and needs a
-barrier-hitting model. The Kalshi integration must detect early-close/barrier
-rules and refuse to evaluate them with the terminal model.
+The structural engine distinguishes terminal thresholds from touch barriers.
+Terminal contracts use the probability of finishing beyond the strike. An
+early-close contract is routed to a geometric-Brownian first-passage model only
+when its direction metadata and rules explicitly define touch semantics. Ambiguous
+early-close rules are rejected rather than silently assigned the wrong model.
+Both models preserve the stated benchmark and rule text for resolution-risk review.
 
-## Official references
+## References
 
 - [Kalshi public market data](https://docs.kalshi.com/getting_started/quick_start_market_data)
 - [Kalshi order-book semantics](https://docs.kalshi.com/getting_started/orderbook_responses)
@@ -60,3 +61,4 @@ rules and refuse to evaluate them with the terminal model.
 - [Polymarket public CLOB methods](https://docs.polymarket.com/trading/clients/public)
 - [Polymarket fees](https://docs.polymarket.com/trading/fees)
 - [Polymarket geographic restrictions](https://docs.polymarket.com/api-reference/geoblock)
+- [Mörters and Peres, *Brownian Motion*](https://people.math.ethz.ch/~grunewal/teaching/FS2015/MortersPeres.pdf)

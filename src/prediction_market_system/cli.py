@@ -22,6 +22,9 @@ from prediction_market_system.domain import (
     MarketSnapshot,
     Opportunity,
     RecommendationState,
+    ThresholdContract,
+    ThresholdDirection,
+    ThresholdModelKind,
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
 from prediction_market_system.research import (
@@ -178,7 +181,12 @@ def evaluate(
     )
 
     engine = CryptoThresholdEngine(_engine_config(settings))
-    _, opportunity = engine.evaluate(market, crypto)
+    contract = ThresholdContract(
+        model_kind=ThresholdModelKind.TERMINAL,
+        direction=ThresholdDirection.ABOVE,
+        strike_price=strike,
+    )
+    _, opportunity = engine.evaluate(market, crypto, contract)
     _persist_and_maybe_alert(settings, opportunity, send_discord)
 
 
@@ -252,11 +260,11 @@ def kalshi_evaluate(
         typer.Option(help="Deliver actionable entries to the configured webhook."),
     ] = False,
 ) -> None:
-    """Fetch and evaluate one live terminal-threshold Kalshi contract."""
+    """Fetch and evaluate one supported threshold Kalshi contract."""
     settings = Settings()
     market, snapshot = _load_kalshi_market(ticker)
     try:
-        threshold = market.terminal_threshold_strike(strike)
+        contract = market.threshold_contract(strike)
     except UnsupportedMarketError as exc:
         raise typer.BadParameter(str(exc), param_hint="--ticker") from exc
 
@@ -264,12 +272,12 @@ def kalshi_evaluate(
         symbol=symbol.upper(),
         observed_at=snapshot.observed_at,
         spot_price=spot,
-        strike_price=threshold,
+        strike_price=contract.strike_price,
         annualized_volatility=volatility,
         expected_annual_return=expected_return,
     )
     engine = CryptoThresholdEngine(_engine_config(settings))
-    _, opportunity = engine.evaluate(snapshot, crypto)
+    _, opportunity = engine.evaluate(snapshot, crypto, contract)
     _persist_and_maybe_alert(settings, opportunity, send_discord)
 
 

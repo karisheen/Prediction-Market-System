@@ -27,6 +27,22 @@ class MarketSide(StrEnum):
     NO = "NO"
 
 
+class ThresholdModelKind(StrEnum):
+    TERMINAL = "terminal"
+    BARRIER = "barrier"
+
+
+class ThresholdDirection(StrEnum):
+    ABOVE = "above"
+    BELOW = "below"
+
+
+class ThresholdContract(FrozenModel):
+    model_kind: ThresholdModelKind
+    direction: ThresholdDirection
+    strike_price: PositiveFloat
+
+
 class RecommendationState(StrEnum):
     WATCH = "WATCH"
     ENTER_YES = "ENTER YES"

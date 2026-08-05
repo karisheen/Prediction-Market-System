@@ -272,3 +272,27 @@ def test_backtest_uses_delayed_adverse_quote_partial_fill_and_persists(
     persisted = json.loads(row[0])
     assert persisted["run_id"] == str(result.run_id)
     assert persisted["total_trades"] == 1
+
+
+def test_backtest_routes_explicit_touch_contract_to_barrier_model() -> None:
+    historical = historical_market()
+    touch_market = historical.market.model_copy(
+        update={
+            "can_close_early": True,
+            "rules_primary": ("Resolves YES if BTC reaches $100 at any time before expiry."),
+        }
+    )
+    touch_history = historical.model_copy(update={"market": touch_market})
+    backtester = HistoricalBacktester(
+        FixedResearchSource(),
+        EngineConfig(
+            uncertainty_margin=0.03,
+            structural_weight=0.70,
+            minimum_ask_size=10,
+        ),
+    )
+
+    result = backtester.run(config(), (touch_history,))
+
+    assert result.total_trades == 1
+    assert result.folds[0].trades[0].model_name == ("crypto-barrier-above-threshold-market-anchor")

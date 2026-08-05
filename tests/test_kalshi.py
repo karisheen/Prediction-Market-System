@@ -4,6 +4,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from prediction_market_system.domain import ThresholdDirection, ThresholdModelKind
 from prediction_market_system.venues.kalshi import (
     KalshiClient,
     KalshiMarket,
@@ -127,7 +128,10 @@ async def test_fetches_public_market_snapshot_without_authentication() -> None:
 
     market, snapshot = await client.get_market_snapshot("KXBTCTEST-30DEC31-T100000")
 
-    assert market.terminal_threshold_strike() == 100000
+    contract = market.threshold_contract()
+    assert contract.model_kind is ThresholdModelKind.TERMINAL
+    assert contract.direction is ThresholdDirection.ABOVE
+    assert contract.strike_price == 100000
     assert snapshot.market_id == market.ticker
     assert snapshot.yes_ask == pytest.approx(0.44)
     assert snapshot.no_ask == pytest.approx(0.58)
@@ -274,8 +278,35 @@ async def test_fetches_flexible_kalshi_event_live_data() -> None:
 def test_rejects_path_dependent_market_for_terminal_model() -> None:
     market = KalshiMarket.model_validate(market_payload(can_close_early=True))
 
-    with pytest.raises(UnsupportedMarketError, match="path-dependent"):
-        market.terminal_threshold_strike()
+    with pytest.raises(UnsupportedMarketError, match="supported touch barrier"):
+        market.threshold_contract()
+
+
+def test_classifies_explicit_upper_and_lower_touch_barriers() -> None:
+    upper_payload = market_payload(can_close_early=True)
+    upper_payload["rules_primary"] = (
+        "Resolves YES if the benchmark reaches the threshold at any time before expiry."
+    )
+    upper = KalshiMarket.model_validate(upper_payload).threshold_contract()
+
+    lower_payload = {
+        **upper_payload,
+        "strike_type": "less_or_equal",
+        "floor_strike": None,
+        "cap_strike": 80000,
+        "rules_primary": (
+            "Resolves YES if the benchmark trades below the threshold "
+            "at any point before expiration."
+        ),
+    }
+    lower = KalshiMarket.model_validate(lower_payload).threshold_contract()
+
+    assert upper.model_kind is ThresholdModelKind.BARRIER
+    assert upper.direction is ThresholdDirection.ABOVE
+    assert upper.strike_price == 100000
+    assert lower.model_kind is ThresholdModelKind.BARRIER
+    assert lower.direction is ThresholdDirection.BELOW
+    assert lower.strike_price == 80000
 
 
 def test_decimal_contract_values_are_preserved_during_parsing() -> None:

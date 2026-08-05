@@ -100,6 +100,7 @@ class BacktestTrade(BacktestModel):
     filled_contracts: int
     partial_fill: bool
     probability_yes: float
+    model_name: str
     conservative_net_edge: float
     fee_type: BinaryFeeType
     fee_multiplier: float
@@ -250,7 +251,7 @@ class HistoricalBacktester:
                     without_candles.add(ticker)
                     continue
                 try:
-                    strike = market.terminal_threshold_strike()
+                    contract = market.threshold_contract()
                 except UnsupportedMarketError:
                     unsupported.add(ticker)
                     continue
@@ -296,9 +297,10 @@ class HistoricalBacktester:
                     forecast, opportunity = engine.evaluate(
                         snapshot,
                         context.to_crypto_snapshot(
-                            strike_price=strike,
+                            strike_price=contract.strike_price,
                             expected_annual_return=config.expected_annual_return,
                         ),
+                        contract,
                     )
                     evaluated_signals += 1
                     if opportunity.state not in {
@@ -334,6 +336,7 @@ class HistoricalBacktester:
                         float(opportunity.executable_price),
                         float(opportunity.suggested_max_exposure),
                         forecast.probability_yes,
+                        forecast.model_name,
                         opportunity.conservative_net_edge,
                         execution_fee,
                         config.max_volume_participation,
@@ -425,6 +428,7 @@ def _fill_trade(
     signal_price: float,
     suggested_exposure: float,
     probability_yes: float,
+    model_name: str,
     conservative_net_edge: float,
     fee: EffectiveFee,
     max_volume_participation: float,
@@ -465,6 +469,7 @@ def _fill_trade(
         filled_contracts=filled_contracts,
         partial_fill=filled_contracts < requested_contracts,
         probability_yes=probability_yes,
+        model_name=model_name,
         conservative_net_edge=conservative_net_edge,
         fee_type=fee.fee_type,
         fee_multiplier=fee.multiplier,
