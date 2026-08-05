@@ -3,6 +3,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from prediction_market_system.calibration import (
+    CalibrationBin,
+    UncertaintyCalibrationProfile,
+)
 from prediction_market_system.domain import (
     CryptoSnapshot,
     MarketSide,
@@ -88,6 +92,8 @@ def test_recommends_yes_only_after_conservative_costs() -> None:
     assert forecast.structural_probability_yes > forecast.market_probability_yes
     assert forecast.lower_probability_yes <= forecast.probability_yes
     assert forecast.probability_yes <= forecast.upper_probability_yes
+    assert forecast.uncertainty_margin == pytest.approx(0.03)
+    assert forecast.uncertainty_source == "fixed"
     assert opportunity.state is RecommendationState.ENTER_YES
     assert opportunity.side is MarketSide.YES
     assert opportunity.conservative_net_edge is not None
@@ -174,6 +180,58 @@ def test_flat_binary_fee_is_charged_per_contract() -> None:
     assert quadratic.conservative_net_edge is not None
     assert flat.conservative_net_edge is not None
     assert flat.conservative_net_edge < quadratic.conservative_net_edge
+
+
+def test_uses_only_matching_past_calibration_profile() -> None:
+    engine = CryptoThresholdEngine()
+    profile = UncertaintyCalibrationProfile(
+        symbol="BTC",
+        model_name=engine.model_name(TERMINAL_ABOVE),
+        model_version=engine.model_version,
+        training_start=NOW - timedelta(days=60),
+        cutoff_at=NOW - timedelta(seconds=1),
+        confidence_level=0.95,
+        sample_count=30,
+        brier_score=0.20,
+        bins=(
+            CalibrationBin(
+                lower_probability=0.0,
+                upper_probability=1.0,
+                mean_probability=0.5,
+                observed_frequency=0.5,
+                outcome_interval_lower=0.3,
+                outcome_interval_upper=0.7,
+                uncertainty_margin=0.20,
+                sample_count=30,
+            ),
+        ),
+    )
+
+    forecast, _ = engine.evaluate(
+        market_snapshot(),
+        crypto_snapshot(),
+        TERMINAL_ABOVE,
+        profile,
+    )
+
+    assert forecast.uncertainty_margin == pytest.approx(0.20)
+    assert forecast.uncertainty_source == "held_out"
+    assert forecast.calibration_profile_id == profile.profile_id
+
+    with pytest.raises(ValueError, match="outcomes unavailable"):
+        engine.evaluate(
+            market_snapshot(),
+            crypto_snapshot(),
+            TERMINAL_ABOVE,
+            profile.model_copy(update={"cutoff_at": NOW + timedelta(seconds=1)}),
+        )
+    with pytest.raises(ValueError, match="model version"):
+        engine.evaluate(
+            market_snapshot(),
+            crypto_snapshot(),
+            TERMINAL_ABOVE,
+            profile.model_copy(update={"model_version": "old"}),
+        )
 
 
 def test_barrier_probability_matches_reflection_principle() -> None:

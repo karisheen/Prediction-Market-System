@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
@@ -109,6 +109,9 @@ class ProbabilityForecast(FrozenModel):
     market_probability_yes: Probability
     model_name: Annotated[str, Field(min_length=1)]
     model_version: Annotated[str, Field(min_length=1)]
+    uncertainty_margin: Probability
+    uncertainty_source: Literal["fixed", "held_out"]
+    calibration_profile_id: UUID | None = None
     supporting_evidence: tuple[str, ...] = ()
     opposing_evidence: tuple[str, ...] = ()
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from prediction_market_system.backtest import BacktestResult, HistoricalMarketData
+from prediction_market_system.calibration import UncertaintyCalibrationProfile
 from prediction_market_system.domain import Opportunity, ProbabilityForecast
 from prediction_market_system.research_storage import RESEARCH_SCHEMA, ResearchRepositoryMixin
 from prediction_market_system.venues.kalshi import (
@@ -193,6 +194,21 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_backtest_runs_series_generated
                 ON backtest_runs (series_ticker, generated_at);
+
+                CREATE TABLE IF NOT EXISTS uncertainty_calibrations (
+                    profile_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    cutoff_at TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_calibrations_model_cutoff
+                ON uncertainty_calibrations (
+                    symbol, model_name, model_version, cutoff_at
+                );
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
@@ -518,6 +534,49 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     result.model_dump_json(),
                 ),
             )
+            for fold in result.folds:
+                for profile in fold.calibration_profiles:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO uncertainty_calibrations (
+                            profile_id, symbol, model_name, model_version,
+                            cutoff_at, generated_at, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(profile.profile_id),
+                            profile.symbol,
+                            profile.model_name,
+                            profile.model_version,
+                            profile.cutoff_at.isoformat(),
+                            profile.generated_at.isoformat(),
+                            profile.model_dump_json(),
+                        ),
+                    )
+
+    def latest_uncertainty_calibration(
+        self,
+        *,
+        symbol: str,
+        model_name: str,
+        model_version: str,
+        as_of: datetime,
+    ) -> UncertaintyCalibrationProfile | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM uncertainty_calibrations
+                WHERE symbol = ? AND model_name = ? AND model_version = ?
+                  AND cutoff_at <= ?
+                ORDER BY cutoff_at DESC, generated_at DESC
+                LIMIT 1
+                """,
+                (symbol.upper(), model_name, model_version, as_of.isoformat()),
+            ).fetchone()
+        if row is None:
+            return None
+        return UncertaintyCalibrationProfile.model_validate_json(str(row["payload_json"]))
 
     def queue_alert(self, opportunity: Opportunity) -> AlertRecord:
         now = _utc_now()

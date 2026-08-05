@@ -259,6 +259,10 @@ def kalshi_evaluate(
         bool,
         typer.Option(help="Deliver actionable entries to the configured webhook."),
     ] = False,
+    allow_uncalibrated: Annotated[
+        bool,
+        typer.Option(help="Use the configured fixed margin when no held-out profile exists."),
+    ] = False,
 ) -> None:
     """Fetch and evaluate one supported threshold Kalshi contract."""
     settings = Settings()
@@ -277,7 +281,25 @@ def kalshi_evaluate(
         expected_annual_return=expected_return,
     )
     engine = CryptoThresholdEngine(_engine_config(settings))
-    _, opportunity = engine.evaluate(snapshot, crypto, contract)
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    calibration_profile = repository.latest_uncertainty_calibration(
+        symbol=crypto.symbol,
+        model_name=engine.model_name(contract),
+        as_of=snapshot.observed_at,
+        model_version=engine.model_version,
+    )
+    if calibration_profile is None and not allow_uncalibrated:
+        raise typer.BadParameter(
+            "no held-out calibration profile is available; run a calibrated backtest first",
+            param_hint="--ticker",
+        )
+    if calibration_profile is None and send_discord:
+        raise typer.BadParameter(
+            "Discord paper alerts require held-out uncertainty calibration",
+            param_hint="--send-discord",
+        )
+    _, opportunity = engine.evaluate(snapshot, crypto, contract, calibration_profile)
     _persist_and_maybe_alert(settings, opportunity, send_discord)
 
 
@@ -613,6 +635,22 @@ def backtest(
             help="Maximum fraction of execution-candle volume allowed to fill.",
         ),
     ] = 0.10,
+    allow_uncalibrated: Annotated[
+        bool,
+        typer.Option(help="Permit fixed-margin folds when training outcomes are insufficient."),
+    ] = False,
+    minimum_calibration_samples: Annotated[
+        int,
+        typer.Option(min=1, help="Minimum resolved training markets per structural model."),
+    ] = 30,
+    calibration_bins: Annotated[
+        int,
+        typer.Option(min=1, max=20, help="Maximum equal-frequency calibration bins."),
+    ] = 5,
+    calibration_confidence: Annotated[
+        float,
+        typer.Option(min=0.50, max=0.999, help="Wilson calibration confidence level."),
+    ] = 0.95,
     max_markets: Annotated[
         int,
         typer.Option(min=1, max=10_000, help="Maximum stored markets to replay."),
@@ -634,6 +672,10 @@ def backtest(
             step_days=step_days,
             latency_seconds=latency_seconds,
             max_volume_participation=max_volume_participation,
+            require_calibration=not allow_uncalibrated,
+            minimum_calibration_samples=minimum_calibration_samples,
+            maximum_calibration_bins=calibration_bins,
+            calibration_confidence=calibration_confidence,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -661,6 +703,7 @@ def backtest(
     table.add_column("Signals", justify="right")
     table.add_column("Trades", justify="right")
     table.add_column("Partial", justify="right")
+    table.add_column("Calibration", justify="right")
     table.add_column("P&L", justify="right")
     table.add_column("Return", justify="right")
     for fold_result in result.folds:
@@ -671,6 +714,7 @@ def backtest(
             str(fold_result.evaluated_signals),
             str(len(fold_result.trades)),
             str(sum(trade.partial_fill for trade in fold_result.trades)),
+            str(sum(profile.sample_count for profile in fold_result.calibration_profiles)),
             f"${fold_result.total_pnl_dollars:,.2f}",
             ("—" if fold_result.return_on_cost is None else f"{fold_result.return_on_cost:.2%}"),
         )
@@ -696,6 +740,11 @@ def backtest(
         console.print(
             f"[yellow]Skipped {len(result.markets_without_candles)} "
             "markets without candles.[/yellow]"
+        )
+    missing_calibration = sum(fold.missing_calibration_signals for fold in result.folds)
+    if missing_calibration:
+        console.print(
+            f"[yellow]Skipped {missing_calibration} signals without held-out calibration.[/yellow]"
         )
 
 
@@ -991,6 +1040,10 @@ def _print_evaluation(opportunity: Opportunity) -> None:
     )
     table.add_row("Market YES", f"{forecast.market_probability_yes:.2%}")
     table.add_row("Structural YES", f"{forecast.structural_probability_yes:.2%}")
+    table.add_row(
+        "Uncertainty",
+        (f"±{forecast.uncertainty_margin:.2%} ({forecast.uncertainty_source})"),
+    )
     table.add_row(
         "Conservative edge",
         (

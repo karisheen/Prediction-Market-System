@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from prediction_market_system.calibration import UncertaintyCalibrationProfile
 from prediction_market_system.domain import (
     CryptoSnapshot,
     MarketSide,
@@ -132,16 +133,23 @@ class CryptoThresholdEngine:
     before any recommendation is considered.
     """
 
-    model_version = "0.2.0"
+    model_version = "0.3.0"
 
     def __init__(self, config: EngineConfig | None = None) -> None:
         self.config = config or EngineConfig()
+
+    @staticmethod
+    def model_name(contract: ThresholdContract) -> str:
+        return (
+            f"crypto-{contract.model_kind.value}-{contract.direction.value}-threshold-market-anchor"
+        )
 
     def evaluate(
         self,
         market: MarketSnapshot,
         crypto: CryptoSnapshot,
         contract: ThresholdContract,
+        calibration_profile: UncertaintyCalibrationProfile | None = None,
     ) -> tuple[ProbabilityForecast, Opportunity]:
         structural_probability = self._structural_probability(market, crypto, contract)
         market_probability = self._market_probability(market)
@@ -150,15 +158,30 @@ class CryptoThresholdEngine:
             structural_probability,
         )
 
-        lower_probability = max(0.0, final_probability - self.config.uncertainty_margin)
-        upper_probability = min(1.0, final_probability + self.config.uncertainty_margin)
+        model_name = self.model_name(contract)
+        uncertainty_source: Literal["fixed", "held_out"]
+        if calibration_profile is None:
+            uncertainty_margin = self.config.uncertainty_margin
+            uncertainty_source = "fixed"
+            calibration_profile_id = None
+        else:
+            if calibration_profile.model_name != model_name:
+                raise ValueError("calibration profile does not match structural model")
+            if calibration_profile.model_version != self.model_version:
+                raise ValueError("calibration profile does not match model version")
+            if calibration_profile.symbol != crypto.symbol.upper():
+                raise ValueError("calibration profile does not match crypto symbol")
+            if calibration_profile.cutoff_at > market.observed_at:
+                raise ValueError("calibration profile contains outcomes unavailable at evaluation")
+            uncertainty_margin = calibration_profile.margin_for(final_probability)
+            uncertainty_source = "held_out"
+            calibration_profile_id = calibration_profile.profile_id
+        lower_probability = max(0.0, final_probability - uncertainty_margin)
+        upper_probability = min(1.0, final_probability + uncertainty_margin)
         supporting, opposing = self._evidence(
             market_probability,
             structural_probability,
             crypto,
-        )
-        model_name = (
-            f"crypto-{contract.model_kind.value}-{contract.direction.value}-threshold-market-anchor"
         )
 
         forecast = ProbabilityForecast(
@@ -171,6 +194,9 @@ class CryptoThresholdEngine:
             market_probability_yes=market_probability,
             model_name=model_name,
             model_version=self.model_version,
+            uncertainty_margin=uncertainty_margin,
+            uncertainty_source=uncertainty_source,
+            calibration_profile_id=calibration_profile_id,
             supporting_evidence=tuple(supporting),
             opposing_evidence=tuple(opposing),
         )

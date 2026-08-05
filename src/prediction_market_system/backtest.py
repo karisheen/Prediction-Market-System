@@ -8,7 +8,16 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from prediction_market_system.domain import MarketSide, MarketSnapshot, RecommendationState
+from prediction_market_system.calibration import (
+    CalibrationSample,
+    UncertaintyCalibrationProfile,
+    fit_uncertainty_profiles,
+)
+from prediction_market_system.domain import (
+    MarketSide,
+    MarketSnapshot,
+    RecommendationState,
+)
 from prediction_market_system.engine import BinaryFeeType, CryptoThresholdEngine, EngineConfig
 from prediction_market_system.research import ResearchContext, ResearchDataUnavailable
 from prediction_market_system.venues.kalshi import (
@@ -40,6 +49,10 @@ class BacktestConfig(BacktestModel):
     latency_seconds: Annotated[int, Field(ge=0)] = 30
     max_volume_participation: Annotated[float, Field(gt=0.0, le=1.0)] = 0.10
     expected_annual_return: float = 0.0
+    require_calibration: bool = True
+    minimum_calibration_samples: Annotated[int, Field(gt=0)] = 30
+    maximum_calibration_bins: Annotated[int, Field(gt=0, le=20)] = 5
+    calibration_confidence: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.95
 
     @field_validator("start", "end")
     @classmethod
@@ -101,6 +114,9 @@ class BacktestTrade(BacktestModel):
     partial_fill: bool
     probability_yes: float
     model_name: str
+    uncertainty_margin: float
+    uncertainty_source: Literal["fixed", "held_out"]
+    calibration_profile_id: UUID | None
     conservative_net_edge: float
     fee_type: BinaryFeeType
     fee_multiplier: float
@@ -117,6 +133,8 @@ class BacktestFoldResult(BacktestModel):
     evaluated_signals: int
     missing_context_signals: int
     missing_fee_signals: int
+    missing_calibration_signals: int
+    calibration_profiles: tuple[UncertaintyCalibrationProfile, ...]
     trades: tuple[BacktestTrade, ...]
     total_cost_dollars: Decimal
     total_pnl_dollars: Decimal
@@ -234,11 +252,19 @@ class HistoricalBacktester:
         fold_results: list[BacktestFoldResult] = []
 
         for fold in walk_forward_folds(config):
+            calibration_profiles = self.calibrate(
+                config,
+                markets,
+                training_start=fold.train_start,
+                cutoff_at=fold.train_end,
+            )
+            profiles_by_model = {profile.model_name: profile for profile in calibration_profiles}
             trades: list[BacktestTrade] = []
             considered = 0
             evaluated_signals = 0
             missing_context = 0
             missing_fee = 0
+            missing_calibration = 0
             for historical_market in markets:
                 ticker = historical_market.market.ticker
                 if ticker in traded_markets:
@@ -266,8 +292,14 @@ class HistoricalBacktester:
                 if not signal_candles:
                     continue
                 considered += 1
+                calibration_profile = profiles_by_model.get(
+                    CryptoThresholdEngine.model_name(contract)
+                )
 
                 for signal_candle in signal_candles:
+                    if config.require_calibration and calibration_profile is None:
+                        missing_calibration += 1
+                        continue
                     signal_at = datetime.fromtimestamp(signal_candle.end_period_ts, UTC)
                     fee = effective_fee_at(historical_market, signal_at)
                     if fee is None:
@@ -301,6 +333,7 @@ class HistoricalBacktester:
                             expected_annual_return=config.expected_annual_return,
                         ),
                         contract,
+                        calibration_profile,
                     )
                     evaluated_signals += 1
                     if opportunity.state not in {
@@ -337,6 +370,9 @@ class HistoricalBacktester:
                         float(opportunity.suggested_max_exposure),
                         forecast.probability_yes,
                         forecast.model_name,
+                        forecast.uncertainty_margin,
+                        forecast.uncertainty_source,
+                        forecast.calibration_profile_id,
                         opportunity.conservative_net_edge,
                         execution_fee,
                         config.max_volume_participation,
@@ -354,6 +390,8 @@ class HistoricalBacktester:
                     evaluated_signals,
                     missing_context,
                     missing_fee,
+                    missing_calibration,
+                    calibration_profiles,
                     trades,
                 )
             )
@@ -373,6 +411,78 @@ class HistoricalBacktester:
             total_pnl_dollars=total_pnl,
             return_on_cost=_ratio(total_pnl, total_cost),
             brier_score=_brier_score(all_trades),
+        )
+
+    def calibrate(
+        self,
+        config: BacktestConfig,
+        markets: tuple[HistoricalMarketData, ...],
+        *,
+        training_start: datetime,
+        cutoff_at: datetime,
+    ) -> tuple[UncertaintyCalibrationProfile, ...]:
+        samples: list[CalibrationSample] = []
+        engine = CryptoThresholdEngine(self._engine_config)
+        for historical_market in markets:
+            market = historical_market.market
+            if market.result not in {"yes", "no"} or market.settlement_ts is None:
+                continue
+            if market.settlement_ts > cutoff_at:
+                continue
+            try:
+                contract = market.threshold_contract()
+            except UnsupportedMarketError:
+                continue
+            signal_candle = next(
+                (
+                    candle
+                    for candle in historical_market.candlesticks
+                    if training_start
+                    <= datetime.fromtimestamp(candle.end_period_ts, UTC)
+                    < min(cutoff_at, market.expiry, market.settlement_ts)
+                ),
+                None,
+            )
+            if signal_candle is None:
+                continue
+            signal_at = datetime.fromtimestamp(signal_candle.end_period_ts, UTC)
+            try:
+                context = self._research_source.research_context_as_of(
+                    symbol=config.symbol,
+                    as_of=signal_at,
+                    event_ticker=market.event_ticker,
+                    interval_seconds=config.period_minutes * 60,
+                    realized_window_seconds=config.realized_window_days * 24 * 60 * 60,
+                )
+            except ResearchDataUnavailable:
+                continue
+            forecast, _ = engine.evaluate(
+                _market_snapshot(market, signal_candle, config),
+                context.to_crypto_snapshot(
+                    strike_price=contract.strike_price,
+                    expected_annual_return=config.expected_annual_return,
+                ),
+                contract,
+            )
+            samples.append(
+                CalibrationSample(
+                    market_id=market.ticker,
+                    symbol=config.symbol,
+                    model_name=forecast.model_name,
+                    model_version=forecast.model_version,
+                    probability_yes=forecast.probability_yes,
+                    outcome_yes=market.result == "yes",
+                    observed_at=signal_at,
+                    resolved_at=market.settlement_ts,
+                )
+            )
+        return fit_uncertainty_profiles(
+            tuple(samples),
+            training_start=training_start,
+            cutoff_at=cutoff_at,
+            confidence_level=config.calibration_confidence,
+            minimum_samples=config.minimum_calibration_samples,
+            maximum_bins=config.maximum_calibration_bins,
         )
 
 
@@ -429,6 +539,9 @@ def _fill_trade(
     suggested_exposure: float,
     probability_yes: float,
     model_name: str,
+    uncertainty_margin: float,
+    uncertainty_source: Literal["fixed", "held_out"],
+    calibration_profile_id: UUID | None,
     conservative_net_edge: float,
     fee: EffectiveFee,
     max_volume_participation: float,
@@ -470,6 +583,9 @@ def _fill_trade(
         partial_fill=filled_contracts < requested_contracts,
         probability_yes=probability_yes,
         model_name=model_name,
+        uncertainty_margin=uncertainty_margin,
+        uncertainty_source=uncertainty_source,
+        calibration_profile_id=calibration_profile_id,
         conservative_net_edge=conservative_net_edge,
         fee_type=fee.fee_type,
         fee_multiplier=fee.multiplier,
@@ -487,6 +603,8 @@ def _fold_result(
     evaluated_signals: int,
     missing_context: int,
     missing_fee: int,
+    missing_calibration: int,
+    calibration_profiles: tuple[UncertaintyCalibrationProfile, ...],
     trades: list[BacktestTrade],
 ) -> BacktestFoldResult:
     total_cost = sum((trade.cost_dollars for trade in trades), Decimal("0.00"))
@@ -497,6 +615,8 @@ def _fold_result(
         evaluated_signals=evaluated_signals,
         missing_context_signals=missing_context,
         missing_fee_signals=missing_fee,
+        missing_calibration_signals=missing_calibration,
+        calibration_profiles=calibration_profiles,
         trades=tuple(trades),
         total_cost_dollars=total_cost,
         total_pnl_dollars=total_pnl,

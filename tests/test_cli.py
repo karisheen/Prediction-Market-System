@@ -4,6 +4,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from prediction_market_system.calibration import (
+    CalibrationBin,
+    UncertaintyCalibrationProfile,
+)
 from prediction_market_system.cli import _ResearchDataBatch, app
 from prediction_market_system.research import (
     DerivativesSnapshot,
@@ -102,12 +106,140 @@ def test_kalshi_evaluate_persists_live_snapshot(
             "110000",
             "--volatility",
             "0.55",
+            "--allow-uncalibrated",
         ],
     )
 
     assert result.exit_code == 0, result.output
     assert "Bitcoin price at year end?" in result.output
     assert database_path.exists()
+
+
+def test_kalshi_evaluate_requires_held_out_calibration(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    pair = market_pair()
+    monkeypatch.setattr(
+        "prediction_market_system.cli._load_kalshi_market",
+        lambda ticker: pair,
+    )
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(tmp_path / "missing-calibration.db"))
+
+    result = runner.invoke(
+        app,
+        [
+            "kalshi-evaluate",
+            "--ticker",
+            "KXBTCTEST-30DEC31-T100000",
+            "--symbol",
+            "BTC",
+            "--spot",
+            "110000",
+            "--volatility",
+            "0.55",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "run a calibrated backtest first" in result.output
+
+
+def test_kalshi_evaluate_uses_persisted_calibration(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    pair = market_pair()
+    profile = UncertaintyCalibrationProfile(
+        symbol="BTC",
+        model_name="crypto-terminal-above-threshold-market-anchor",
+        model_version="0.3.0",
+        training_start=datetime(2026, 1, 1, tzinfo=UTC),
+        cutoff_at=datetime(2026, 7, 27, tzinfo=UTC),
+        confidence_level=0.95,
+        sample_count=30,
+        brier_score=0.20,
+        bins=(
+            CalibrationBin(
+                lower_probability=0.0,
+                upper_probability=1.0,
+                mean_probability=0.5,
+                observed_frequency=0.5,
+                outcome_interval_lower=0.3,
+                outcome_interval_upper=0.7,
+                uncertainty_margin=0.20,
+                sample_count=30,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "prediction_market_system.cli._load_kalshi_market",
+        lambda ticker: pair,
+    )
+    monkeypatch.setattr(
+        "prediction_market_system.storage.SQLiteRepository.latest_uncertainty_calibration",
+        lambda self, **kwargs: profile,
+    )
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(tmp_path / "calibrated-live.db"))
+
+    result = runner.invoke(
+        app,
+        [
+            "kalshi-evaluate",
+            "--ticker",
+            "KXBTCTEST-30DEC31-T100000",
+            "--symbol",
+            "BTC",
+            "--spot",
+            "110000",
+            "--volatility",
+            "0.55",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "(held_out)" in result.output
+
+
+def test_kalshi_evaluate_rejects_uncalibrated_discord_alert(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    pair = market_pair()
+    monkeypatch.setattr(
+        "prediction_market_system.cli._load_kalshi_market",
+        lambda ticker: pair,
+    )
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(tmp_path / "uncalibrated-alert.db"))
+
+    result = runner.invoke(
+        app,
+        [
+            "kalshi-evaluate",
+            "--ticker",
+            "KXBTCTEST-30DEC31-T100000",
+            "--symbol",
+            "BTC",
+            "--spot",
+            "110000",
+            "--volatility",
+            "0.55",
+            "--allow-uncalibrated",
+            "--send-discord",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Discord paper alerts require held-out" in result.output
 
 
 def test_kalshi_evaluate_rejects_early_close_contract(monkeypatch: object) -> None:
@@ -166,6 +298,7 @@ def test_kalshi_evaluate_accepts_explicit_touch_barrier(
             "90000",
             "--volatility",
             "0.55",
+            "--allow-uncalibrated",
         ],
     )
 

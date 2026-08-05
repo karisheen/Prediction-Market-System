@@ -184,6 +184,7 @@ def config() -> BacktestConfig:
         step_days=1,
         latency_seconds=30,
         max_volume_participation=0.10,
+        require_calibration=False,
     )
 
 
@@ -257,6 +258,9 @@ def test_backtest_uses_delayed_adverse_quote_partial_fill_and_persists(
     assert trade.execution_price == pytest.approx(0.25)
     assert trade.requested_contracts == 44
     assert trade.filled_contracts == 10
+    assert trade.uncertainty_margin == pytest.approx(0.03)
+    assert trade.uncertainty_source == "fixed"
+    assert trade.calibration_profile_id is None
     assert trade.fee_dollars == Decimal("0.14")
     assert trade.cost_dollars == Decimal("2.64")
     assert trade.pnl_dollars == Decimal("7.36")
@@ -296,3 +300,90 @@ def test_backtest_routes_explicit_touch_contract_to_barrier_model() -> None:
 
     assert result.total_trades == 1
     assert result.folds[0].trades[0].model_name == ("crypto-barrier-above-threshold-market-anchor")
+
+
+def test_walk_forward_calibration_uses_only_resolved_training_markets(
+    tmp_path: Path,
+) -> None:
+    training_histories = []
+    for index, result_value in enumerate(("no", "yes", "yes"), start=1):
+        historical = historical_market()
+        signal_at = START + timedelta(hours=index)
+        expiry = START + timedelta(hours=12)
+        training_market = historical.market.model_copy(
+            update={
+                "ticker": f"TRAIN-{index}",
+                "event_ticker": f"TRAIN-{index}-EVENT",
+                "close_time": expiry,
+                "expected_expiration_time": expiry,
+                "latest_expiration_time": expiry + timedelta(hours=1),
+                "result": result_value,
+                "settlement_value_dollars": (
+                    Decimal("1.00") if result_value == "yes" else Decimal("0.00")
+                ),
+                "settlement_ts": START + timedelta(hours=13),
+            }
+        )
+        training_histories.append(
+            historical.model_copy(
+                update={
+                    "market": training_market,
+                    "candlesticks": (
+                        candle(
+                            signal_at,
+                            bid=("0.18", "0.18", "0.20", "0.20"),
+                            ask=("0.20", "0.20", "0.22", "0.22"),
+                            volume="500",
+                        ),
+                    ),
+                }
+            )
+        )
+
+    future_outcome = training_histories[0].model_copy(
+        update={
+            "market": training_histories[0].market.model_copy(
+                update={
+                    "ticker": "FUTURE-OUTCOME",
+                    "settlement_ts": START + timedelta(days=1, seconds=1),
+                }
+            )
+        }
+    )
+
+    calibrated_config = BacktestConfig(
+        **(
+            config().model_dump()
+            | {
+                "require_calibration": True,
+                "minimum_calibration_samples": 3,
+                "maximum_calibration_bins": 1,
+            }
+        )
+    )
+    backtester = HistoricalBacktester(FixedResearchSource(), EngineConfig())
+
+    result = backtester.run(
+        calibrated_config,
+        (*training_histories, future_outcome, historical_market()),
+    )
+
+    first_fold = result.folds[0]
+    assert len(first_fold.calibration_profiles) == 1
+    profile = first_fold.calibration_profiles[0]
+    assert profile.sample_count == 3
+    assert profile.cutoff_at == first_fold.fold.test_start
+    assert first_fold.missing_calibration_signals == 0
+    assert first_fold.evaluated_signals > 0
+    assert all(trade.uncertainty_source == "held_out" for trade in first_fold.trades)
+
+    repository = SQLiteRepository(tmp_path / "calibrated-backtest.db")
+    repository.initialize()
+    repository.save_backtest_result(result)
+    loaded = repository.latest_uncertainty_calibration(
+        symbol="BTC",
+        model_name=profile.model_name,
+        model_version=profile.model_version,
+        as_of=first_fold.fold.test_start,
+    )
+    assert loaded == profile

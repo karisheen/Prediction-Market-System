@@ -12,8 +12,9 @@ asset be above a specified price at expiry?” It does **not** place trades.
 - Lognormal terminal-price and geometric-Brownian first-passage probability
   models for upper and lower crypto thresholds.
 - A market-anchored forecast blended in log-odds space.
-- Explicit uncertainty, fees, slippage, resolution haircuts, liquidity checks,
-  fractional Kelly sizing, and a no-trade `WATCH` state.
+- Held-out, time-ordered uncertainty calibration plus explicit fees, slippage,
+  resolution haircuts, liquidity checks, fractional Kelly sizing, and a no-trade
+  `WATCH` state.
 - An unauthenticated Kalshi REST adapter for market metadata and executable
   order-book quotes.
 - Historical Kalshi ingestion for archived markets, candlesticks, rule snapshots,
@@ -121,6 +122,11 @@ uv run pms kalshi-evaluate \
   --volatility 0.55
 ```
 
+Live Kalshi evaluation requires a matching held-out calibration profile for the
+symbol, structural model, and model version. Profiles are produced and persisted
+by `pms backtest`. `--allow-uncalibrated` permits local research with the configured
+fixed margin, but uncalibrated Discord alerts are rejected.
+
 Terminal markets use the probability of finishing beyond the strike. Early-close
 markets use the continuous-time first-passage probability of touching the strike
 before expiry. Upper and lower barriers, already-crossed barriers, physical drift,
@@ -225,14 +231,26 @@ uv run pms backtest \
   --test-days 30 \
   --step-days 30 \
   --latency-seconds 30 \
-  --max-volume-participation 0.10
+  --max-volume-participation 0.10 \
+  --minimum-calibration-samples 30 \
+  --calibration-bins 5 \
+  --calibration-confidence 0.95
 ```
 
 Run `kalshi-sync-history` and `sync-research-data` first. Research coverage must
 begin early enough to provide the complete realized-volatility window at every
-test timestamp. The model parameters remain frozen while each rolling training
-window advances; only the following non-overlapping test window contributes
-trades. Held-out parameter calibration remains a later build stage.
+training and test timestamp. For each fold, only markets whose outcomes settled
+by the training cutoff are eligible for calibration. One time-ordered forecast
+per resolved market is used; the following non-overlapping test window remains
+untouched until evaluation.
+
+Calibration samples are isolated by symbol, structural model, and model version.
+They are sorted into equal-frequency probability bins. Each bin compares its mean
+forecast with a Wilson confidence interval for the observed outcome frequency;
+the larger distance to either interval bound becomes that bin's uncertainty
+margin. The default requires 30 independent resolved markets per populated bin at
+95% confidence. Signals without a qualifying profile fail closed. Use
+`--allow-uncalibrated` only to inspect fixed-margin behavior.
 
 Signals use the executable bid/ask at a completed market candle. Execution uses
 the first later candle satisfying the latency assumption and its adverse quote
@@ -243,9 +261,10 @@ be partial. Each market can produce at most one filled entry.
 The backtester fails closed when point-in-time spot history or the effective fee
 schedule is unavailable. Scheduled series fees and event overrides are selected
 at signal and execution time; explicit null event overrides restore the series
-fee. Taker fees are rounded upward to cents. Fold metrics, selected structural
-model, individual fills, cost, P&L, return on cost, and Brier score are persisted
-in `backtest_runs`.
+fee. Taker fees are rounded upward to cents. Fold metrics, calibration profiles,
+selected structural model, uncertainty source and margin, individual fills, cost,
+P&L, return on cost, and Brier score are persisted. Profiles are also indexed in
+`uncertainty_calibrations` for subsequent live evaluation.
 
 Candlestick volume is a participation constraint, not historical order-book
 depth. Adverse candle extremes provide a conservative latency/slippage bound but
@@ -280,6 +299,9 @@ cost assumptions. Defaults are deliberately conservative but are not universally
 correct. Live evaluation uses the configured fee coefficient. Backtests instead
 select scheduled series/event fees at each signal and execution timestamp and
 reproduce Kalshi's upward cent rounding.
+The configured uncertainty margin is retained only for manual evaluations and
+explicit `--allow-uncalibrated` research. Calibrated backtests and live evaluations
+derive probability-specific margins from settled training outcomes.
 
 ## Development
 
@@ -292,8 +314,7 @@ uv run pytest
 
 ## Next build stages
 
-1. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
-2. Run Discord-delivered paper alerts through multiple market regimes.
+1. Run Discord-delivered paper alerts through multiple market regimes.
 
 Prediction markets involve financial, legal, venue, resolution, and counterparty
 risk. This software is for research and manual decision support, not a guarantee
