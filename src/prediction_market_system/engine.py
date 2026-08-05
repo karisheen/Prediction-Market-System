@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import timedelta
 from statistics import NormalDist
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +20,8 @@ from prediction_market_system.domain import (
 _SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60
 _EPSILON = 1e-6
 
+BinaryFeeType = Literal["quadratic", "quadratic_with_maker_fees", "flat"]
+
 
 class EngineConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -28,6 +31,7 @@ class EngineConfig(BaseModel):
     uncertainty_margin: float = Field(default=0.05, ge=0.0, le=0.5)
     structural_weight: float = Field(default=0.50, ge=0.0, le=1.0)
     fee_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    binary_fee_type: BinaryFeeType = "quadratic"
     binary_fee_coefficient: float = Field(default=0.0, ge=0.0)
     slippage_bps: float = Field(default=25.0, ge=0.0)
     resolution_haircut: float = Field(default=0.01, ge=0.0, le=1.0)
@@ -182,7 +186,11 @@ class CryptoThresholdEngine:
         conservative_probability: float,
     ) -> _Candidate:
         trading_cost_multiplier = 1.0 + self.config.fee_rate + self.config.slippage_bps / 10_000.0
-        binary_contract_fee = self.config.binary_fee_coefficient * ask * (1.0 - ask)
+        binary_contract_fee = (
+            self.config.binary_fee_coefficient
+            if self.config.binary_fee_type == "flat"
+            else self.config.binary_fee_coefficient * ask * (1.0 - ask)
+        )
         effective_cost = ask * trading_cost_multiplier + binary_contract_fee
         edge = conservative_probability - effective_cost - self.config.resolution_haircut
         return _Candidate(

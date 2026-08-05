@@ -11,6 +11,10 @@ from pydantic import HttpUrl
 from rich.console import Console
 from rich.table import Table
 
+from prediction_market_system.backtest import (
+    BacktestConfig,
+    HistoricalBacktester,
+)
 from prediction_market_system.config import Settings
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
 from prediction_market_system.domain import (
@@ -561,6 +565,130 @@ def research_context(
     console.print(table)
     for warning in context.warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+
+@app.command("backtest")
+def backtest(
+    series: Annotated[str, typer.Option(help="Stored Kalshi series ticker.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    start: Annotated[str, typer.Option(help="Walk-forward training-range start.")],
+    end: Annotated[str, typer.Option(help="Exclusive final test-range end.")],
+    period: Annotated[
+        int,
+        typer.Option(help="Stored Kalshi and spot candle interval: 1, 60, or 1440."),
+    ] = 60,
+    realized_window_days: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Trailing realized-volatility window."),
+    ] = 30,
+    train_days: Annotated[
+        int,
+        typer.Option(min=1, help="Rolling training-window length."),
+    ] = 90,
+    test_days: Annotated[
+        int,
+        typer.Option(min=1, help="Out-of-sample test-window length."),
+    ] = 30,
+    step_days: Annotated[
+        int,
+        typer.Option(min=1, help="Days between successive test windows."),
+    ] = 30,
+    latency_seconds: Annotated[
+        int,
+        typer.Option(min=0, help="Delay between signal and eligible execution."),
+    ] = 30,
+    max_volume_participation: Annotated[
+        float,
+        typer.Option(
+            min=0.000001,
+            max=1.0,
+            help="Maximum fraction of execution-candle volume allowed to fill.",
+        ),
+    ] = 0.10,
+    max_markets: Annotated[
+        int,
+        typer.Option(min=1, max=10_000, help="Maximum stored markets to replay."),
+    ] = 100,
+) -> None:
+    """Replay resolved Kalshi markets with point-in-time walk-forward evaluation."""
+    if period not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--period")
+    try:
+        config = BacktestConfig(
+            series_ticker=series,
+            symbol=symbol,
+            start=_parse_timestamp(start),
+            end=_parse_timestamp(end),
+            period_minutes=cast(CandlestickPeriod, period),
+            realized_window_days=realized_window_days,
+            train_days=train_days,
+            test_days=test_days,
+            step_days=step_days,
+            latency_seconds=latency_seconds,
+            max_volume_participation=max_volume_participation,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    markets = repository.load_kalshi_backtest_data(
+        series_ticker=config.series_ticker,
+        start=config.start,
+        end=config.end,
+        period_interval=config.period_minutes,
+        max_markets=max_markets,
+    )
+    if not markets:
+        console.print("[red]No stored Kalshi markets match the requested backtest.[/red]")
+        raise typer.Exit(code=1)
+
+    result = HistoricalBacktester(repository, _engine_config(settings)).run(config, markets)
+    repository.save_backtest_result(result)
+
+    table = Table(title=f"Walk-forward backtest: {config.series_ticker}")
+    table.add_column("Fold", justify="right")
+    table.add_column("Test range (UTC)")
+    table.add_column("Signals", justify="right")
+    table.add_column("Trades", justify="right")
+    table.add_column("Partial", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("Return", justify="right")
+    for fold_result in result.folds:
+        fold = fold_result.fold
+        table.add_row(
+            str(fold.index + 1),
+            f"{fold.test_start.date()} → {fold.test_end.date()}",
+            str(fold_result.evaluated_signals),
+            str(len(fold_result.trades)),
+            str(sum(trade.partial_fill for trade in fold_result.trades)),
+            f"${fold_result.total_pnl_dollars:,.2f}",
+            ("—" if fold_result.return_on_cost is None else f"{fold_result.return_on_cost:.2%}"),
+        )
+    console.print(table)
+    console.print(
+        f"Trades: [bold]{result.total_trades}[/bold] "
+        f"({result.partial_fills} partial) • "
+        f"Cost: ${result.total_cost_dollars:,.2f} • "
+        f"P&L: ${result.total_pnl_dollars:,.2f} • "
+        f"Return: {'—' if result.return_on_cost is None else f'{result.return_on_cost:.2%}'} • "
+        f"Brier: {'—' if result.brier_score is None else f'{result.brier_score:.4f}'}"
+    )
+    console.print(f"Backtest run [bold]{result.run_id}[/bold] stored in {settings.database_path}")
+    if result.unsupported_markets:
+        console.print(
+            f"[yellow]Skipped {len(result.unsupported_markets)} unsupported markets.[/yellow]"
+        )
+    if result.unresolved_markets:
+        console.print(
+            f"[yellow]Skipped {len(result.unresolved_markets)} unresolved markets.[/yellow]"
+        )
+    if result.markets_without_candles:
+        console.print(
+            f"[yellow]Skipped {len(result.markets_without_candles)} "
+            "markets without candles.[/yellow]"
+        )
 
 
 @app.command()

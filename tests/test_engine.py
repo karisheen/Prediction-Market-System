@@ -120,6 +120,32 @@ def test_binary_fee_curve_reduces_conservative_edge() -> None:
     assert with_fee.conservative_net_edge < no_fee.conservative_net_edge
 
 
+def test_flat_binary_fee_is_charged_per_contract() -> None:
+    quadratic_engine = CryptoThresholdEngine(
+        EngineConfig(
+            uncertainty_margin=0.03,
+            structural_weight=0.70,
+            binary_fee_type="quadratic",
+            binary_fee_coefficient=0.05,
+        )
+    )
+    flat_engine = CryptoThresholdEngine(
+        EngineConfig(
+            uncertainty_margin=0.03,
+            structural_weight=0.70,
+            binary_fee_type="flat",
+            binary_fee_coefficient=0.05,
+        )
+    )
+
+    _, quadratic = quadratic_engine.evaluate(market_snapshot(), crypto_snapshot())
+    _, flat = flat_engine.evaluate(market_snapshot(), crypto_snapshot())
+
+    assert quadratic.conservative_net_edge is not None
+    assert flat.conservative_net_edge is not None
+    assert flat.conservative_net_edge < quadratic.conservative_net_edge
+
+
 def test_rejects_crossed_order_book() -> None:
     with pytest.raises(ValueError, match="yes_bid cannot exceed yes_ask"):
         market_snapshot(yes_bid=0.50, yes_ask=0.49)

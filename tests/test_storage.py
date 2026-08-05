@@ -197,3 +197,16 @@ def test_persists_complete_kalshi_history_idempotently(tmp_path: Path) -> None:
     assert rules == ("Primary benchmark rule.", "Secondary correction rule.")
     assert event_override == (None, None)
     assert candle_count == (1,)
+
+    loaded = repository.load_kalshi_backtest_data(
+        series_ticker="KXBTCTEST",
+        start=datetime(2030, 1, 1, tzinfo=UTC),
+        end=datetime(2031, 1, 1, tzinfo=UTC),
+        period_interval=60,
+        max_markets=10,
+    )
+    assert len(loaded) == 1
+    assert loaded[0].market.result == "yes"
+    assert loaded[0].candlesticks == (candle,)
+    assert loaded[0].series_fee_changes == (series_fee,)
+    assert loaded[0].event_fee_changes == (event_fee,)

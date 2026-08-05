@@ -22,8 +22,10 @@ asset be above a specified price at expiry?” It does **not** place trades.
 - Kalshi event live-data snapshots with provider-specific payloads preserved.
 - A no-look-ahead context assembler that enforces source cutoffs, complete realized-
   volatility windows, and explicit staleness limits.
-- Append-oriented SQLite storage for forecasts, recommendations, alert events, and
-  point-in-time venue research data.
+- A persisted walk-forward backtester with delayed executable quotes, adverse
+  intraperiod pricing, partial fills, and point-in-time fee schedules.
+- Append-oriented SQLite storage for forecasts, recommendations, alert events,
+  point-in-time venue research data, and backtest runs.
 - Discord webhook delivery with idempotent retries and in-place market updates.
 - A CLI for manual evaluations, historical ingestion, research sync, and paper alerts.
 
@@ -44,7 +46,8 @@ Kalshi archive ──> markets + candles + rules + resolutions + fee changes ─
 Coinbase ───────> completed spot candles + realized volatility ────────────────┤
 Deribit ────────> DVOL + funding + forward derivatives snapshots ──────────────┤
 Kalshi events ──> timestamped venue context ────────────────────────────────────┤
-                                                                                 └─> SQLite point-in-time store
+                                                                                 ├─> SQLite point-in-time store
+                                                                                 └─> walk-forward backtest
 ```
 
 The SQLite history is authoritative. Discord is only a notification surface and
@@ -193,6 +196,47 @@ to every observation so that benchmark mismatch is auditable. Historical funding
 and DVOL are backfilled; basis and open interest are captured forward because the
 public Deribit ticker endpoint exposes their current state.
 
+## Walk-forward backtesting
+
+Replay resolved markets from a stored Kalshi series:
+
+```bash
+uv run pms backtest \
+  --series KXBTC \
+  --symbol BTC \
+  --start "2025-01-01T00:00:00Z" \
+  --end "2026-01-01T00:00:00Z" \
+  --period 60 \
+  --realized-window-days 30 \
+  --train-days 90 \
+  --test-days 30 \
+  --step-days 30 \
+  --latency-seconds 30 \
+  --max-volume-participation 0.10
+```
+
+Run `kalshi-sync-history` and `sync-research-data` first. Research coverage must
+begin early enough to provide the complete realized-volatility window at every
+test timestamp. The model parameters remain frozen while each rolling training
+window advances; only the following non-overlapping test window contributes
+trades. Held-out parameter calibration remains a later build stage.
+
+Signals use the executable bid/ask at a completed market candle. Execution uses
+the first later candle satisfying the latency assumption and its adverse quote
+extreme: the YES ask high or the complementary NO ask derived from the YES bid
+low. Fills are whole contracts, capped by `--max-volume-participation`, and can
+be partial. Each market can produce at most one filled entry.
+
+The backtester fails closed when point-in-time spot history or the effective fee
+schedule is unavailable. Scheduled series fees and event overrides are selected
+at signal and execution time; explicit null event overrides restore the series
+fee. Taker fees are rounded upward to cents. Fold metrics, individual fills,
+cost, P&L, return on cost, and Brier score are persisted in `backtest_runs`.
+
+Candlestick volume is a participation constraint, not historical order-book
+depth. Adverse candle extremes provide a conservative latency/slippage bound but
+cannot reconstruct the exact queue position or fill path.
+
 ## Discord delivery
 
 For the initial one-way notifier:
@@ -219,10 +263,9 @@ Add `--send-discord` to `pms evaluate` to send an actionable `ENTER YES` or
 
 All settings use the `PMS_` prefix. See `.env.example` for the available risk and
 cost assumptions. Defaults are deliberately conservative but are not universally
-correct. The initial Kalshi fee coefficient approximates the published general
-taker formula; the historical store now preserves scheduled series and event fee
-changes, but backtests must apply the effective fee at each evaluation timestamp
-and reproduce Kalshi's fee rounding.
+correct. Live evaluation uses the configured fee coefficient. Backtests instead
+select scheduled series/event fees at each signal and execution timestamp and
+reproduce Kalshi's upward cent rounding.
 
 ## Development
 
@@ -235,10 +278,9 @@ uv run pytest
 
 ## Next build stages
 
-1. Backtest with executable quotes, latency, partial fills, and walk-forward splits.
-2. Add a barrier-hitting model for supported early-close crypto contracts.
-3. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
-4. Run Discord-delivered paper alerts through multiple market regimes.
+1. Add a barrier-hitting model for supported early-close crypto contracts.
+2. Calibrate uncertainty from held-out outcomes instead of the initial fixed margin.
+3. Run Discord-delivered paper alerts through multiple market regimes.
 
 Prediction markets involve financial, legal, venue, resolution, and counterparty
 risk. This software is for research and manual decision support, not a guarantee

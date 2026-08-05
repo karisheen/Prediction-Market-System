@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from prediction_market_system.backtest import BacktestResult, HistoricalMarketData
 from prediction_market_system.domain import Opportunity, ProbabilityForecast
 from prediction_market_system.research_storage import RESEARCH_SCHEMA, ResearchRepositoryMixin
 from prediction_market_system.venues.kalshi import (
@@ -179,6 +180,19 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_kalshi_event_fees_schedule
                 ON kalshi_event_fee_changes (event_ticker, scheduled_at);
+
+                CREATE TABLE IF NOT EXISTS backtest_runs (
+                    run_id TEXT PRIMARY KEY,
+                    series_ticker TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    start_at TEXT NOT NULL,
+                    end_at TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_backtest_runs_series_generated
+                ON backtest_runs (series_ticker, generated_at);
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
@@ -368,6 +382,142 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 inserted["event_fee_changes"] += cursor.rowcount
 
         return KalshiHistoryWriteResult(**inserted)
+
+    def load_kalshi_backtest_data(
+        self,
+        *,
+        series_ticker: str,
+        start: datetime,
+        end: datetime,
+        period_interval: CandlestickPeriod,
+        max_markets: int,
+    ) -> tuple[HistoricalMarketData, ...]:
+        with self._connect() as connection:
+            market_rows = connection.execute(
+                """
+                WITH ranked_snapshots AS (
+                    SELECT series_ticker, ticker, close_time, payload_json,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ticker ORDER BY observed_at DESC
+                           ) AS snapshot_rank
+                    FROM kalshi_market_snapshots
+                    WHERE series_ticker = ? AND close_time > ?
+                )
+                SELECT series_ticker, ticker, close_time, payload_json
+                FROM ranked_snapshots
+                WHERE snapshot_rank = 1
+                ORDER BY close_time ASC
+                LIMIT ?
+                """,
+                (series_ticker.upper(), start.isoformat(), max_markets),
+            ).fetchall()
+            series_fee_rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM kalshi_series_fee_changes
+                WHERE series_ticker = ?
+                ORDER BY scheduled_at ASC
+                """,
+                (series_ticker.upper(),),
+            ).fetchall()
+            event_fee_rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM kalshi_event_fee_changes
+                WHERE series_ticker = ?
+                ORDER BY scheduled_at ASC
+                """,
+                (series_ticker.upper(),),
+            ).fetchall()
+
+            series_fees = tuple(
+                KalshiSeriesFeeChange.model_validate_json(str(row["payload_json"]))
+                for row in series_fee_rows
+            )
+            event_fees = tuple(
+                KalshiEventFeeChange.model_validate_json(str(row["payload_json"]))
+                for row in event_fee_rows
+            )
+            markets: list[HistoricalMarketData] = []
+            for row in market_rows:
+                market = KalshiMarket.model_validate_json(str(row["payload_json"]))
+                if market.open_time is not None and market.open_time >= end:
+                    continue
+                resolution = connection.execute(
+                    """
+                    SELECT result, settlement_value_dollars, settlement_ts,
+                           expiration_value
+                    FROM kalshi_resolutions
+                    WHERE ticker = ?
+                    ORDER BY observed_at DESC
+                    LIMIT 1
+                    """,
+                    (market.ticker,),
+                ).fetchone()
+                if resolution is not None:
+                    payload = market.model_dump()
+                    payload.update(
+                        {
+                            "result": str(resolution["result"]),
+                            "settlement_value_dollars": resolution["settlement_value_dollars"],
+                            "settlement_ts": resolution["settlement_ts"],
+                            "expiration_value": str(resolution["expiration_value"]),
+                        }
+                    )
+                    market = KalshiMarket.model_validate(payload)
+
+                candle_rows = connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM kalshi_candlesticks
+                    WHERE ticker = ? AND period_interval_minutes = ?
+                      AND end_period_ts >= ? AND end_period_ts <= ?
+                    ORDER BY end_period_ts ASC
+                    """,
+                    (
+                        market.ticker,
+                        period_interval,
+                        int(start.timestamp()),
+                        int(market.expiry.timestamp()),
+                    ),
+                ).fetchall()
+                markets.append(
+                    HistoricalMarketData(
+                        series_ticker=str(row["series_ticker"]),
+                        market=market,
+                        candlesticks=tuple(
+                            KalshiCandlestick.model_validate_json(str(candle["payload_json"]))
+                            for candle in candle_rows
+                        ),
+                        series_fee_changes=series_fees,
+                        event_fee_changes=tuple(
+                            change
+                            for change in event_fees
+                            if change.event_ticker == market.event_ticker
+                        ),
+                    )
+                )
+        return tuple(markets)
+
+    def save_backtest_result(self, result: BacktestResult) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO backtest_runs (
+                    run_id, series_ticker, generated_at, start_at, end_at,
+                    config_json, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(result.run_id),
+                    result.config.series_ticker,
+                    result.generated_at.isoformat(),
+                    result.config.start.isoformat(),
+                    result.config.end.isoformat(),
+                    result.config.model_dump_json(),
+                    result.model_dump_json(),
+                ),
+            )
 
     def queue_alert(self, opportunity: Opportunity) -> AlertRecord:
         now = _utc_now()
