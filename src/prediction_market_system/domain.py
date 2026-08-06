@@ -37,10 +37,53 @@ class ThresholdDirection(StrEnum):
     BELOW = "below"
 
 
+class PriceTrendRegime(StrEnum):
+    UPTREND = "uptrend"
+    RANGE = "range"
+    DOWNTREND = "downtrend"
+
+
+class VolatilityRegime(StrEnum):
+    LOW = "low-volatility"
+    TYPICAL = "typical-volatility"
+    HIGH = "high-volatility"
+
+
 class ThresholdContract(FrozenModel):
     model_kind: ThresholdModelKind
     direction: ThresholdDirection
     strike_price: PositiveFloat
+
+
+class MarketRegimeSnapshot(FrozenModel):
+    symbol: Annotated[str, Field(min_length=1)]
+    observed_at: datetime
+    source_start_at: datetime
+    trailing_return: float
+    realized_volatility: NonNegativeFloat
+    implied_volatility: NonNegativeFloat | None = None
+    price_trend: PriceTrendRegime
+    volatility: VolatilityRegime
+    trend_threshold: NonNegativeFloat
+    low_volatility_threshold: NonNegativeFloat
+    high_volatility_threshold: NonNegativeFloat
+
+    @field_validator("observed_at", "source_start_at")
+    @classmethod
+    def normalize_timestamp(cls, value: datetime) -> datetime:
+        return _as_utc(value)
+
+    @model_validator(mode="after")
+    def validate_regime(self) -> Self:
+        if self.source_start_at >= self.observed_at:
+            raise ValueError("regime source start must precede observation time")
+        if self.low_volatility_threshold >= self.high_volatility_threshold:
+            raise ValueError("low-volatility threshold must be below high-volatility threshold")
+        return self
+
+    @property
+    def label(self) -> str:
+        return f"{self.price_trend.value} / {self.volatility.value}"
 
 
 class RecommendationState(StrEnum):
@@ -139,6 +182,7 @@ class Opportunity(FrozenModel):
     suggested_max_exposure: NonNegativeFloat = 0.0
     reasons: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    market_regime: MarketRegimeSnapshot | None = None
 
     @model_validator(mode="after")
     def validate_opportunity(self) -> Self:

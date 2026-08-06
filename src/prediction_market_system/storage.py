@@ -10,7 +10,7 @@ from typing import Any
 
 from prediction_market_system.backtest import BacktestResult, HistoricalMarketData
 from prediction_market_system.calibration import UncertaintyCalibrationProfile
-from prediction_market_system.domain import Opportunity, ProbabilityForecast
+from prediction_market_system.domain import MarketRegimeSnapshot, Opportunity, ProbabilityForecast
 from prediction_market_system.research_storage import RESEARCH_SCHEMA, ResearchRepositoryMixin
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
@@ -209,6 +209,18 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 ON uncertainty_calibrations (
                     symbol, model_name, model_version, cutoff_at
                 );
+
+                CREATE TABLE IF NOT EXISTS market_regime_snapshots (
+                    series_ticker TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    regime TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (series_ticker, symbol, observed_at)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_market_regimes_series_observed
+                ON market_regime_snapshots (series_ticker, symbol, observed_at);
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
@@ -577,6 +589,49 @@ class SQLiteRepository(ResearchRepositoryMixin):
         if row is None:
             return None
         return UncertaintyCalibrationProfile.model_validate_json(str(row["payload_json"]))
+
+    def save_market_regime(
+        self,
+        *,
+        series_ticker: str,
+        regime: MarketRegimeSnapshot,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO market_regime_snapshots (
+                    series_ticker, symbol, observed_at, regime, payload_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    series_ticker.upper(),
+                    regime.symbol.upper(),
+                    regime.observed_at.isoformat(),
+                    regime.label,
+                    regime.model_dump_json(),
+                ),
+            )
+
+    def market_regime_coverage(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT regime, COUNT(*) AS observation_count,
+                       MIN(observed_at) AS first_observed_at,
+                       MAX(observed_at) AS last_observed_at
+                FROM market_regime_snapshots
+                WHERE series_ticker = ? AND symbol = ?
+                GROUP BY regime
+                ORDER BY regime
+                """,
+                (series_ticker.upper(), symbol.upper()),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def queue_alert(self, opportunity: Opportunity) -> AlertRecord:
         now = _utc_now()

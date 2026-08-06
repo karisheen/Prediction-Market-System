@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, cast
 
 import typer
@@ -19,6 +19,7 @@ from prediction_market_system.config import Settings
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
 from prediction_market_system.domain import (
     CryptoSnapshot,
+    MarketRegimeSnapshot,
     MarketSnapshot,
     Opportunity,
     RecommendationState,
@@ -27,6 +28,11 @@ from prediction_market_system.domain import (
     ThresholdModelKind,
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
+from prediction_market_system.paper_alerts import (
+    PaperAlertCycleResult,
+    PaperAlertRunner,
+    classify_market_regime,
+)
 from prediction_market_system.research import (
     DerivativesSnapshot,
     EventDataSnapshot,
@@ -748,6 +754,201 @@ def backtest(
         )
 
 
+@app.command("paper-alerts")
+def paper_alerts(
+    series: Annotated[str, typer.Option(help="Open Kalshi series ticker to scan.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    interval: Annotated[
+        int,
+        typer.Option(help="Research candle interval in minutes: 1, 60, or 1440."),
+    ] = 60,
+    realized_window_days: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Trailing regime and volatility window."),
+    ] = 30,
+    max_markets: Annotated[
+        int,
+        typer.Option(min=1, max=100, help="Maximum open markets to evaluate."),
+    ] = 100,
+    expected_return: Annotated[
+        float,
+        typer.Option(help="Annualized physical drift assumption."),
+    ] = 0.0,
+    trend_threshold: Annotated[
+        float,
+        typer.Option(min=0.0, help="Absolute trailing return defining an up/down trend."),
+    ] = 0.05,
+    low_volatility: Annotated[
+        float,
+        typer.Option(min=0.0, help="Realized volatility below this is low."),
+    ] = 0.40,
+    high_volatility: Annotated[
+        float,
+        typer.Option(min=0.0, help="Realized volatility at or above this is high."),
+    ] = 0.80,
+) -> None:
+    """Run one calibrated live paper-alert cycle across an open Kalshi series."""
+    if interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--interval")
+    if low_volatility >= high_volatility:
+        raise typer.BadParameter(
+            "must be greater than --low-volatility",
+            param_hint="--high-volatility",
+        )
+
+    settings = Settings()
+    if settings.discord_webhook_url is None:
+        raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
+
+    normalized_series = series.upper()
+    normalized_symbol = symbol.upper()
+    interval_seconds = interval * 60
+    now = datetime.now(UTC)
+    boundary_timestamp = int(now.timestamp()) // interval_seconds * interval_seconds
+    research_end = datetime.fromtimestamp(boundary_timestamp, UTC)
+    research_start = research_end - timedelta(
+        days=realized_window_days,
+        seconds=interval_seconds,
+    )
+
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    run_id = repository.begin_research_sync(
+        symbol=normalized_symbol,
+        event_ticker=None,
+        request={
+            "purpose": "paper-alerts",
+            "series_ticker": normalized_series,
+            "start": research_start.isoformat(),
+            "end": research_end.isoformat(),
+            "interval_seconds": interval_seconds,
+            "realized_window_days": realized_window_days,
+        },
+    )
+    try:
+        batch = asyncio.run(
+            _fetch_research_data(
+                normalized_symbol,
+                research_start,
+                research_end,
+                interval_seconds,
+                None,
+            )
+        )
+        written = repository.save_research_data(
+            spot_candles=batch.spot_candles,
+            volatility_observations=batch.volatility_observations,
+            funding_observations=batch.funding_observations,
+            derivatives_snapshots=batch.derivatives_snapshots,
+        )
+        decision_at = datetime.now(UTC)
+        context = repository.research_context_as_of(
+            symbol=normalized_symbol,
+            as_of=decision_at,
+            interval_seconds=interval_seconds,
+            realized_window_seconds=realized_window_days * 24 * 60 * 60,
+            optional_max_age_seconds=2 * interval_seconds,
+        )
+        realized_written = repository.save_research_data(
+            volatility_observations=[context.realized_volatility]
+        )
+        written = ResearchWriteResult(
+            spot_candles=written.spot_candles,
+            volatility_observations=(
+                written.volatility_observations + realized_written.volatility_observations
+            ),
+            funding_observations=written.funding_observations,
+            derivatives_snapshots=written.derivatives_snapshots,
+            event_snapshots=written.event_snapshots,
+        )
+        repository.complete_research_sync(run_id, result=written)
+    except Exception as exc:
+        repository.complete_research_sync(run_id, error=str(exc))
+        if isinstance(
+            exc,
+            (
+                CoinbaseDataError,
+                DeribitDataError,
+                KalshiAPIError,
+                ResearchDataUnavailable,
+                ValueError,
+            ),
+        ):
+            console.print(f"[red]Paper-alert research sync failed: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        raise
+
+    regime = classify_market_regime(
+        context,
+        batch.spot_candles,
+        trend_threshold=trend_threshold,
+        low_volatility_threshold=low_volatility,
+        high_volatility_threshold=high_volatility,
+    )
+    repository.save_market_regime(series_ticker=normalized_series, regime=regime)
+    markets = _load_kalshi_markets(normalized_series, max_markets)
+    result = asyncio.run(
+        _run_paper_alert_cycle(
+            repository=repository,
+            settings=settings,
+            markets=markets,
+            context=context,
+            regime=regime,
+            expected_annual_return=expected_return,
+        )
+    )
+
+    table = Table(title=f"Paper-alert cycle: {normalized_series} / {regime.label}")
+    table.add_column("Metric")
+    table.add_column("Count", justify="right")
+    table.add_row("Open markets discovered", str(result.discovered))
+    table.add_row("Calibrated evaluations", str(result.evaluated))
+    table.add_row("WATCH evaluations", str(result.watch))
+    table.add_row("Discord entries delivered", str(result.delivered))
+    table.add_row("Unsupported markets", str(result.unsupported))
+    table.add_row("Missing calibration", str(result.uncalibrated))
+    table.add_row("Failures", str(len(result.failures)))
+    console.print(table)
+    console.print(
+        f"Regime: {regime.label} • trailing return {regime.trailing_return:+.2%} • "
+        f"realized volatility {regime.realized_volatility:.2%}"
+    )
+    for error in result.failures:
+        console.print(f"[red]{error}[/red]")
+    if result.failures or result.uncalibrated:
+        raise typer.Exit(code=1)
+
+
+@app.command("paper-alert-status")
+def paper_alert_status(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+) -> None:
+    """Show forward paper-alert coverage by observed market regime."""
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    coverage = repository.market_regime_coverage(
+        series_ticker=series,
+        symbol=symbol,
+    )
+    table = Table(title=f"Paper-alert regime coverage: {series.upper()} / {symbol.upper()}")
+    table.add_column("Regime")
+    table.add_column("Observations", justify="right")
+    table.add_column("First observed (UTC)")
+    table.add_column("Last observed (UTC)")
+    for row in coverage:
+        table.add_row(
+            str(row["regime"]),
+            str(row["observation_count"]),
+            str(row["first_observed_at"]),
+            str(row["last_observed_at"]),
+        )
+    console.print(table)
+    if not coverage:
+        console.print("[yellow]No paper-alert regime observations recorded yet.[/yellow]")
+
+
 @app.command()
 def history(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
@@ -1016,6 +1217,36 @@ async def _publish(
         return await service.publish(opportunity)
     finally:
         await client.close()
+
+
+async def _run_paper_alert_cycle(
+    *,
+    repository: SQLiteRepository,
+    settings: Settings,
+    markets: list[KalshiMarket],
+    context: ResearchContext,
+    regime: MarketRegimeSnapshot,
+    expected_annual_return: float,
+) -> PaperAlertCycleResult:
+    if settings.discord_webhook_url is None:
+        raise ValueError("Discord webhook URL is required for paper alerts")
+    kalshi = KalshiClient()
+    discord = DiscordWebhookClient(settings.discord_webhook_url.get_secret_value())
+    try:
+        runner = PaperAlertRunner(
+            repository=repository,
+            engine=CryptoThresholdEngine(_engine_config(settings)),
+            market_reader=kalshi,
+            alert_service=DiscordAlertService(repository, discord),
+        )
+        return await runner.run(
+            markets=markets,
+            context=context,
+            regime=regime,
+            expected_annual_return=expected_annual_return,
+        )
+    finally:
+        await asyncio.gather(kalshi.close(), discord.close())
 
 
 async def _send_discord_health_check(webhook_url: str) -> str:

@@ -30,7 +30,7 @@ asset be above a specified price at expiry?” It does **not** place trades.
   point-in-time venue research data, and backtest runs.
 - Discord webhook delivery with idempotent retries and in-place market updates.
 - A CLI for manual/live evaluations, ingestion, research sync, walk-forward
-  backtesting, and paper alerts.
+  backtesting, one-shot multi-market paper-alert cycles, and regime-coverage reporting.
 
 The current model is a testable baseline, not evidence of a durable trading edge.
 It must be calibrated and validated on untouched historical and forward data
@@ -270,6 +270,49 @@ Candlestick volume is a participation constraint, not historical order-book
 depth. Adverse candle extremes provide a conservative latency/slippage bound but
 cannot reconstruct the exact queue position or fill path.
 
+## Paper-alert regime campaign
+
+Run one live, calibrated cycle across every supported open market in a Kalshi
+series:
+
+```bash
+uv run pms paper-alerts \
+  --series KXBTC \
+  --symbol BTC \
+  --interval 60 \
+  --realized-window-days 30
+```
+
+Each invocation fetches and persists the current Coinbase and Deribit research
+window, classifies the trailing price/realized-volatility regime, scans up to 100
+open markets, and evaluates every supported threshold contract. All evaluations,
+including `WATCH`, remain in SQLite. Only calibrated `ENTER YES` or `ENTER NO`
+recommendations are delivered to Discord. A market missing its matching held-out
+calibration is skipped, and the command exits unsuccessfully so scheduled
+operation cannot silently treat an incomplete cycle as healthy.
+
+The default regime matrix uses a 5% absolute trailing-return threshold for
+`uptrend`, `range`, and `downtrend`, plus 40% and 80% annualized realized-volatility
+boundaries for `low`, `typical`, and `high` volatility. The exact thresholds and
+the source window are stored with every regime observation. Override them with
+`--trend-threshold`, `--low-volatility`, and `--high-volatility` when the campaign
+protocol requires different fixed boundaries.
+
+The command deliberately runs one cycle and exits. Schedule the same command with
+`launchd`, cron, or another supervisor rather than relying on an in-process loop.
+This keeps failures observable and prevents overlapping runs. Review accumulated
+forward coverage with:
+
+```bash
+uv run pms paper-alert-status --series KXBTC --symbol BTC
+```
+
+Run `pms backtest` first to produce held-out calibration profiles in the same
+database. Regime coverage is forward evidence gathered over time; adding the
+runner does not itself establish that the model has survived multiple real market
+regimes.
+
+
 ## Discord delivery
 
 For the initial one-way notifier:
@@ -312,10 +355,10 @@ uv run mypy
 uv run pytest
 ```
 
-## Next build stages
+## Current operating stage
 
-1. Run Discord-delivered paper alerts through multiple market regimes.
+Run the calibrated paper-alert command on a fixed schedule and review
+`paper-alert-status` until untouched forward observations cover the intended
+trend/volatility matrix. This is an empirical operating campaign, not a claim of a
+validated edge.
 
-Prediction markets involve financial, legal, venue, resolution, and counterparty
-risk. This software is for research and manual decision support, not a guarantee
-of profit or financial advice.

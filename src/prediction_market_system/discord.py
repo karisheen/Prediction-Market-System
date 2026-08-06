@@ -157,6 +157,22 @@ class DiscordWebhookClient:
                 )
             },
         }
+        if opportunity.market_regime is not None:
+            regime = opportunity.market_regime
+            implied = (
+                "N/A" if regime.implied_volatility is None else f"{regime.implied_volatility:.1%}"
+            )
+            embed["fields"].insert(
+                5,
+                {
+                    "name": "Observed market regime",
+                    "value": (
+                        f"{regime.label} • trailing return {regime.trailing_return:+.1%} • "
+                        f"realized vol {regime.realized_volatility:.1%} • implied vol {implied}"
+                    ),
+                    "inline": False,
+                },
+            )
         if market.market_url is not None:
             embed["url"] = str(market.market_url)
 
