@@ -15,6 +15,7 @@ from prediction_market_system.research import (
     SpotCandle,
     VolatilityObservation,
 )
+from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.venues.kalshi import (
     KalshiMarket,
     KalshiOrderBook,
@@ -242,7 +243,10 @@ def test_kalshi_evaluate_rejects_uncalibrated_discord_alert(
     assert "Discord paper alerts require held-out" in result.output
 
 
-def test_kalshi_evaluate_rejects_early_close_contract(monkeypatch: object) -> None:
+def test_kalshi_evaluate_accepts_fixed_expiry_market_with_early_close_flag(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
     from pytest import MonkeyPatch
 
     assert isinstance(monkeypatch, MonkeyPatch)
@@ -251,6 +255,8 @@ def test_kalshi_evaluate_rejects_early_close_contract(monkeypatch: object) -> No
         "prediction_market_system.cli._load_kalshi_market",
         lambda ticker: pair,
     )
+    database_path = tmp_path / "kalshi-terminal.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
 
     result = runner.invoke(
         app,
@@ -264,11 +270,13 @@ def test_kalshi_evaluate_rejects_early_close_contract(monkeypatch: object) -> No
             "110000",
             "--volatility",
             "0.55",
+            "--allow-uncalibrated",
         ],
     )
 
-    assert result.exit_code == 2
-    assert "supported touch barrier" in result.output
+    assert result.exit_code == 0, result.output
+    stored = SQLiteRepository(database_path).opportunity_history(1)
+    assert stored[0]["forecast"]["model_name"] == ("crypto-terminal-above-threshold-market-anchor")
 
 
 def test_kalshi_evaluate_accepts_explicit_touch_barrier(
