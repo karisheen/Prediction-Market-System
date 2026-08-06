@@ -140,6 +140,39 @@ async def test_fetches_public_market_snapshot_without_authentication() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retries_rate_limited_requests_with_bounded_backoff() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(429)
+        return httpx.Response(200, json={"market": market_payload()})
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(
+        client=http_client,
+        max_rate_limit_retries=2,
+        sleep=record_sleep,
+    )
+
+    market = await client.get_market("KXBTCTEST-30DEC31-T100000")
+
+    assert market.ticker == "KXBTCTEST-30DEC31-T100000"
+    assert attempts == 3
+    assert delays == [1.0, 2.0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_lists_open_markets_by_series() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["status"] == "open"

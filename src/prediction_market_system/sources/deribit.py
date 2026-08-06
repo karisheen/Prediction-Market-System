@@ -73,16 +73,16 @@ class DeribitClient:
             supported = ", ".join(str(value) for value in sorted(_DERIBIT_DVOL_RESOLUTIONS))
             raise ValueError(f"unsupported DVOL resolution; use one of: {supported}")
 
-        requested_end_ms = int(end_at.timestamp() * 1000)
-        next_start_ms = int(start_at.timestamp() * 1000)
+        requested_start_ms = int(start_at.timestamp() * 1000)
+        page_end_ms = int(end_at.timestamp() * 1000)
         observations: dict[datetime, VolatilityObservation] = {}
-        while next_start_ms < requested_end_ms:
+        while requested_start_ms < page_end_ms:
             result, retrieved_at = await self._get(
                 "/get_volatility_index_data",
                 params={
                     "currency": currency.upper(),
-                    "start_timestamp": next_start_ms,
-                    "end_timestamp": requested_end_ms,
+                    "start_timestamp": requested_start_ms,
+                    "end_timestamp": page_end_ms,
                     "resolution": resolution_seconds,
                 },
             )
@@ -121,9 +121,9 @@ class DeribitClient:
             if continuation is None:
                 break
             continuation_ms = int(continuation)
-            if continuation_ms <= next_start_ms:
+            if continuation_ms >= page_end_ms:
                 raise DeribitDataError("Deribit repeated a DVOL continuation timestamp")
-            next_start_ms = continuation_ms
+            page_end_ms = max(continuation_ms, requested_start_ms)
 
         return [observations[observed_at] for observed_at in sorted(observations)]
 

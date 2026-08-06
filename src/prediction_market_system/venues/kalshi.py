@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal, Self
@@ -309,6 +310,8 @@ class KalshiClient:
         *,
         base_url: str = KALSHI_PRODUCTION_API,
         client: httpx.AsyncClient | None = None,
+        max_rate_limit_retries: int = 5,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -316,6 +319,10 @@ class KalshiClient:
             headers={"User-Agent": "prediction-market-system/0.1.0"},
         )
         self._owns_client = client is None
+        if max_rate_limit_retries < 0:
+            raise ValueError("max_rate_limit_retries must be non-negative")
+        self._max_rate_limit_retries = max_rate_limit_retries
+        self._sleep = sleep
 
     async def get_market(self, ticker: str) -> KalshiMarket:
         response = await self._get(f"/markets/{ticker}")
@@ -464,9 +471,22 @@ class KalshiClient:
         *,
         params: dict[str, str | int | bool] | None = None,
     ) -> httpx.Response:
-        try:
-            response = await self._client.get(path, params=params)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise KalshiAPIError(f"Kalshi request failed for {path}: {exc}") from exc
-        return response
+        for attempt in range(self._max_rate_limit_retries + 1):
+            try:
+                response = await self._client.get(path, params=params)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                retryable = exc.response.status_code == httpx.codes.TOO_MANY_REQUESTS
+                if retryable and attempt < self._max_rate_limit_retries:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after) if retry_after is not None else 2**attempt
+                    except ValueError:
+                        delay = 2**attempt
+                    await self._sleep(max(delay, 0.0))
+                    continue
+                raise KalshiAPIError(f"Kalshi request failed for {path}: {exc}") from exc
+            except httpx.HTTPError as exc:
+                raise KalshiAPIError(f"Kalshi request failed for {path}: {exc}") from exc
+        raise RuntimeError("unreachable Kalshi retry state")

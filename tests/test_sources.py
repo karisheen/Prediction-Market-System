@@ -152,3 +152,58 @@ async def test_deribit_normalizes_dvol_funding_and_current_snapshot() -> None:
     assert snapshot.basis == pytest.approx(0.01)
     assert snapshot.open_interest == pytest.approx(5000.0)
     await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deribit_paginates_dvol_backward_from_continuation() -> None:
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+    midpoint = start_at + timedelta(hours=2)
+    end_at = start_at + timedelta(hours=4)
+    requested_ends: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        end_ms = int(request.url.params["end_timestamp"])
+        requested_ends.append(end_ms)
+        assert int(request.url.params["start_timestamp"]) == int(start_at.timestamp() * 1000)
+        if end_ms == int(end_at.timestamp() * 1000):
+            row_at = end_at - timedelta(hours=1)
+            continuation = int(midpoint.timestamp() * 1000)
+            close = 55.0
+        else:
+            assert end_ms == int(midpoint.timestamp() * 1000)
+            row_at = start_at
+            continuation = None
+            close = 45.0
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "result": {
+                    "data": [[int(row_at.timestamp() * 1000), close, close, close, close]],
+                    "continuation": continuation,
+                },
+            },
+        )
+
+    http_client = httpx.AsyncClient(
+        base_url="https://www.deribit.com/api/v2/public",
+        transport=httpx.MockTransport(handler),
+    )
+    client = DeribitClient(client=http_client)
+
+    observations = await client.get_dvol_history(
+        "BTC",
+        start_at=start_at,
+        end_at=end_at,
+        resolution_seconds=3600,
+    )
+
+    assert requested_ends == [
+        int(end_at.timestamp() * 1000),
+        int(midpoint.timestamp() * 1000),
+    ]
+    assert [observation.observed_at for observation in observations] == [
+        start_at + timedelta(hours=1),
+        end_at,
+    ]
+    await http_client.aclose()
