@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -61,6 +62,29 @@ def _has_explicit_touch_semantics(rule: str) -> bool:
     )
     return any(marker in normalized for marker in path_markers) and any(
         marker in normalized for marker in touch_markers
+    )
+
+
+_FIXED_OBSERVATION_TIME = re.compile(
+    r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)"
+    r"(?:\s+[a-z]{2,5})?(?:\s+on\b)?",
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_terminal_semantics(rule: str) -> bool:
+    normalized = " ".join(rule.casefold().split())
+    terminal_markers = (
+        "at expiration",
+        "at expiry",
+        "at the market close",
+        "when the market closes",
+        "closing value",
+        "settlement value",
+        "final value",
+    )
+    return any(marker in normalized for marker in terminal_markers) or bool(
+        _FIXED_OBSERVATION_TIME.search(normalized)
     )
 
 
@@ -133,13 +157,18 @@ class KalshiMarket(_KalshiModel):
         if strike is None or strike <= 0:
             raise UnsupportedMarketError("a positive threshold strike is required for this market")
 
-        model_kind = ThresholdModelKind.TERMINAL
-        if self.can_close_early:
-            if not _has_explicit_touch_semantics(self.resolution_rule):
-                raise UnsupportedMarketError(
-                    "early-close rules do not explicitly define a supported touch barrier"
-                )
+        rules = tuple(rule for rule in (self.rules_primary, self.rules_secondary) if rule.strip())
+        has_touch_semantics = any(_has_explicit_touch_semantics(rule) for rule in rules)
+        has_terminal_semantics = any(_has_explicit_terminal_semantics(rule) for rule in rules)
+        if has_touch_semantics:
             model_kind = ThresholdModelKind.BARRIER
+        elif self.can_close_early and not has_terminal_semantics:
+            raise UnsupportedMarketError(
+                "early-close rules define neither an explicit terminal observation "
+                "nor a supported touch barrier"
+            )
+        else:
+            model_kind = ThresholdModelKind.TERMINAL
 
         return ThresholdContract(
             model_kind=model_kind,

@@ -308,11 +308,40 @@ async def test_fetches_flexible_kalshi_event_live_data() -> None:
     await http_client.aclose()
 
 
-def test_rejects_path_dependent_market_for_terminal_model() -> None:
+def test_classifies_fixed_expiry_rule_as_terminal_despite_early_close_flag() -> None:
     market = KalshiMarket.model_validate(market_payload(can_close_early=True))
 
-    with pytest.raises(UnsupportedMarketError, match="supported touch barrier"):
+    contract = market.threshold_contract()
+
+    assert contract.model_kind is ThresholdModelKind.TERMINAL
+
+
+def test_rejects_ambiguous_early_close_threshold() -> None:
+    payload = market_payload(can_close_early=True)
+    payload["rules_primary"] = "Resolves YES if the benchmark is above the threshold."
+    payload["rules_secondary"] = ""
+    market = KalshiMarket.model_validate(payload)
+
+    with pytest.raises(UnsupportedMarketError, match="explicit terminal observation"):
         market.threshold_contract()
+
+
+def test_fixed_time_rule_does_not_combine_cross_rule_markers_into_touch_barrier() -> None:
+    payload = market_payload(can_close_early=True)
+    payload["rules_primary"] = (
+        "If the simple average of the sixty seconds of the Bitcoin Real-Time Index "
+        "before 5 PM EDT is above 73749.99 at 5 PM EDT on Aug 6, 2026, "
+        "then the market resolves to Yes."
+    )
+    payload["rules_secondary"] = (
+        "At the last minute before expiration, 60 index prices are collected. "
+        "The official and final value is the average of these prices."
+    )
+    market = KalshiMarket.model_validate(payload)
+
+    contract = market.threshold_contract()
+
+    assert contract.model_kind is ThresholdModelKind.TERMINAL
 
 
 def test_classifies_explicit_upper_and_lower_touch_barriers() -> None:
