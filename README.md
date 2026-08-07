@@ -1,60 +1,84 @@
 # Prediction Market System
 
-A crypto-first research and decision-support system for estimating calibrated
-prediction-market probabilities, ranking conservative opportunities, preserving
-an audit history, and delivering manual-review alerts to Discord.
+A crypto-first prediction-market research, calibration, backtesting, and
+decision-support system. It combines public Kalshi market data with Coinbase and
+Deribit research inputs, estimates contract probabilities, applies conservative
+execution and risk checks, preserves the full decision trail in SQLite, and can
+send approved opportunities to Discord for manual review.
 
-This first vertical slice evaluates binary crypto terminal ranges plus upper and
-lower terminal/touch thresholds. It does **not** place trades.
+The system is **read-only with respect to trading venues**. It does not authenticate
+to an exchange, place orders, hold funds, or manage positions.
 
-## What is implemented
+## Scope at a glance
 
-- Lognormal terminal-price models for bounded crypto ranges and upper/lower
-  thresholds, plus geometric-Brownian first-passage models for touch barriers.
-- A market-anchored forecast blended in log-odds space.
-- Held-out, time-ordered uncertainty calibration plus explicit fees, slippage,
-  resolution haircuts, liquidity checks, fractional Kelly sizing, and a no-trade
-  `WATCH` state.
-- An unauthenticated Kalshi REST adapter for paginated market metadata and
-  side-specific executable order-book quotes.
-- Historical Kalshi ingestion for archived markets, candlesticks, rule snapshots,
-  resolutions, and scheduled series/event fee changes.
-- Public Coinbase spot candles plus Deribit DVOL, funding history, perpetual basis,
-  and open-interest snapshots.
-- Kalshi event live-data snapshots with provider-specific payloads preserved.
-- A no-look-ahead context assembler that enforces source cutoffs, complete realized-
-  volatility windows, and explicit staleness limits.
-- A persisted walk-forward backtester with delayed executable quotes, adverse
-  intraperiod pricing, partial fills, and point-in-time fee schedules.
-- Append-oriented SQLite storage for forecasts, recommendations, alert events,
-  per-market paper-cycle checks, point-in-time venue research data, and backtest runs.
-- Discord webhook delivery with idempotent retries and in-place market updates.
-- A CLI for manual/live evaluations, ingestion, research sync, walk-forward
-  backtesting, one-shot multi-market paper-alert cycles, and regime-coverage reporting.
+| Area | Current scope |
+| --- | --- |
+| Venue | Kalshi public REST APIs; KXBTC is the operational focus |
+| Contracts | Fixed-time crypto ranges, upper/lower terminal thresholds, and explicitly defined touch barriers |
+| Market data | Paginated markets and events, executable order books, historical candles, rules, resolutions, and fee changes |
+| Research data | Coinbase spot candles and realized volatility; Deribit DVOL, funding, basis, and open interest |
+| Models | Lognormal terminal probabilities, geometric-Brownian first-passage probabilities, and market-anchored log-odds blending |
+| Evidence | No-look-ahead walk-forward replay, event-grouped calibration, held-out model approval, and forward shadow observations |
+| Decisions | `WATCH`, `ENTER YES`, or `ENTER NO`, with fees, slippage, uncertainty, liquidity, expiry, and exposure constraints |
+| Operations | Hourly research refreshes and independent five-minute market scans, each as an observable one-shot process |
+| Output | Append-oriented SQLite audit records and optional manual-review Discord alerts |
+| Execution | No automated trading, exchange credentials, wallet access, or portfolio management |
 
-The current model is a testable baseline, not evidence of a durable trading edge.
-It must be calibrated and validated on untouched historical and forward data
-before real-money use.
+## Core capabilities
 
-## Architecture
+- Parse Kalshi contract metadata and resolution rules into explicit terminal-range,
+  terminal-threshold, or touch-barrier models; ambiguous contracts fail closed.
+- Evaluate two-sided and one-sided executable order books without inventing missing
+  liquidity.
+- Blend structural and market-implied probabilities, then widen them with
+  probability-specific held-out calibration uncertainty.
+- Apply venue fees, slippage, resolution haircuts, minimum-liquidity checks,
+  fractional Kelly sizing, per-market limits, and aggregate per-event exposure caps.
+- Ingest settled history by event while sampling dense mutually exclusive ladders
+  without using resolved outcomes to choose contracts.
+- Replay point-in-time data with delayed adverse execution, volume-constrained
+  partial fills, independent-event calibration, return metrics, and event-weighted
+  Brier scores.
+- Persist explicit model approval or rejection evidence. Discord delivery requires
+  approval for the exact calibration profile used by the live forecast.
+- Run high-frequency shadow scans without Discord delivery while retaining every
+  forecast, recommendation, candidate, rejection, and failure reason.
+
+This is a testable research and decision-support baseline—not evidence of a durable
+trading edge. Real-money use requires independent review, substantially broader
+historical and forward validation, and a separate execution and position-management
+system.
+
+## System workflow
 
 ```text
-Market snapshot ─┐
-                 ├─> probability engine ─> conservative edge/risk checks
-Crypto snapshot ─┘                              │
-                                               ├─> SQLite audit history
-                                               └─> Discord manual-review alert
+HISTORICAL EVIDENCE
+Kalshi events + contracts + candles + outcomes + fees ─┐
+Coinbase/Deribit point-in-time research ────────────────┴─> walk-forward replay
+                                                               │
+                                                               ├─> calibration profiles
+                                                               └─> model approval/rejection
 
-Kalshi archive ──> markets + candles + rules + resolutions + fee changes ─┐
-Coinbase ───────> completed spot candles + realized volatility ────────────────┤
-Deribit ────────> DVOL + funding + forward derivatives snapshots ──────────────┤
-Kalshi events ──> timestamped venue context ────────────────────────────────────┤
-                                                                                 ├─> SQLite point-in-time store
-                                                                                 └─> walk-forward backtest
+LIVE RESEARCH (hourly)
+Coinbase + Deribit ─> point-in-time research context ─> regime snapshot ─> SQLite
+
+LIVE EVALUATION (every five minutes)
+completed Coinbase decision price + Kalshi markets/order books
+                              │
+                              v
+contract parser ─> probability model ─> calibrated uncertainty ─> risk/cost checks
+                                                                        │
+                                      SQLite audit <────────────────────┤
+                                                                        ├─> WATCH
+                                                                        └─> entry candidate
+                                                                              │
+                                                  exact profile approved? ─────┤
+                                                                              ├─ no: audit only
+                                                                              └─ yes: Discord manual review
 ```
 
-The SQLite history is authoritative. Discord is only a notification surface and
-never receives exchange credentials, wallet keys, or authority to trade.
+SQLite is authoritative. Discord is only a notification surface and never
+receives venue credentials, wallet keys, or authority to trade.
 
 ## Setup
 
@@ -69,7 +93,38 @@ cp .env.example .env
 uv run pms init-db
 ```
 
-No Discord credential is required to evaluate and store opportunities locally.
+The database defaults to `data/prediction_markets.db`. A Discord webhook is
+optional; local evaluation, ingestion, backtesting, and shadow operation do not
+require one.
+
+## CLI map
+
+| Command | Purpose |
+| --- | --- |
+| `init-db` | Initialize or migrate the SQLite audit store |
+| `evaluate` | Evaluate a manually supplied binary market snapshot |
+| `kalshi-markets` / `kalshi-inspect` | Browse public live Kalshi markets and metadata |
+| `kalshi-evaluate` | Evaluate one live Kalshi contract |
+| `kalshi-sync-history` | Ingest settled events, contract metadata, sampled candles, rules, outcomes, and fee changes |
+| `sync-research-data` / `research-context` | Persist research inputs and reconstruct an as-of context |
+| `backtest` | Run walk-forward calibration, execution replay, and model approval |
+| `paper-alert-research` | Refresh slower research data and persist the current regime |
+| `paper-alerts` | Scan all open contracts; shadow-only unless `--send-discord` is supplied |
+| `paper-alert-status` | Report accumulated forward regime coverage |
+| `history` | Review persisted forecasts and recommendations |
+| `discord-test` | Send a non-trading webhook health check |
+
+## Recommended operating sequence
+
+1. Initialize SQLite and configure conservative venue/risk assumptions.
+2. Ingest Kalshi event history and matching Coinbase/Deribit research history.
+3. Run walk-forward backtests to create calibration profiles and persisted approval
+   decisions.
+4. Schedule `paper-alert-research` hourly.
+5. Schedule `paper-alerts` every five minutes in its default shadow mode.
+6. Review forward candidates in SQLite and track regime coverage with
+   `paper-alert-status`; enable `--send-discord` only when the exact live profile
+   has passed the configured approval gates.
 
 ## Run a paper evaluation
 
@@ -337,8 +392,13 @@ database. Regime coverage is forward evidence gathered over time; adding the
 runner does not itself establish that the model has survived multiple real market
 regimes.
 
-
 ## Discord delivery
+
+Discord messages are manual-review instructions, not trade executions. An entry
+alert includes the recommended side, maximum price, paper exposure cap, exact YES
+condition, event ticker, contract ticker, calibrated probability interval, edge,
+regime, costs, and resolution-risk context. Delivery is idempotent by market and
+updates an existing Discord message when the recommendation changes.
 
 For the initial one-way notifier:
 
@@ -357,19 +417,27 @@ Never commit `.env` or paste the webhook into source code. Test delivery with:
 uv run pms discord-test
 ```
 
-Add `--send-discord` to `pms evaluate` to send an actionable `ENTER YES` or
-`ENTER NO` result. `WATCH` evaluations are saved but do not create notifications.
+Add `--send-discord` to `pms evaluate` for a manual evaluation, or to
+`pms paper-alerts` for scheduled delivery. `WATCH` evaluations never create
+notifications. The paper-alert runner additionally requires a persisted approval
+for the exact calibration profile; missing or rejected approval is audited and
+fails delivery closed.
 
 ## Configuration
 
-All settings use the `PMS_` prefix. See `.env.example` for the available risk and
-cost assumptions. Defaults are deliberately conservative but are not universally
-correct. Live evaluation uses the configured fee coefficient. Backtests instead
-select scheduled series/event fees at each signal and execution timestamp and
-reproduce Kalshi's upward cent rounding.
-The configured uncertainty margin is retained only for manual evaluations and
-explicit `--allow-uncalibrated` research. Calibrated backtests and live evaluations
-derive probability-specific margins from settled training outcomes.
+All settings use the `PMS_` prefix. See `.env.example` for database, bankroll,
+edge, uncertainty, structural-weight, cost, liquidity, sizing, aggregate event
+exposure, spot-freshness, and expiry assumptions. Defaults are deliberately
+conservative but are not universally correct.
+
+Live evaluation uses the configured fee coefficient. Backtests select scheduled
+series and event fees at each signal and execution timestamp; when Kalshi reports
+no fee changes, they fall back to the configured current coefficient. Kalshi fees
+are rounded upward to cents.
+
+The configured fixed uncertainty margin is retained only for manual evaluations
+and explicit `--allow-uncalibrated` research. Calibrated backtests and live
+evaluations derive probability-specific margins from settled training outcomes.
 
 ## Development
 
@@ -382,8 +450,15 @@ uv run pytest
 
 ## Current operating stage
 
-Run the calibrated paper-alert command on a fixed schedule and review
-`paper-alert-status` until untouched forward observations cover the intended
-trend/volatility matrix. This is an empirical operating campaign, not a claim of a
+The intended operating mode is shadow-first: refresh research hourly, evaluate all
+supported open contracts every five minutes, and accumulate untouched forward
+observations across trend and volatility regimes. Entry candidates are research
+observations, not permission to trade.
+
+Model approval is data-dependent and stored in SQLite; the repository never
+assumes a model is approved merely because code or tests pass. Discord delivery
+remains locked for a profile until its independent-event calibration, held-out
+event/fold coverage, return-on-cost threshold, and event-weighted Brier threshold
+all pass. This campaign is empirical evidence collection, not a claim of a
 validated edge.
 
