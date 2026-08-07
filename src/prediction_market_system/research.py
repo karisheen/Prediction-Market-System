@@ -176,7 +176,7 @@ class ResearchContext(ResearchModel):
     ) -> CryptoSnapshot:
         return CryptoSnapshot(
             symbol=self.symbol,
-            observed_at=self.as_of,
+            observed_at=self.spot.end_at,
             spot_price=float(self.spot.close),
             strike_price=strike_price,
             annualized_volatility=self.selected_annualized_volatility,

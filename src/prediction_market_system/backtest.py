@@ -17,6 +17,7 @@ from prediction_market_system.domain import (
     MarketSide,
     MarketSnapshot,
     RecommendationState,
+    TerminalRangeContract,
 )
 from prediction_market_system.engine import BinaryFeeType, CryptoThresholdEngine, EngineConfig
 from prediction_market_system.research import ResearchContext, ResearchDataUnavailable
@@ -277,8 +278,11 @@ class HistoricalBacktester:
                     without_candles.add(ticker)
                     continue
                 try:
-                    contract = market.threshold_contract()
+                    contract = market.price_contract()
                 except UnsupportedMarketError:
+                    unsupported.add(ticker)
+                    continue
+                if isinstance(contract, TerminalRangeContract):
                     unsupported.add(ticker)
                     continue
 
@@ -329,7 +333,7 @@ class HistoricalBacktester:
                     forecast, opportunity = engine.evaluate(
                         snapshot,
                         context.to_crypto_snapshot(
-                            strike_price=contract.strike_price,
+                            strike_price=engine.reference_price(contract),
                             expected_annual_return=config.expected_annual_return,
                         ),
                         contract,
@@ -430,8 +434,10 @@ class HistoricalBacktester:
             if market.settlement_ts > cutoff_at:
                 continue
             try:
-                contract = market.threshold_contract()
+                contract = market.price_contract()
             except UnsupportedMarketError:
+                continue
+            if isinstance(contract, TerminalRangeContract):
                 continue
             signal_candle = next(
                 (
@@ -459,7 +465,7 @@ class HistoricalBacktester:
             forecast, _ = engine.evaluate(
                 _market_snapshot(market, signal_candle, config),
                 context.to_crypto_snapshot(
-                    strike_price=contract.strike_price,
+                    strike_price=engine.reference_price(contract),
                     expected_annual_return=config.expected_annual_return,
                 ),
                 contract,

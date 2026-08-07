@@ -27,6 +27,15 @@ class AlertStatus(StrEnum):
     FAILED = "failed"
 
 
+class MarketCheckStatus(StrEnum):
+    UNSUPPORTED = "unsupported"
+    MISSING_CALIBRATION = "missing_calibration"
+    FAILED = "failed"
+    WATCH = "watch"
+    ENTRY_CANDIDATE = "entry_candidate"
+    DELIVERED = "delivered"
+
+
 @dataclass(frozen=True)
 class AlertRecord:
     opportunity_id: str
@@ -221,6 +230,21 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_market_regimes_series_observed
                 ON market_regime_snapshots (series_ticker, symbol, observed_at);
+
+                CREATE TABLE IF NOT EXISTS paper_alert_market_checks (
+                    cycle_id TEXT NOT NULL,
+                    market_id TEXT NOT NULL,
+                    series_ticker TEXT NOT NULL,
+                    event_ticker TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (cycle_id, market_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_paper_checks_series_observed
+                ON paper_alert_market_checks (series_ticker, observed_at);
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
@@ -261,6 +285,63 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     opportunity.model_dump_json(),
                 ),
             )
+
+    def save_paper_market_check(
+        self,
+        *,
+        cycle_id: str,
+        market_id: str,
+        series_ticker: str,
+        event_ticker: str,
+        observed_at: datetime,
+        status: MarketCheckStatus,
+        reason: str | None,
+        payload: dict[str, Any],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paper_alert_market_checks (
+                    cycle_id, market_id, series_ticker, event_ticker,
+                    observed_at, status, reason, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cycle_id, market_id) DO UPDATE SET
+                    observed_at = excluded.observed_at,
+                    status = excluded.status,
+                    reason = excluded.reason,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    cycle_id,
+                    market_id,
+                    series_ticker.upper(),
+                    event_ticker,
+                    observed_at.isoformat(),
+                    status.value,
+                    None if reason is None else reason[:1_000],
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+
+    def paper_market_checks(self, cycle_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT cycle_id, market_id, series_ticker, event_ticker,
+                       observed_at, status, reason, payload_json
+                FROM paper_alert_market_checks
+                WHERE cycle_id = ?
+                ORDER BY market_id
+                """,
+                (cycle_id,),
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "payload": json.loads(str(row["payload_json"])),
+            }
+            for row in rows
+        ]
 
     def save_kalshi_history(
         self,

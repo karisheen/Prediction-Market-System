@@ -112,6 +112,7 @@ def _engine_config(settings: Settings) -> EngineConfig:
         minimum_ask_size=settings.minimum_ask_size,
         fractional_kelly=settings.fractional_kelly,
         max_bankroll_fraction=settings.max_bankroll_fraction,
+        max_event_bankroll_fraction=settings.max_event_bankroll_fraction,
         minimum_seconds_to_expiry=settings.minimum_seconds_to_expiry,
     )
 
@@ -234,10 +235,16 @@ def kalshi_inspect(
     table.add_row("Question", snapshot.question)
     table.add_row("Status", market.status)
     table.add_row("Expiry", snapshot.expires_at.isoformat())
-    table.add_row("YES bid / ask", f"{snapshot.yes_bid:.2%} / {snapshot.yes_ask:.2%}")
-    table.add_row("NO bid / ask", f"{snapshot.no_bid:.2%} / {snapshot.no_ask:.2%}")
-    table.add_row("YES ask size", f"{snapshot.yes_ask_size:,.2f}")
-    table.add_row("NO ask size", f"{snapshot.no_ask_size:,.2f}")
+    yes_bid = "N/A" if snapshot.yes_bid is None else f"{snapshot.yes_bid:.2%}"
+    yes_ask = "N/A" if snapshot.yes_ask is None else f"{snapshot.yes_ask:.2%}"
+    no_bid = "N/A" if snapshot.no_bid is None else f"{snapshot.no_bid:.2%}"
+    no_ask = "N/A" if snapshot.no_ask is None else f"{snapshot.no_ask:.2%}"
+    yes_size = "N/A" if snapshot.yes_ask_size is None else f"{snapshot.yes_ask_size:,.2f}"
+    no_size = "N/A" if snapshot.no_ask_size is None else f"{snapshot.no_ask_size:,.2f}"
+    table.add_row("YES bid / ask", f"{yes_bid} / {yes_ask}")
+    table.add_row("NO bid / ask", f"{no_bid} / {no_ask}")
+    table.add_row("YES ask size", yes_size)
+    table.add_row("NO ask size", no_size)
     table.add_row("Strike type", market.strike_type or "Missing")
     table.add_row("Floor strike", str(market.floor_strike or "Missing"))
     table.add_row("Can close early", str(market.can_close_early))
@@ -270,23 +277,23 @@ def kalshi_evaluate(
         typer.Option(help="Use the configured fixed margin when no held-out profile exists."),
     ] = False,
 ) -> None:
-    """Fetch and evaluate one supported threshold Kalshi contract."""
+    """Fetch and evaluate one supported Kalshi crypto-price contract."""
     settings = Settings()
     market, snapshot = _load_kalshi_market(ticker)
     try:
-        contract = market.threshold_contract(strike)
+        contract = market.price_contract(strike)
     except UnsupportedMarketError as exc:
         raise typer.BadParameter(str(exc), param_hint="--ticker") from exc
 
+    engine = CryptoThresholdEngine(_engine_config(settings))
     crypto = CryptoSnapshot(
         symbol=symbol.upper(),
         observed_at=snapshot.observed_at,
         spot_price=spot,
-        strike_price=contract.strike_price,
+        strike_price=engine.reference_price(contract),
         annualized_volatility=volatility,
         expected_annual_return=expected_return,
     )
-    engine = CryptoThresholdEngine(_engine_config(settings))
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
     calibration_profile = repository.latest_uncertainty_calibration(
@@ -768,8 +775,8 @@ def paper_alerts(
     ] = 30,
     max_markets: Annotated[
         int,
-        typer.Option(min=1, max=100, help="Maximum open markets to evaluate."),
-    ] = 100,
+        typer.Option(min=1, max=5_000, help="Maximum open markets to evaluate."),
+    ] = 1_000,
     expected_return: Annotated[
         float,
         typer.Option(help="Annualized physical drift assumption."),
@@ -842,18 +849,20 @@ def paper_alerts(
             derivatives_snapshots=batch.derivatives_snapshots,
         )
         decision_at = datetime.now(UTC)
+        live_spot = asyncio.run(_fetch_live_spot(normalized_symbol, decision_at))
+        live_written = repository.save_research_data(spot_candles=[live_spot])
         context = repository.research_context_as_of(
             symbol=normalized_symbol,
             as_of=decision_at,
             interval_seconds=interval_seconds,
             realized_window_seconds=realized_window_days * 24 * 60 * 60,
             optional_max_age_seconds=2 * interval_seconds,
-        )
+        ).model_copy(update={"spot": live_spot})
         realized_written = repository.save_research_data(
             volatility_observations=[context.realized_volatility]
         )
         written = ResearchWriteResult(
-            spot_candles=written.spot_candles,
+            spot_candles=written.spot_candles + live_written.spot_candles,
             volatility_observations=(
                 written.volatility_observations + realized_written.volatility_observations
             ),
@@ -892,6 +901,7 @@ def paper_alerts(
             repository=repository,
             settings=settings,
             markets=markets,
+            cycle_id=run_id,
             context=context,
             regime=regime,
             expected_annual_return=expected_return,
@@ -1036,11 +1046,21 @@ async def _fetch_kalshi_markets(
 ) -> list[KalshiMarket]:
     client = KalshiClient()
     try:
-        result = await client.list_markets(
-            series_ticker=series.upper() if series else None,
-            limit=limit,
-        )
-        return result.markets
+        markets: list[KalshiMarket] = []
+        cursor: str | None = None
+        while len(markets) < limit:
+            page = await client.list_markets(
+                series_ticker=series.upper() if series else None,
+                limit=min(100, limit - len(markets)),
+                cursor=cursor,
+            )
+            markets.extend(page.markets)
+            if not page.cursor:
+                break
+            if page.cursor == cursor:
+                raise KalshiAPIError("Kalshi repeated a live-market cursor")
+            cursor = page.cursor
+        return markets
     finally:
         await client.close()
 
@@ -1113,6 +1133,25 @@ async def _fetch_kalshi_history(
         )
     finally:
         await client.close()
+
+
+async def _fetch_live_spot(symbol: str, as_of: datetime) -> SpotCandle:
+    boundary_timestamp = int(as_of.timestamp()) // 60 * 60
+    end_at = datetime.fromtimestamp(boundary_timestamp, UTC)
+    start_at = end_at - timedelta(minutes=5)
+    client = CoinbaseClient()
+    try:
+        candles = await client.get_candles(
+            f"{symbol}-USD",
+            start_at=start_at,
+            end_at=end_at,
+            interval_seconds=60,
+        )
+    finally:
+        await client.close()
+    if not candles:
+        raise ResearchDataUnavailable("Coinbase returned no completed one-minute spot candle")
+    return candles[-1]
 
 
 async def _fetch_research_data(
@@ -1227,6 +1266,7 @@ async def _run_paper_alert_cycle(
     context: ResearchContext,
     regime: MarketRegimeSnapshot,
     expected_annual_return: float,
+    cycle_id: str,
 ) -> PaperAlertCycleResult:
     if settings.discord_webhook_url is None:
         raise ValueError("Discord webhook URL is required for paper alerts")
@@ -1238,12 +1278,14 @@ async def _run_paper_alert_cycle(
             engine=CryptoThresholdEngine(_engine_config(settings)),
             market_reader=kalshi,
             alert_service=DiscordAlertService(repository, discord),
+            maximum_spot_age=timedelta(seconds=settings.maximum_live_spot_age_seconds),
         )
         return await runner.run(
             markets=markets,
             context=context,
             regime=regime,
             expected_annual_return=expected_annual_return,
+            cycle_id=cycle_id,
         )
     finally:
         await asyncio.gather(kalshi.close(), discord.close())

@@ -4,7 +4,11 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from prediction_market_system.domain import ThresholdDirection, ThresholdModelKind
+from prediction_market_system.domain import (
+    TerminalRangeContract,
+    ThresholdDirection,
+    ThresholdModelKind,
+)
 from prediction_market_system.venues.kalshi import (
     KalshiClient,
     KalshiMarket,
@@ -110,6 +114,16 @@ def test_normalizes_implied_asks_and_sizes() -> None:
     assert book.no_ask_size == pytest.approx(13.0)
 
 
+def test_normalizes_one_sided_book_without_inventing_missing_liquidity() -> None:
+    book = normalize_order_book(KalshiOrderBook(no_dollars=[("0.5600", "17.00")]))
+
+    assert book.yes_bid is None
+    assert book.yes_ask == pytest.approx(0.44)
+    assert book.yes_ask_size == pytest.approx(17.0)
+    assert book.no_ask is None
+    assert book.no_ask_size is None
+
+
 @pytest.mark.asyncio
 async def test_fetches_public_market_snapshot_without_authentication() -> None:
     requests: list[httpx.Request] = []
@@ -128,7 +142,7 @@ async def test_fetches_public_market_snapshot_without_authentication() -> None:
 
     market, snapshot = await client.get_market_snapshot("KXBTCTEST-30DEC31-T100000")
 
-    contract = market.threshold_contract()
+    contract = market.price_contract()
     assert contract.model_kind is ThresholdModelKind.TERMINAL
     assert contract.direction is ThresholdDirection.ABOVE
     assert contract.strike_price == 100000
@@ -136,6 +150,10 @@ async def test_fetches_public_market_snapshot_without_authentication() -> None:
     assert snapshot.yes_ask == pytest.approx(0.44)
     assert snapshot.no_ask == pytest.approx(0.58)
     assert all("KALSHI-ACCESS-KEY" not in request.headers for request in requests)
+    assert snapshot.series_id == "KXBTCTEST"
+    assert snapshot.event_id == "KXBTCTEST-30DEC31"
+    assert snapshot.contract_label == "Above $100,000"
+    assert str(snapshot.market_url) == "https://kalshi.com/markets/kxbtctest"
     await http_client.aclose()
 
 
@@ -311,7 +329,7 @@ async def test_fetches_flexible_kalshi_event_live_data() -> None:
 def test_classifies_fixed_expiry_rule_as_terminal_despite_early_close_flag() -> None:
     market = KalshiMarket.model_validate(market_payload(can_close_early=True))
 
-    contract = market.threshold_contract()
+    contract = market.price_contract()
 
     assert contract.model_kind is ThresholdModelKind.TERMINAL
 
@@ -323,7 +341,7 @@ def test_rejects_ambiguous_early_close_threshold() -> None:
     market = KalshiMarket.model_validate(payload)
 
     with pytest.raises(UnsupportedMarketError, match="explicit terminal observation"):
-        market.threshold_contract()
+        market.price_contract()
 
 
 def test_fixed_time_rule_does_not_combine_cross_rule_markers_into_touch_barrier() -> None:
@@ -339,9 +357,50 @@ def test_fixed_time_rule_does_not_combine_cross_rule_markers_into_touch_barrier(
     )
     market = KalshiMarket.model_validate(payload)
 
-    contract = market.threshold_contract()
+    contract = market.price_contract()
 
     assert contract.model_kind is ThresholdModelKind.TERMINAL
+
+
+def test_parses_fixed_time_between_market_as_terminal_range() -> None:
+    payload = market_payload(can_close_early=True)
+    payload.update(
+        {
+            "ticker": "KXBTCTEST-30DEC31-B100050",
+            "strike_type": "between",
+            "floor_strike": 100000,
+            "cap_strike": 100099.99,
+            "yes_sub_title": "$100,000 to $100,099.99",
+            "rules_primary": (
+                "Resolves YES if the simple average of the sixty seconds before 5 PM EDT "
+                "is between 100000 and 100099.99 at 5 PM EDT on Dec 31, 2030."
+            ),
+        }
+    )
+
+    contract = KalshiMarket.model_validate(payload).price_contract()
+
+    assert isinstance(contract, TerminalRangeContract)
+    assert contract.lower_bound == 100000
+    assert contract.upper_bound == pytest.approx(100099.99)
+
+    assert contract.settlement_window_seconds == 60
+
+
+def test_rejects_nonterminal_between_market() -> None:
+    payload = market_payload(can_close_early=True)
+    payload.update(
+        {
+            "strike_type": "between",
+            "floor_strike": 100000,
+            "cap_strike": 100099.99,
+            "rules_primary": "Resolves YES if the benchmark enters the range before expiry.",
+            "rules_secondary": "",
+        }
+    )
+
+    with pytest.raises(UnsupportedMarketError, match="fixed-time terminal"):
+        KalshiMarket.model_validate(payload).price_contract()
 
 
 def test_classifies_explicit_upper_and_lower_touch_barriers() -> None:
@@ -349,7 +408,7 @@ def test_classifies_explicit_upper_and_lower_touch_barriers() -> None:
     upper_payload["rules_primary"] = (
         "Resolves YES if the benchmark reaches the threshold at any time before expiry."
     )
-    upper = KalshiMarket.model_validate(upper_payload).threshold_contract()
+    upper = KalshiMarket.model_validate(upper_payload).price_contract()
 
     lower_payload = {
         **upper_payload,
@@ -361,7 +420,7 @@ def test_classifies_explicit_upper_and_lower_touch_barriers() -> None:
             "at any point before expiration."
         ),
     }
-    lower = KalshiMarket.model_validate(lower_payload).threshold_contract()
+    lower = KalshiMarket.model_validate(lower_payload).price_contract()
 
     assert upper.model_kind is ThresholdModelKind.BARRIER
     assert upper.direction is ThresholdDirection.ABOVE
