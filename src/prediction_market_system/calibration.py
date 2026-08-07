@@ -15,6 +15,7 @@ class CalibrationModel(BaseModel):
 
 class CalibrationSample(CalibrationModel):
     market_id: Annotated[str, Field(min_length=1)]
+    event_id: Annotated[str, Field(min_length=1)] | None = None
     symbol: Annotated[str, Field(min_length=1)]
     model_name: Annotated[str, Field(min_length=1)]
     model_version: Annotated[str, Field(min_length=1)]
@@ -65,6 +66,7 @@ class UncertaintyCalibrationProfile(CalibrationModel):
     sample_count: Annotated[int, Field(gt=0)]
     brier_score: Annotated[float, Field(ge=0.0, le=1.0)]
     bins: tuple[CalibrationBin, ...]
+    independent_event_count: Annotated[int, Field(gt=0)] = 1
     method: str = "equal-frequency Wilson calibration envelope"
 
     @field_validator("symbol")
@@ -87,6 +89,8 @@ class UncertaintyCalibrationProfile(CalibrationModel):
             raise ValueError("calibration profile requires at least one bin")
         if sum(bin_.sample_count for bin_ in self.bins) != self.sample_count:
             raise ValueError("calibration bin counts do not match sample_count")
+        if self.independent_event_count > self.sample_count:
+            raise ValueError("independent event count cannot exceed calibration sample count")
         return self
 
     def margin_for(self, probability_yes: float) -> float:
@@ -142,16 +146,24 @@ def fit_uncertainty_profiles(
     z_score = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
     for (symbol, model_name, model_version), group in sorted(grouped.items()):
         unique = _unique_market_samples(group)
-        if len(unique) < minimum_samples:
+        independent_events = {sample.event_id or sample.market_id for sample in unique}
+        if len(independent_events) < minimum_samples:
             continue
         ordered = sorted(unique, key=lambda sample: sample.probability_yes)
-        bin_count = min(maximum_bins, max(1, len(ordered) // minimum_samples))
-        bins = tuple(
-            _calibration_bin(chunk, z_score) for chunk in _equal_chunks(ordered, bin_count)
-        )
-        brier_score = sum(
-            (sample.probability_yes - float(sample.outcome_yes)) ** 2 for sample in ordered
-        ) / len(ordered)
+        clustered = any(sample.event_id is not None for sample in ordered)
+        bin_count = min(maximum_bins, max(1, len(independent_events) // minimum_samples))
+        while True:
+            chunks = _equal_chunks(ordered, bin_count)
+            if not clustered:
+                bins = tuple(_calibration_bin(chunk, z_score) for chunk in chunks)
+                break
+            bins = tuple(_clustered_calibration_bin(chunk, z_score) for chunk in chunks)
+            if all(bin_.sample_count >= minimum_samples for bin_ in bins) or bin_count == 1:
+                break
+            bin_count -= 1
+        if any(bin_.sample_count < minimum_samples for bin_ in bins):
+            continue
+        brier_score = _event_weighted_brier_score(ordered)
         profiles.append(
             UncertaintyCalibrationProfile(
                 symbol=symbol,
@@ -160,9 +172,15 @@ def fit_uncertainty_profiles(
                 training_start=training_start,
                 cutoff_at=cutoff_at,
                 confidence_level=confidence_level,
-                sample_count=len(ordered),
+                sample_count=sum(bin_.sample_count for bin_ in bins),
+                independent_event_count=len(independent_events),
                 brier_score=brier_score,
                 bins=bins,
+                method=(
+                    "equal-frequency event-clustered calibration envelope"
+                    if clustered
+                    else "equal-frequency Wilson calibration envelope"
+                ),
             )
         )
     return tuple(profiles)
@@ -209,6 +227,56 @@ def _calibration_bin(
         uncertainty_margin=min(margin, 1.0),
         sample_count=count,
     )
+
+
+def _clustered_calibration_bin(
+    samples: tuple[CalibrationSample, ...],
+    z_score: float,
+) -> CalibrationBin:
+    by_event: dict[str, list[CalibrationSample]] = {}
+    for sample in samples:
+        by_event.setdefault(sample.event_id or sample.market_id, []).append(sample)
+    event_observations = tuple(
+        (
+            sum(sample.probability_yes for sample in event_samples) / len(event_samples),
+            sum(float(sample.outcome_yes) for sample in event_samples) / len(event_samples),
+        )
+        for event_samples in by_event.values()
+    )
+    count = len(event_observations)
+    mean_probability = sum(value[0] for value in event_observations) / count
+    observed_frequency = sum(value[1] for value in event_observations) / count
+    residuals = tuple(observed - probability for probability, observed in event_observations)
+    mean_residual = sum(residuals) / count
+    if count == 1:
+        residual_half_width = 1.0
+    else:
+        residual_variance = sum((residual - mean_residual) ** 2 for residual in residuals) / (
+            count - 1
+        )
+        residual_half_width = z_score * math.sqrt(residual_variance / count)
+    lower = max(0.0, mean_probability + mean_residual - residual_half_width)
+    upper = min(1.0, mean_probability + mean_residual + residual_half_width)
+    margin = max(abs(mean_probability - lower), abs(upper - mean_probability))
+    return CalibrationBin(
+        lower_probability=min(sample.probability_yes for sample in samples),
+        upper_probability=max(sample.probability_yes for sample in samples),
+        mean_probability=mean_probability,
+        observed_frequency=observed_frequency,
+        outcome_interval_lower=lower,
+        outcome_interval_upper=upper,
+        uncertainty_margin=min(margin, 1.0),
+        sample_count=count,
+    )
+
+
+def _event_weighted_brier_score(samples: list[CalibrationSample]) -> float:
+    by_event: dict[str, list[float]] = {}
+    for sample in samples:
+        by_event.setdefault(sample.event_id or sample.market_id, []).append(
+            (sample.probability_yes - float(sample.outcome_yes)) ** 2
+        )
+    return sum(sum(scores) / len(scores) for scores in by_event.values()) / len(by_event)
 
 
 def _wilson_interval(successes: int, count: int, z_score: float) -> tuple[float, float]:

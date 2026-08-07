@@ -5,6 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, cast
+from uuid import uuid4
 
 import typer
 from pydantic import HttpUrl
@@ -23,6 +24,7 @@ from prediction_market_system.domain import (
     MarketSnapshot,
     Opportunity,
     RecommendationState,
+    TerminalRangeContract,
     ThresholdContract,
     ThresholdDirection,
     ThresholdModelKind,
@@ -55,6 +57,7 @@ from prediction_market_system.venues.kalshi import (
     KalshiAPIError,
     KalshiCandlestick,
     KalshiClient,
+    KalshiEvent,
     KalshiEventFeeChange,
     KalshiMarket,
     KalshiSeriesFeeChange,
@@ -325,10 +328,22 @@ def kalshi_sync_history(
         int,
         typer.Option(help="Candlestick length in minutes: 1, 60, or 1440."),
     ] = 60,
-    max_markets: Annotated[
+    max_events: Annotated[
         int,
-        typer.Option(min=1, max=10_000, help="Maximum archived markets to fetch."),
-    ] = 100,
+        typer.Option(min=1, max=5_000, help="Maximum settled events to fetch."),
+    ] = 240,
+    range_contracts_per_event: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            max=500,
+            help="Outcome-independent range-contract sample retained per event.",
+        ),
+    ] = 41,
+    history_hours: Annotated[
+        int,
+        typer.Option(min=1, max=168, help="Pre-expiry candlestick history per contract."),
+    ] = 24,
 ) -> None:
     """Persist archived Kalshi markets and their point-in-time research data."""
     if period not in {1, 60, 1440}:
@@ -345,7 +360,9 @@ def kalshi_sync_history(
         start_at,
         end_at,
         period_interval,
-        max_markets,
+        max_events,
+        range_contracts_per_event,
+        history_hours,
     )
 
     settings = Settings()
@@ -654,7 +671,7 @@ def backtest(
     ] = False,
     minimum_calibration_samples: Annotated[
         int,
-        typer.Option(min=1, help="Minimum resolved training markets per structural model."),
+        typer.Option(min=1, help="Minimum independent resolved events per model."),
     ] = 30,
     calibration_bins: Annotated[
         int,
@@ -664,10 +681,30 @@ def backtest(
         float,
         typer.Option(min=0.50, max=0.999, help="Wilson calibration confidence level."),
     ] = 0.95,
-    max_markets: Annotated[
+    calibration_lead_minutes: Annotated[
         int,
-        typer.Option(min=1, max=10_000, help="Maximum stored markets to replay."),
-    ] = 100,
+        typer.Option(min=0, max=1440, help="Fixed pre-expiry calibration decision lead."),
+    ] = 5,
+    minimum_validation_events: Annotated[
+        int,
+        typer.Option(min=1, help="Minimum traded held-out events for approval."),
+    ] = 20,
+    minimum_validation_folds: Annotated[
+        int,
+        typer.Option(min=1, help="Minimum held-out folds with trades for approval."),
+    ] = 2,
+    minimum_return_on_cost: Annotated[
+        float,
+        typer.Option(help="Held-out return must strictly exceed this threshold."),
+    ] = 0.0,
+    maximum_brier_score: Annotated[
+        float,
+        typer.Option(min=0.000001, max=1.0, help="Maximum event-weighted held-out Brier."),
+    ] = 0.25,
+    max_events: Annotated[
+        int,
+        typer.Option(min=1, max=5_000, help="Maximum stored events to replay."),
+    ] = 500,
 ) -> None:
     """Replay resolved Kalshi markets with point-in-time walk-forward evaluation."""
     if period not in {1, 60, 1440}:
@@ -689,6 +726,11 @@ def backtest(
             minimum_calibration_samples=minimum_calibration_samples,
             maximum_calibration_bins=calibration_bins,
             calibration_confidence=calibration_confidence,
+            calibration_lead_seconds=calibration_lead_minutes * 60,
+            minimum_validation_events=minimum_validation_events,
+            minimum_validation_folds=minimum_validation_folds,
+            minimum_return_on_cost=minimum_return_on_cost,
+            maximum_brier_score=maximum_brier_score,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -701,7 +743,7 @@ def backtest(
         start=config.start,
         end=config.end,
         period_interval=config.period_minutes,
-        max_markets=max_markets,
+        max_events=max_events,
     )
     if not markets:
         console.print("[red]No stored Kalshi markets match the requested backtest.[/red]")
@@ -741,6 +783,27 @@ def backtest(
         f"Brier: {'—' if result.brier_score is None else f'{result.brier_score:.4f}'}"
     )
     console.print(f"Backtest run [bold]{result.run_id}[/bold] stored in {settings.database_path}")
+    validation_table = Table(title="Paper-alert model approval")
+    validation_table.add_column("Model")
+    validation_table.add_column("Calibration events", justify="right")
+    validation_table.add_column("Held-out events", justify="right")
+    validation_table.add_column("Return", justify="right")
+    validation_table.add_column("Brier", justify="right")
+    validation_table.add_column("Decision")
+    for validation in result.model_validations:
+        validation_table.add_row(
+            validation.model_name,
+            str(validation.independent_calibration_events),
+            str(validation.held_out_events),
+            ("—" if validation.return_on_cost is None else f"{validation.return_on_cost:.2%}"),
+            "—" if validation.brier_score is None else f"{validation.brier_score:.4f}",
+            (
+                "APPROVED"
+                if validation.accepted_for_paper_alerts
+                else "; ".join(validation.rejection_reasons)
+            ),
+        )
+    console.print(validation_table)
     if result.unsupported_markets:
         console.print(
             f"[yellow]Skipped {len(result.unsupported_markets)} unsupported markets.[/yellow]"
@@ -761,9 +824,9 @@ def backtest(
         )
 
 
-@app.command("paper-alerts")
-def paper_alerts(
-    series: Annotated[str, typer.Option(help="Open Kalshi series ticker to scan.")],
+@app.command("paper-alert-research")
+def paper_alert_research(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker for regime records.")],
     symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
     interval: Annotated[
         int,
@@ -773,14 +836,6 @@ def paper_alerts(
         int,
         typer.Option(min=1, max=365, help="Trailing regime and volatility window."),
     ] = 30,
-    max_markets: Annotated[
-        int,
-        typer.Option(min=1, max=5_000, help="Maximum open markets to evaluate."),
-    ] = 1_000,
-    expected_return: Annotated[
-        float,
-        typer.Option(help="Annualized physical drift assumption."),
-    ] = 0.0,
     trend_threshold: Annotated[
         float,
         typer.Option(min=0.0, help="Absolute trailing return defining an up/down trend."),
@@ -794,7 +849,7 @@ def paper_alerts(
         typer.Option(min=0.0, help="Realized volatility at or above this is high."),
     ] = 0.80,
 ) -> None:
-    """Run one calibrated live paper-alert cycle across an open Kalshi series."""
+    """Refresh hourly research data and persist one auditable regime snapshot."""
     if interval not in {1, 60, 1440}:
         raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--interval")
     if low_volatility >= high_volatility:
@@ -802,11 +857,6 @@ def paper_alerts(
             "must be greater than --low-volatility",
             param_hint="--high-volatility",
         )
-
-    settings = Settings()
-    if settings.discord_webhook_url is None:
-        raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
-
     normalized_series = series.upper()
     normalized_symbol = symbol.upper()
     interval_seconds = interval * 60
@@ -817,14 +867,14 @@ def paper_alerts(
         days=realized_window_days,
         seconds=interval_seconds,
     )
-
+    settings = Settings()
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
     run_id = repository.begin_research_sync(
         symbol=normalized_symbol,
         event_ticker=None,
         request={
-            "purpose": "paper-alerts",
+            "purpose": "paper-alert-research",
             "series_ticker": normalized_series,
             "start": research_start.isoformat(),
             "end": research_end.isoformat(),
@@ -848,21 +898,18 @@ def paper_alerts(
             funding_observations=batch.funding_observations,
             derivatives_snapshots=batch.derivatives_snapshots,
         )
-        decision_at = datetime.now(UTC)
-        live_spot = asyncio.run(_fetch_live_spot(normalized_symbol, decision_at))
-        live_written = repository.save_research_data(spot_candles=[live_spot])
         context = repository.research_context_as_of(
             symbol=normalized_symbol,
-            as_of=decision_at,
+            as_of=research_end,
             interval_seconds=interval_seconds,
             realized_window_seconds=realized_window_days * 24 * 60 * 60,
             optional_max_age_seconds=2 * interval_seconds,
-        ).model_copy(update={"spot": live_spot})
+        )
         realized_written = repository.save_research_data(
             volatility_observations=[context.realized_volatility]
         )
         written = ResearchWriteResult(
-            spot_candles=written.spot_candles + live_written.spot_candles,
+            spot_candles=written.spot_candles,
             volatility_observations=(
                 written.volatility_observations + realized_written.volatility_observations
             ),
@@ -870,6 +917,14 @@ def paper_alerts(
             derivatives_snapshots=written.derivatives_snapshots,
             event_snapshots=written.event_snapshots,
         )
+        regime = classify_market_regime(
+            context,
+            batch.spot_candles,
+            trend_threshold=trend_threshold,
+            low_volatility_threshold=low_volatility,
+            high_volatility_threshold=high_volatility,
+        )
+        repository.save_market_regime(series_ticker=normalized_series, regime=regime)
         repository.complete_research_sync(run_id, result=written)
     except Exception as exc:
         repository.complete_research_sync(run_id, error=str(exc))
@@ -886,29 +941,88 @@ def paper_alerts(
             console.print(f"[red]Paper-alert research sync failed: {exc}[/red]")
             raise typer.Exit(code=1) from exc
         raise
-
-    regime = classify_market_regime(
-        context,
-        batch.spot_candles,
-        trend_threshold=trend_threshold,
-        low_volatility_threshold=low_volatility,
-        high_volatility_threshold=high_volatility,
+    console.print(
+        f"Research sync [bold]{run_id}[/bold] • {regime.label} • "
+        f"{written.spot_candles} spot • {written.volatility_observations} volatility"
     )
-    repository.save_market_regime(series_ticker=normalized_series, regime=regime)
+
+
+@app.command("paper-alerts")
+def paper_alerts(
+    series: Annotated[str, typer.Option(help="Open Kalshi series ticker to scan.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    interval: Annotated[
+        int,
+        typer.Option(help="Stored research candle interval: 1, 60, or 1440 minutes."),
+    ] = 60,
+    realized_window_days: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Trailing realized-volatility window."),
+    ] = 30,
+    max_markets: Annotated[
+        int,
+        typer.Option(min=1, max=5_000, help="Maximum open markets to evaluate."),
+    ] = 1_000,
+    expected_return: Annotated[
+        float,
+        typer.Option(help="Annualized physical drift assumption."),
+    ] = 0.0,
+    send_discord: Annotated[
+        bool,
+        typer.Option(help="Deliver approved entry candidates; default is shadow mode."),
+    ] = False,
+) -> None:
+    """Evaluate open markets from stored research; default to delivery-free shadow mode."""
+    if interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--interval")
+    settings = Settings()
+    if send_discord and settings.discord_webhook_url is None:
+        raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
+
+    normalized_series = series.upper()
+    normalized_symbol = symbol.upper()
+    interval_seconds = interval * 60
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    decision_at = datetime.now(UTC)
+    try:
+        live_spot = asyncio.run(_fetch_live_spot(normalized_symbol, decision_at))
+        repository.save_research_data(spot_candles=[live_spot])
+        context = repository.research_context_as_of(
+            symbol=normalized_symbol,
+            as_of=decision_at,
+            interval_seconds=interval_seconds,
+            realized_window_seconds=realized_window_days * 24 * 60 * 60,
+            optional_max_age_seconds=2 * interval_seconds,
+        ).model_copy(update={"spot": live_spot})
+    except (CoinbaseDataError, ResearchDataUnavailable, ValueError) as exc:
+        console.print(f"[red]Paper-alert evaluation data unavailable: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    regime = repository.latest_market_regime(
+        series_ticker=normalized_series,
+        symbol=normalized_symbol,
+        as_of=decision_at,
+    )
+    if regime is None:
+        console.print("[red]Run paper-alert-research before market evaluation.[/red]")
+        raise typer.Exit(code=1)
+
     markets = _load_kalshi_markets(normalized_series, max_markets)
     result = asyncio.run(
         _run_paper_alert_cycle(
             repository=repository,
             settings=settings,
             markets=markets,
-            cycle_id=run_id,
+            cycle_id=str(uuid4()),
             context=context,
             regime=regime,
             expected_annual_return=expected_return,
+            send_discord=send_discord,
         )
     )
 
-    table = Table(title=f"Paper-alert cycle: {normalized_series} / {regime.label}")
+    mode = "delivery enabled" if send_discord else "shadow"
+    table = Table(title=f"Paper-alert cycle: {normalized_series} / {regime.label} / {mode}")
     table.add_column("Metric")
     table.add_column("Count", justify="right")
     table.add_row("Open markets discovered", str(result.discovered))
@@ -917,6 +1031,7 @@ def paper_alerts(
     table.add_row("Discord entries delivered", str(result.delivered))
     table.add_row("Unsupported markets", str(result.unsupported))
     table.add_row("Missing calibration", str(result.uncalibrated))
+    table.add_row("Unapproved model", str(result.unapproved))
     table.add_row("Failures", str(len(result.failures)))
     console.print(table)
     console.print(
@@ -925,7 +1040,7 @@ def paper_alerts(
     )
     for error in result.failures:
         console.print(f"[red]{error}[/red]")
-    if result.failures or result.uncalibrated:
+    if result.failures or result.uncalibrated or result.unapproved:
         raise typer.Exit(code=1)
 
 
@@ -1023,7 +1138,9 @@ def _load_kalshi_history(
     start_at: datetime,
     end_at: datetime,
     period_interval: CandlestickPeriod,
-    max_markets: int,
+    max_events: int,
+    range_contracts_per_event: int,
+    history_hours: int,
 ) -> _KalshiHistoryBatch:
     try:
         return asyncio.run(
@@ -1032,7 +1149,9 @@ def _load_kalshi_history(
                 start_at,
                 end_at,
                 period_interval,
-                max_markets,
+                max_events,
+                range_contracts_per_event,
+                history_hours,
             )
         )
     except KalshiAPIError as exc:
@@ -1078,43 +1197,78 @@ async def _fetch_kalshi_history(
     start_at: datetime,
     end_at: datetime,
     period_interval: CandlestickPeriod,
-    max_markets: int,
+    max_events: int,
+    range_contracts_per_event: int,
+    history_hours: int,
 ) -> _KalshiHistoryBatch:
     client = KalshiClient()
     try:
-        markets: list[KalshiMarket] = []
+        events: list[KalshiEvent] = []
         cursor: str | None = None
-        while len(markets) < max_markets:
-            page = await client.list_historical_markets(
+        while len(events) < max_events:
+            page = await client.list_events(
+                status="settled",
                 series_ticker=series_ticker,
-                limit=min(1000, max_markets - len(markets)),
+                min_close_ts=int(start_at.timestamp()),
+                limit=200,
                 cursor=cursor,
             )
-            markets.extend(page.markets[: max_markets - len(markets)])
-            if not page.cursor or not page.markets:
+            for event in page.events:
+                if event.strike_date is None:
+                    continue
+                if start_at <= event.strike_date <= end_at:
+                    events.append(event)
+                    if len(events) == max_events:
+                        break
+            if not page.cursor or not page.events:
                 break
             if page.cursor == cursor:
-                raise KalshiAPIError("Kalshi repeated a historical-markets cursor")
+                raise KalshiAPIError("Kalshi repeated an event cursor")
             cursor = page.cursor
 
-        start_ts = int(start_at.timestamp())
-        end_ts = int(end_at.timestamp())
-        candlesticks: dict[str, list[KalshiCandlestick]] = {}
-        for market in markets:
-            candlesticks[market.ticker] = await client.get_historical_candlesticks(
-                market.ticker,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                period_interval=period_interval,
+        markets: list[KalshiMarket] = []
+        selected_by_event: dict[str, list[KalshiMarket]] = {}
+        for event in events:
+            response = await client.get_event(event.event_ticker)
+            event_markets = [
+                market
+                for market in response.markets
+                if market.result in {"yes", "no"} and market.expiry <= end_at
+            ]
+            markets.extend(event_markets)
+            selected_by_event[event.event_ticker] = _select_history_markets(
+                event_markets,
+                range_contracts_per_event=range_contracts_per_event,
             )
 
+        semaphore = asyncio.Semaphore(8)
+
+        async def fetch_candles(market: KalshiMarket) -> tuple[str, list[KalshiCandlestick]]:
+            async with semaphore:
+                candle_start = max(start_at, market.expiry - timedelta(hours=history_hours))
+                candles = await client.get_historical_candlesticks(
+                    market.ticker,
+                    start_ts=int(candle_start.timestamp()),
+                    end_ts=int(min(end_at, market.expiry).timestamp()),
+                    period_interval=period_interval,
+                )
+                return market.ticker, candles
+
+        candle_results = await asyncio.gather(
+            *(
+                fetch_candles(market)
+                for event_markets in selected_by_event.values()
+                for market in event_markets
+            )
+        )
+        candlesticks = dict(candle_results)
         series_fee_changes = await client.get_series_fee_changes(series_ticker)
         event_fee_changes: list[KalshiEventFeeChange] = []
-        for event_ticker in sorted({market.event_ticker for market in markets}):
+        for event in events:
             event_cursor: str | None = None
             while True:
                 fee_page = await client.get_event_fee_changes(
-                    event_ticker,
+                    event.event_ticker,
                     cursor=event_cursor,
                 )
                 event_fee_changes.extend(fee_page.event_fee_changes)
@@ -1133,6 +1287,54 @@ async def _fetch_kalshi_history(
         )
     finally:
         await client.close()
+
+
+def _select_history_markets(
+    markets: list[KalshiMarket],
+    *,
+    range_contracts_per_event: int,
+) -> list[KalshiMarket]:
+    ranges: list[tuple[float, KalshiMarket]] = []
+    thresholds_by_model: dict[str, list[tuple[float, KalshiMarket]]] = {}
+    for market in markets:
+        try:
+            contract = market.price_contract()
+        except UnsupportedMarketError:
+            continue
+        if isinstance(contract, TerminalRangeContract):
+            ranges.append(((contract.lower_bound + contract.upper_bound) / 2.0, market))
+        else:
+            thresholds_by_model.setdefault(
+                CryptoThresholdEngine.model_name(contract),
+                [],
+            ).append((contract.strike_price, market))
+
+    selected_thresholds: list[KalshiMarket] = []
+    for model_name in sorted(thresholds_by_model):
+        model_markets = sorted(
+            thresholds_by_model[model_name],
+            key=lambda item: (item[0], item[1].ticker),
+        )
+        selected_thresholds.append(model_markets[len(model_markets) // 2][1])
+
+    ranges.sort(key=lambda item: item[0])
+    if len(ranges) <= range_contracts_per_event:
+        return [market for _, market in ranges] + selected_thresholds
+
+    centered_count = max(1, range_contracts_per_event * 3 // 4)
+    center = len(ranges) // 2
+    start = max(0, center - centered_count // 2)
+    end = min(len(ranges), start + centered_count)
+    start = max(0, end - centered_count)
+    selected_indexes = set(range(start, end))
+    remaining = range_contracts_per_event - len(selected_indexes)
+    if remaining > 0:
+        denominator = max(remaining - 1, 1)
+        selected_indexes.update(
+            round(index * (len(ranges) - 1) / denominator) for index in range(remaining)
+        )
+    selected_ranges = [ranges[index][1] for index in sorted(selected_indexes)]
+    return selected_ranges + selected_thresholds
 
 
 async def _fetch_live_spot(symbol: str, as_of: datetime) -> SpotCandle:
@@ -1267,17 +1469,22 @@ async def _run_paper_alert_cycle(
     regime: MarketRegimeSnapshot,
     expected_annual_return: float,
     cycle_id: str,
+    send_discord: bool,
 ) -> PaperAlertCycleResult:
-    if settings.discord_webhook_url is None:
-        raise ValueError("Discord webhook URL is required for paper alerts")
     kalshi = KalshiClient()
-    discord = DiscordWebhookClient(settings.discord_webhook_url.get_secret_value())
+    discord: DiscordWebhookClient | None = None
+    alert_service: DiscordAlertService | None = None
+    if send_discord:
+        if settings.discord_webhook_url is None:
+            raise ValueError("Discord webhook URL is required when delivery is enabled")
+        discord = DiscordWebhookClient(settings.discord_webhook_url.get_secret_value())
+        alert_service = DiscordAlertService(repository, discord)
     try:
         runner = PaperAlertRunner(
             repository=repository,
             engine=CryptoThresholdEngine(_engine_config(settings)),
             market_reader=kalshi,
-            alert_service=DiscordAlertService(repository, discord),
+            alert_service=alert_service,
             maximum_spot_age=timedelta(seconds=settings.maximum_live_spot_age_seconds),
         )
         return await runner.run(
@@ -1286,9 +1493,12 @@ async def _run_paper_alert_cycle(
             regime=regime,
             expected_annual_return=expected_annual_return,
             cycle_id=cycle_id,
+            deliver_entries=send_discord,
         )
     finally:
-        await asyncio.gather(kalshi.close(), discord.close())
+        await kalshi.close()
+        if discord is not None:
+            await discord.close()
 
 
 async def _send_discord_health_check(webhook_url: str) -> str:

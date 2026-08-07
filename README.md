@@ -150,8 +150,8 @@ Polymarket is planned as a second read-only signal source.
 
 ## Historical Kalshi ingestion
 
-Archive a bounded set of settled markets and hourly candlesticks from a Kalshi
-series:
+Archive every contract's metadata and resolved outcome for settled KXBTC events,
+plus bounded candlestick history for each structural model:
 
 ```bash
 uv run pms kalshi-sync-history \
@@ -159,12 +159,18 @@ uv run pms kalshi-sync-history \
   --start "2025-01-01T00:00:00Z" \
   --end "2025-12-31T23:59:59Z" \
   --period 60 \
-  --max-markets 100
+  --max-events 500 \
+  --range-contracts-per-event 5 \
+  --history-hours 24
 ```
 
 `--period` accepts Kalshi's 1-minute, 60-minute, or 1440-minute intervals. The
-start and end timestamps are inclusive and must include a timezone. The sync uses
-Kalshi's public historical endpoints and does not require credentials.
+start and end timestamps are inclusive and must include a timezone. Events are
+the pagination unit, so one dense hourly ladder cannot consume the event budget.
+Within each event, candle history covers one median-strike contract per threshold
+model plus an outcome-independent range sample selected by strike position—never
+by resolved outcome. The sync uses Kalshi's public endpoints and does not require
+credentials.
 
 Each run records a point-in-time market and rule snapshot. Settled outcomes are
 materialized separately with settlement values and timestamps. Candlesticks and
@@ -233,25 +239,31 @@ uv run pms backtest \
   --test-days 30 \
   --step-days 30 \
   --latency-seconds 30 \
+  --calibration-lead-minutes 5 \
   --max-volume-participation 0.10 \
   --minimum-calibration-samples 30 \
   --calibration-bins 5 \
-  --calibration-confidence 0.95
+  --calibration-confidence 0.95 \
+  --minimum-validation-events 20 \
+  --minimum-validation-folds 2
 ```
 
 Run `kalshi-sync-history` and `sync-research-data` first. Research coverage must
 begin early enough to provide the complete realized-volatility window at every
 training and test timestamp. For each fold, only markets whose outcomes settled
-by the training cutoff are eligible for calibration. One time-ordered forecast
-per resolved market is used; the following non-overlapping test window remains
-untouched until evaluation.
+by the training cutoff are eligible for calibration. The five-minute default
+calibration lead matches KXBTC's completed hourly market candle before its
+five-minute expected-expiration timestamp. Each event contributes one
+outcome-weighted sample per structural model, so hundreds of mutually exclusive
+contracts from one range ladder cannot masquerade as independent evidence. The
+following non-overlapping test window remains untouched until evaluation.
 
-Calibration samples are isolated by symbol, structural model, and model version.
-They are sorted into equal-frequency probability bins. Each bin compares its mean
-forecast with a Wilson confidence interval for the observed outcome frequency;
-the larger distance to either interval bound becomes that bin's uncertainty
-margin. The default requires 30 independent resolved markets per populated bin at
-95% confidence. Signals without a qualifying profile fail closed. Use
+Calibration samples are isolated by symbol, structural model, and model version,
+then grouped by event before equal-frequency binning. Each bin compares its mean
+forecast with a Wilson confidence interval for the event-level observed outcome
+frequency; the larger distance to either interval bound becomes that bin's
+uncertainty margin. The default requires 30 independent resolved events per
+model at 95% confidence. Signals without a qualifying profile fail closed. Use
 `--allow-uncalibrated` only to inspect fixed-margin behavior.
 
 Signals use the executable bid/ask at a completed market candle. Execution uses
@@ -260,13 +272,16 @@ extreme: the YES ask high or the complementary NO ask derived from the YES bid
 low. Fills are whole contracts, capped by `--max-volume-participation`, and can
 be partial. Each market can produce at most one filled entry.
 
-The backtester fails closed when point-in-time spot history or the effective fee
-schedule is unavailable. Scheduled series fees and event overrides are selected
-at signal and execution time; explicit null event overrides restore the series
-fee. Taker fees are rounded upward to cents. Fold metrics, calibration profiles,
-selected structural model, uncertainty source and margin, individual fills, cost,
-P&L, return on cost, and Brier score are persisted. Profiles are also indexed in
-`uncertainty_calibrations` for subsequent live evaluation.
+When a scheduled fee record exists, the backtester selects the point-in-time
+series fee and event override at signal and execution time. When the venue reports
+no fee changes, it uses the configured current fee coefficient rather than
+discarding every signal. Explicit null event overrides restore the series fee.
+Taker fees are rounded upward to cents. Fold metrics, event-grouped calibration
+profiles, selected structural model, uncertainty source and margin, individual
+fills, cost, P&L, return on cost, and event-weighted Brier score are persisted.
+Deployment approval is denied unless the configured independent-event,
+held-out-fold, return-on-cost, and Brier thresholds all pass. Profiles and their
+approval decisions are indexed for subsequent live evaluation.
 
 Candlestick volume is a participation constraint, not historical order-book
 depth. Adverse candle extremes provide a conservative latency/slippage bound but
@@ -274,8 +289,17 @@ cannot reconstruct the exact queue position or fill path.
 
 ## Paper-alert regime campaign
 
-Run one live, calibrated cycle across every supported open market in a Kalshi
-series:
+Refresh the slower research and regime state independently:
+
+```bash
+uv run pms paper-alert-research \
+  --series KXBTC \
+  --symbol BTC \
+  --interval 60 \
+  --realized-window-days 30
+```
+
+Run a delivery-free live shadow evaluation against that stored state:
 
 ```bash
 uv run pms paper-alerts \
@@ -285,27 +309,23 @@ uv run pms paper-alerts \
   --realized-window-days 30
 ```
 
-Each invocation fetches and persists the Coinbase and Deribit research window,
-classifies the trailing price/realized-volatility regime, adds a completed
-one-minute Coinbase decision price, follows Kalshi cursors across up to 1,000 open
-markets, and evaluates every supported range or threshold contract. A stale
-decision price fails the cycle closed. All evaluations, including `WATCH`, remain
-in SQLite; every skipped market is recorded with its rejection reason. Only
-calibrated `ENTER YES` or `ENTER NO` recommendations are delivered to Discord. A
-market missing its matching held-out calibration is skipped, and the command exits
-unsuccessfully so scheduled operation cannot silently treat an incomplete cycle as
-healthy.
+Each evaluation adds a completed one-minute Coinbase decision price, follows
+Kalshi cursors across up to 1,000 open markets, and evaluates every supported
+range or threshold contract. A stale decision price fails the cycle closed. All
+evaluations, including `WATCH`, remain in SQLite; every skipped market is recorded
+with its rejection reason. Shadow mode never sends Discord messages. Add
+`--send-discord` only after backtesting has persisted an approval for the exact
+calibration profile; unapproved models fail closed even when delivery is requested.
 
-The default regime matrix uses a 5% absolute trailing-return threshold for
+The research command classifies a 5% absolute trailing-return threshold for
 `uptrend`, `range`, and `downtrend`, plus 40% and 80% annualized realized-volatility
 boundaries for `low`, `typical`, and `high` volatility. The exact thresholds and
-the source window are stored with every regime observation. Override them with
-`--trend-threshold`, `--low-volatility`, and `--high-volatility` when the campaign
-protocol requires different fixed boundaries.
+source window are stored with every regime observation.
 
-The command deliberately runs one cycle and exits. Schedule the same command with
-`launchd`, cron, or another supervisor rather than relying on an in-process loop.
-This keeps failures observable and prevents overlapping runs. Review accumulated
+Both commands deliberately run one cycle and exit. Schedule research hourly and
+shadow evaluation every five minutes with `launchd`, cron, or another supervisor.
+This keeps failures observable, prevents overlapping runs, and avoids repeatedly
+downloading the full research window during fast market scans. Review accumulated
 forward coverage with:
 
 ```bash

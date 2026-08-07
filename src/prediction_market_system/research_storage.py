@@ -290,6 +290,37 @@ class ResearchRepositoryMixin:
 
         return ResearchWriteResult(**inserted)
 
+    def spot_candles_as_of(
+        self,
+        *,
+        symbol: str,
+        as_of: datetime,
+        interval_seconds: int,
+        window_seconds: int,
+    ) -> tuple[SpotCandle, ...]:
+        as_of = _as_utc(as_of)
+        lower_bound = as_of - timedelta(seconds=window_seconds + interval_seconds)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM crypto_spot_candles
+                WHERE provider = 'coinbase'
+                  AND product_id = ?
+                  AND interval_seconds = ?
+                  AND end_at <= ?
+                  AND end_at >= ?
+                ORDER BY end_at ASC
+                """,
+                (
+                    f"{symbol.upper()}-USD",
+                    interval_seconds,
+                    as_of.isoformat(),
+                    lower_bound.isoformat(),
+                ),
+            ).fetchall()
+        return tuple(SpotCandle.model_validate_json(str(row["payload_json"])) for row in rows)
+
     def research_context_as_of(
         self,
         *,

@@ -278,6 +278,25 @@ def test_backtest_uses_delayed_adverse_quote_partial_fill_and_persists(
     assert persisted["total_trades"] == 1
 
 
+def test_backtest_uses_configured_fee_when_schedule_has_no_changes() -> None:
+    historical = historical_market().model_copy(
+        update={"series_fee_changes": (), "event_fee_changes": ()}
+    )
+    result = HistoricalBacktester(
+        FixedResearchSource(),
+        EngineConfig(
+            uncertainty_margin=0.03,
+            structural_weight=0.70,
+            minimum_ask_size=10,
+            binary_fee_coefficient=0.07,
+        ),
+    ).run(config(), (historical,))
+
+    assert result.folds[0].missing_fee_signals == 0
+    assert result.total_trades == 1
+    assert result.folds[0].trades[0].fee_dollars == Decimal("0.14")
+
+
 def test_backtest_routes_explicit_touch_contract_to_barrier_model() -> None:
     historical = historical_market()
     touch_market = historical.market.model_copy(
@@ -300,6 +319,91 @@ def test_backtest_routes_explicit_touch_contract_to_barrier_model() -> None:
 
     assert result.total_trades == 1
     assert result.folds[0].trades[0].model_name == ("crypto-barrier-above-threshold-market-anchor")
+
+
+def test_backtest_calibrates_and_replays_terminal_ranges_by_event() -> None:
+    training = historical_market()
+    training_expiry = START + timedelta(hours=12)
+    training_market = training.market.model_copy(
+        update={
+            "ticker": "KXBTC-TRAIN-B110",
+            "event_ticker": "KXBTC-TRAIN",
+            "title": "BTC range",
+            "yes_sub_title": "$110 to $129.99",
+            "no_sub_title": "Outside range",
+            "strike_type": "between",
+            "floor_strike": 110.0,
+            "cap_strike": 129.99,
+            "can_close_early": True,
+            "rules_primary": "Resolves YES if the average at expiry is between 110 and 129.99.",
+            "close_time": training_expiry,
+            "expected_expiration_time": training_expiry,
+            "latest_expiration_time": training_expiry + timedelta(hours=1),
+            "settlement_ts": training_expiry + timedelta(minutes=5),
+            "result": "yes",
+        }
+    )
+    training = training.model_copy(
+        update={
+            "market": training_market,
+            "candlesticks": (
+                candle(
+                    START + timedelta(hours=1),
+                    bid=("0.18", "0.18", "0.20", "0.20"),
+                    ask=("0.20", "0.20", "0.22", "0.22"),
+                    volume="500",
+                ),
+                candle(
+                    START + timedelta(hours=2),
+                    bid=("0.20", "0.19", "0.22", "0.21"),
+                    ask=("0.22", "0.22", "0.25", "0.24"),
+                    volume="100",
+                ),
+            ),
+        }
+    )
+    test_history = historical_market()
+    test_market = test_history.market.model_copy(
+        update={
+            "ticker": "KXBTC-TEST-B110",
+            "event_ticker": "KXBTC-TEST",
+            "title": "BTC range",
+            "yes_sub_title": "$110 to $129.99",
+            "no_sub_title": "Outside range",
+            "strike_type": "between",
+            "floor_strike": 110.0,
+            "cap_strike": 129.99,
+            "can_close_early": True,
+            "rules_primary": "Resolves YES if the average at expiry is between 110 and 129.99.",
+        }
+    )
+    test_history = test_history.model_copy(update={"market": test_market})
+    calibrated = BacktestConfig(
+        **(
+            config().model_dump()
+            | {
+                "require_calibration": True,
+                "minimum_calibration_samples": 1,
+                "maximum_calibration_bins": 1,
+            }
+        )
+    )
+
+    result = HistoricalBacktester(FixedResearchSource(), EngineConfig()).run(
+        calibrated,
+        (training, test_history),
+    )
+
+    first_fold = result.folds[0]
+    range_profile = next(
+        profile
+        for profile in first_fold.calibration_profiles
+        if profile.model_name == "crypto-terminal-range-market-anchor"
+    )
+    assert range_profile.independent_event_count == 1
+    assert range_profile.method == "equal-frequency event-clustered calibration envelope"
+    assert test_market.ticker not in result.unsupported_markets
+    assert first_fold.evaluated_signals > 0
 
 
 def test_walk_forward_calibration_uses_only_resolved_training_markets(

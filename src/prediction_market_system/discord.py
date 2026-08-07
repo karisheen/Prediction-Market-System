@@ -109,6 +109,20 @@ class DiscordWebhookClient:
                     "inline": False,
                 },
                 {
+                    "name": "Manual-review action",
+                    "value": _truncate(
+                        (
+                            f"BUY {side} • do not pay above {price} • "
+                            f"paper cap ${opportunity.suggested_max_exposure:,.2f}\n"
+                            f"YES condition: {market.contract_label or market.question}\n"
+                            f"Event: `{market.event_id or 'N/A'}` • "
+                            f"Contract: `{market.market_id}`"
+                        ),
+                        1_024,
+                    ),
+                    "inline": False,
+                },
+                {
                     "name": "Forecast",
                     "value": (
                         f"YES {forecast.probability_yes:.1%} "

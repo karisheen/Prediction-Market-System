@@ -9,7 +9,12 @@ from prediction_market_system.calibration import (
     CalibrationBin,
     UncertaintyCalibrationProfile,
 )
-from prediction_market_system.cli import _fetch_kalshi_markets, _ResearchDataBatch, app
+from prediction_market_system.cli import (
+    _fetch_kalshi_markets,
+    _ResearchDataBatch,
+    _select_history_markets,
+    app,
+)
 from prediction_market_system.research import (
     DerivativesSnapshot,
     FundingObservation,
@@ -101,6 +106,63 @@ def test_fetches_every_live_market_page(monkeypatch: object) -> None:
         "KXBTCTEST-30DEC31-T2",
     ]
     assert calls == [("KXBTCTEST", 2, None), ("KXBTCTEST", 1, "next")]
+
+
+def test_history_sampling_is_event_grouped_and_outcome_independent() -> None:
+    template = kalshi_market()
+    ranges = [
+        template.model_copy(
+            update={
+                "ticker": f"KXBTCTEST-30DEC31-B{90_000 + index * 100}",
+                "yes_sub_title": f"${90_000 + index * 100} range",
+                "no_sub_title": "Outside range",
+                "strike_type": "between",
+                "floor_strike": float(90_000 + index * 100),
+                "cap_strike": float(90_099.99 + index * 100),
+                "rules_primary": "Resolves YES if the average at expiry is inside the range.",
+            }
+        )
+        for index in range(20)
+    ]
+    above = [
+        template.model_copy(
+            update={
+                "ticker": f"KXBTCTEST-30DEC31-T{90_000 + index * 100}",
+                "floor_strike": float(90_000 + index * 100),
+            }
+        )
+        for index in range(10)
+    ]
+    below = [
+        template.model_copy(
+            update={
+                "ticker": f"KXBTCTEST-30DEC31-T{110_000 + index * 100}",
+                "strike_type": "less",
+                "floor_strike": None,
+                "cap_strike": float(110_000 + index * 100),
+            }
+        )
+        for index in range(10)
+    ]
+    universe = [*ranges, *above, *below]
+
+    selected = _select_history_markets(
+        universe,
+        range_contracts_per_event=5,
+    )
+    flipped = _select_history_markets(
+        [
+            market.model_copy(update={"result": "no" if market.result == "yes" else "yes"})
+            for market in universe
+        ],
+        range_contracts_per_event=5,
+    )
+
+    assert len(selected) == 7
+    assert sum(market.strike_type == "between" for market in selected) == 5
+    assert sum(market.strike_type == "greater" for market in selected) == 1
+    assert sum(market.strike_type == "less" for market in selected) == 1
+    assert {market.ticker for market in selected} == {market.ticker for market in flipped}
 
 
 def market_pair(

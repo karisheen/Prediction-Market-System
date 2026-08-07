@@ -214,7 +214,7 @@ def test_persists_complete_kalshi_history_idempotently(tmp_path: Path) -> None:
         start=datetime(2030, 1, 1, tzinfo=UTC),
         end=datetime(2031, 1, 1, tzinfo=UTC),
         period_interval=60,
-        max_markets=10,
+        max_events=10,
     )
     assert len(loaded) == 1
     assert loaded[0].market.result == "yes"

@@ -237,6 +237,25 @@ class KalshiMarketsResponse(_KalshiModel):
     cursor: str = ""
 
 
+class KalshiEvent(_KalshiModel):
+    event_ticker: str
+    series_ticker: str
+    title: str
+    sub_title: str
+    mutually_exclusive: bool
+    strike_date: datetime | None = None
+
+
+class KalshiEventsResponse(_KalshiModel):
+    events: list[KalshiEvent]
+    cursor: str = ""
+
+
+class KalshiEventResponse(_KalshiModel):
+    event: KalshiEvent
+    markets: list[KalshiMarket]
+
+
 class KalshiBidAskDistribution(_KalshiModel):
     open: Decimal
     low: Decimal
@@ -413,6 +432,31 @@ class KalshiClient:
             raise ValueError("max_rate_limit_retries must be non-negative")
         self._max_rate_limit_retries = max_rate_limit_retries
         self._sleep = sleep
+
+    async def list_events(
+        self,
+        *,
+        status: Literal["unopened", "open", "closed", "settled"] | None = None,
+        series_ticker: str | None = None,
+        min_close_ts: int | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> KalshiEventsResponse:
+        params: dict[str, str | int | bool] = {"limit": limit}
+        if status:
+            params["status"] = status
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if min_close_ts is not None:
+            params["min_close_ts"] = min_close_ts
+        if cursor:
+            params["cursor"] = cursor
+        response = await self._get("/events", params=params)
+        return KalshiEventsResponse.model_validate(response.json())
+
+    async def get_event(self, event_ticker: str) -> KalshiEventResponse:
+        response = await self._get(f"/events/{event_ticker}")
+        return KalshiEventResponse.model_validate(response.json())
 
     async def get_market(self, ticker: str) -> KalshiMarket:
         response = await self._get(f"/markets/{ticker}")
