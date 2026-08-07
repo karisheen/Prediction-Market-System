@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
+from uuid import uuid4
 
 import httpx
 
@@ -16,7 +17,7 @@ from prediction_market_system.domain import (
 )
 from prediction_market_system.engine import CryptoThresholdEngine
 from prediction_market_system.research import ResearchContext, ResearchDataUnavailable, SpotCandle
-from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.storage import MarketCheckStatus, SQLiteRepository
 from prediction_market_system.venues.kalshi import (
     IncompleteOrderBookError,
     KalshiAPIError,
@@ -57,12 +58,16 @@ class PaperAlertRunner:
         market_reader: PaperAlertMarketReader,
         alert_service: PaperAlertPublisher,
         clock: Callable[[], datetime] | None = None,
+        maximum_spot_age: timedelta = timedelta(minutes=2),
     ) -> None:
+        if maximum_spot_age <= timedelta(0):
+            raise ValueError("maximum spot age must be positive")
         self.repository = repository
         self.engine = engine
         self.market_reader = market_reader
         self.alert_service = alert_service
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.maximum_spot_age = maximum_spot_age
 
     async def run(
         self,
@@ -71,22 +76,54 @@ class PaperAlertRunner:
         context: ResearchContext,
         regime: MarketRegimeSnapshot,
         expected_annual_return: float = 0.0,
+        cycle_id: str | None = None,
     ) -> PaperAlertCycleResult:
         if context.symbol != regime.symbol:
             raise ValueError("research context and market regime symbols must match")
 
-        evaluated = 0
-        watch = 0
-        delivered = 0
+        cycle = cycle_id or str(uuid4())
+        cycle_observed_at = self.clock()
+        spot_age = cycle_observed_at - context.spot.end_at
+        if spot_age < timedelta(0) or spot_age > self.maximum_spot_age:
+            reason = (
+                f"live spot is {spot_age.total_seconds():.0f} seconds old; "
+                f"maximum is {self.maximum_spot_age.total_seconds():.0f}"
+            )
+            for market in markets:
+                self._record_check(
+                    cycle,
+                    market,
+                    cycle_observed_at,
+                    MarketCheckStatus.FAILED,
+                    reason,
+                )
+            return PaperAlertCycleResult(
+                discovered=len(markets),
+                evaluated=0,
+                watch=0,
+                delivered=0,
+                unsupported=0,
+                uncalibrated=0,
+                failures=(reason,),
+            )
+
         unsupported = 0
         uncalibrated = 0
         failures: list[str] = []
+        evaluated_opportunities: list[tuple[KalshiMarket, Opportunity]] = []
 
         for market in markets:
             try:
-                contract = market.threshold_contract()
-            except UnsupportedMarketError:
+                contract = market.price_contract()
+            except UnsupportedMarketError as exc:
                 unsupported += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    cycle_observed_at,
+                    MarketCheckStatus.UNSUPPORTED,
+                    str(exc),
+                )
                 continue
 
             profile = self.repository.latest_uncertainty_calibration(
@@ -97,6 +134,13 @@ class PaperAlertRunner:
             )
             if profile is None:
                 uncalibrated += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    cycle_observed_at,
+                    MarketCheckStatus.MISSING_CALIBRATION,
+                    f"no held-out calibration for {self.engine.model_name(contract)}",
+                )
                 continue
 
             try:
@@ -104,18 +148,13 @@ class PaperAlertRunner:
                 observed_at = self.clock()
                 snapshot = to_market_snapshot(market, order_book, observed_at=observed_at)
                 crypto = context.to_crypto_snapshot(
-                    strike_price=contract.strike_price,
+                    strike_price=self.engine.reference_price(contract),
                     expected_annual_return=expected_annual_return,
                 )
                 _, opportunity = self.engine.evaluate(snapshot, crypto, contract, profile)
-                opportunity = opportunity.model_copy(update={"market_regime": regime})
-                self.repository.save_evaluation(opportunity.forecast, opportunity)
-                evaluated += 1
-                if opportunity.state is RecommendationState.WATCH:
-                    watch += 1
-                    continue
-                await self.alert_service.publish(opportunity)
-                delivered += 1
+                evaluated_opportunities.append(
+                    (market, opportunity.model_copy(update={"market_regime": regime}))
+                )
             except (
                 IncompleteOrderBookError,
                 KalshiAPIError,
@@ -123,16 +162,145 @@ class PaperAlertRunner:
                 RuntimeError,
                 ValueError,
             ) as exc:
-                failures.append(f"{market.ticker}: {exc}")
+                reason = str(exc)
+                failures.append(f"{market.ticker}: {reason}")
+                self._record_check(
+                    cycle,
+                    market,
+                    cycle_observed_at,
+                    MarketCheckStatus.FAILED,
+                    reason,
+                )
+
+        opportunities = self._apply_event_exposure_caps(evaluated_opportunities)
+        watch = 0
+        delivered = 0
+        for market, opportunity in opportunities:
+            self.repository.save_evaluation(opportunity.forecast, opportunity)
+            if opportunity.state is RecommendationState.WATCH:
+                watch += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    opportunity.market.observed_at,
+                    MarketCheckStatus.WATCH,
+                    "; ".join(opportunity.warnings) or None,
+                    opportunity=opportunity,
+                )
+                continue
+            try:
+                self._record_check(
+                    cycle,
+                    market,
+                    opportunity.market.observed_at,
+                    MarketCheckStatus.ENTRY_CANDIDATE,
+                    None,
+                    opportunity=opportunity,
+                )
+                await self.alert_service.publish(opportunity)
+                delivered += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    opportunity.market.observed_at,
+                    MarketCheckStatus.DELIVERED,
+                    None,
+                    opportunity=opportunity,
+                )
+            except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+                reason = str(exc)
+                failures.append(f"{market.ticker}: {reason}")
+                self._record_check(
+                    cycle,
+                    market,
+                    opportunity.market.observed_at,
+                    MarketCheckStatus.FAILED,
+                    reason,
+                    opportunity=opportunity,
+                )
 
         return PaperAlertCycleResult(
             discovered=len(markets),
-            evaluated=evaluated,
+            evaluated=len(opportunities),
             watch=watch,
             delivered=delivered,
             unsupported=unsupported,
             uncalibrated=uncalibrated,
             failures=tuple(failures),
+        )
+
+    def _apply_event_exposure_caps(
+        self,
+        evaluated: list[tuple[KalshiMarket, Opportunity]],
+    ) -> list[tuple[KalshiMarket, Opportunity]]:
+        adjusted = list(evaluated)
+        remaining_by_event: dict[str, float] = {}
+
+        def entry_edge(index: int) -> float:
+            edge = adjusted[index][1].conservative_net_edge
+            return edge if edge is not None else float("-inf")
+
+        entry_indexes = sorted(
+            (
+                index
+                for index, (_, opportunity) in enumerate(adjusted)
+                if opportunity.state
+                in {RecommendationState.ENTER_YES, RecommendationState.ENTER_NO}
+            ),
+            key=entry_edge,
+            reverse=True,
+        )
+        for index in entry_indexes:
+            market, opportunity = adjusted[index]
+            event_id = opportunity.market.event_id or market.event_ticker
+            remaining = remaining_by_event.setdefault(event_id, self.engine.event_exposure_cap)
+            allowed = round(min(opportunity.suggested_max_exposure, remaining), 2)
+            remaining_by_event[event_id] = max(remaining - allowed, 0.0)
+            if allowed == opportunity.suggested_max_exposure:
+                continue
+            warning = (
+                f"Event-level exposure cap reduced this entry from "
+                f"${opportunity.suggested_max_exposure:,.2f} to ${allowed:,.2f}."
+            )
+            update: dict[str, object] = {
+                "suggested_max_exposure": allowed,
+                "warnings": (*opportunity.warnings, warning),
+            }
+            if allowed <= 0:
+                update["state"] = RecommendationState.WATCH
+            adjusted[index] = (market, opportunity.model_copy(update=update))
+        return adjusted
+
+    def _record_check(
+        self,
+        cycle_id: str,
+        market: KalshiMarket,
+        observed_at: datetime,
+        status: MarketCheckStatus,
+        reason: str | None,
+        *,
+        opportunity: Opportunity | None = None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "market": market.model_dump(mode="json"),
+            "app_mapping": {
+                "series_ticker": market.normalized_series_ticker,
+                "event_ticker": market.event_ticker,
+                "contract_label": market.contract_label,
+                "market_url": str(market.market_url),
+            },
+        }
+        if opportunity is not None:
+            payload["opportunity"] = opportunity.model_dump(mode="json")
+        self.repository.save_paper_market_check(
+            cycle_id=cycle_id,
+            market_id=market.ticker,
+            series_ticker=market.normalized_series_ticker,
+            event_ticker=market.event_ticker,
+            observed_at=observed_at,
+            status=status,
+            reason=reason,
+            payload=payload,
         )
 
 

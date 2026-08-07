@@ -55,6 +55,21 @@ class ThresholdContract(FrozenModel):
     strike_price: PositiveFloat
 
 
+class TerminalRangeContract(FrozenModel):
+    lower_bound: PositiveFloat
+    upper_bound: PositiveFloat
+    settlement_window_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> Self:
+        if self.lower_bound >= self.upper_bound:
+            raise ValueError("range lower bound must be below upper bound")
+        return self
+
+
+CryptoPriceContract = ThresholdContract | TerminalRangeContract
+
+
 class MarketRegimeSnapshot(FrozenModel):
     symbol: Annotated[str, Field(min_length=1)]
     observed_at: datetime
@@ -102,13 +117,16 @@ class MarketSnapshot(FrozenModel):
     venue: Annotated[str, Field(min_length=1)]
     observed_at: datetime
     expires_at: datetime
-    yes_bid: Probability
-    yes_ask: Probability
-    no_bid: Probability
-    no_ask: Probability
-    yes_ask_size: NonNegativeFloat
-    no_ask_size: NonNegativeFloat
+    yes_bid: Probability | None
+    yes_ask: Probability | None
+    no_bid: Probability | None
+    no_ask: Probability | None
+    yes_ask_size: NonNegativeFloat | None
+    no_ask_size: NonNegativeFloat | None
     resolution_rule: Annotated[str, Field(min_length=1)]
+    series_id: str | None = None
+    event_id: str | None = None
+    contract_label: str | None = None
     market_url: HttpUrl | None = None
 
     @field_validator("observed_at", "expires_at")
@@ -120,9 +138,9 @@ class MarketSnapshot(FrozenModel):
     def validate_market(self) -> Self:
         if self.expires_at <= self.observed_at:
             raise ValueError("expires_at must be later than observed_at")
-        if self.yes_bid > self.yes_ask:
+        if self.yes_bid is not None and self.yes_ask is not None and self.yes_bid > self.yes_ask:
             raise ValueError("yes_bid cannot exceed yes_ask")
-        if self.no_bid > self.no_ask:
+        if self.no_bid is not None and self.no_ask is not None and self.no_bid > self.no_ask:
             raise ValueError("no_bid cannot exceed no_ask")
         return self
 

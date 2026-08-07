@@ -12,6 +12,7 @@ from prediction_market_system.domain import (
     MarketSide,
     MarketSnapshot,
     RecommendationState,
+    TerminalRangeContract,
     ThresholdContract,
     ThresholdDirection,
     ThresholdModelKind,
@@ -33,10 +34,10 @@ TERMINAL_ABOVE = ThresholdContract(
 
 def market_snapshot(
     *,
-    yes_bid: float = 0.39,
-    yes_ask: float = 0.42,
-    no_bid: float = 0.57,
-    no_ask: float = 0.60,
+    yes_bid: float | None = 0.39,
+    yes_ask: float | None = 0.42,
+    no_bid: float | None = 0.57,
+    no_ask: float | None = 0.60,
     expires_in: timedelta = timedelta(days=30),
 ) -> MarketSnapshot:
     return MarketSnapshot(
@@ -116,6 +117,67 @@ def test_recommends_no_when_downside_is_underpriced() -> None:
     assert opportunity.side is MarketSide.NO
     assert opportunity.conservative_net_edge is not None
     assert opportunity.conservative_net_edge > 0.03
+
+
+def test_evaluates_terminal_range_probability() -> None:
+    engine = CryptoThresholdEngine(
+        EngineConfig(
+            uncertainty_margin=0.0,
+            structural_weight=1.0,
+            min_conservative_edge=0.0,
+            binary_fee_coefficient=0.0,
+            slippage_bps=0.0,
+            resolution_haircut=0.0,
+        )
+    )
+    contract = TerminalRangeContract(lower_bound=90.0, upper_bound=130.0)
+
+    forecast, opportunity = engine.evaluate(
+        market_snapshot(expires_in=timedelta(days=1)),
+        crypto_snapshot(spot=110.0, strike=110.0, volatility=0.10),
+        contract,
+    )
+
+    assert forecast.model_name == "crypto-terminal-range-market-anchor"
+    assert forecast.structural_probability_yes > 0.99
+    assert opportunity.side is MarketSide.YES
+
+
+def test_models_sixty_second_terminal_settlement_average() -> None:
+    engine = CryptoThresholdEngine(EngineConfig(structural_weight=1.0))
+    market = market_snapshot(expires_in=timedelta(minutes=10))
+    crypto = crypto_snapshot(spot=110.0, strike=110.0, volatility=2.0)
+    instant = TerminalRangeContract(lower_bound=109.0, upper_bound=111.0)
+    averaged = instant.model_copy(update={"settlement_window_seconds": 60})
+
+    instant_forecast, _ = engine.evaluate(market, crypto, instant)
+    averaged_forecast, _ = engine.evaluate(market, crypto, averaged)
+
+    assert averaged_forecast.structural_probability_yes > (
+        instant_forecast.structural_probability_yes
+    )
+
+
+def test_evaluates_only_the_executable_side_of_one_sided_book() -> None:
+    engine = CryptoThresholdEngine(
+        EngineConfig(
+            min_conservative_edge=0.0,
+            binary_fee_coefficient=0.0,
+            slippage_bps=0.0,
+            resolution_haircut=0.0,
+        )
+    )
+    market = market_snapshot(
+        yes_bid=None,
+        yes_ask=0.42,
+        no_bid=0.58,
+        no_ask=None,
+    ).model_copy(update={"no_ask_size": None})
+
+    _, opportunity = engine.evaluate(market, crypto_snapshot(), TERMINAL_ABOVE)
+
+    assert opportunity.side is MarketSide.YES
+    assert opportunity.executable_price == pytest.approx(0.42)
 
 
 def test_returns_watch_when_contract_is_too_close_to_expiry() -> None:

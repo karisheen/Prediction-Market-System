@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +9,7 @@ from prediction_market_system.calibration import (
     CalibrationBin,
     UncertaintyCalibrationProfile,
 )
-from prediction_market_system.cli import _ResearchDataBatch, app
+from prediction_market_system.cli import _fetch_kalshi_markets, _ResearchDataBatch, app
 from prediction_market_system.research import (
     DerivativesSnapshot,
     FundingObservation,
@@ -60,6 +61,46 @@ def kalshi_market(
             "yes_ask_size_fp": "17.00",
         }
     )
+
+
+def test_fetches_every_live_market_page(monkeypatch: object) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    calls: list[tuple[str | None, int, str | None]] = []
+
+    class FakeKalshiClient:
+        async def list_markets(
+            self,
+            *,
+            status: str = "open",
+            series_ticker: str | None = None,
+            limit: int = 100,
+            cursor: str | None = None,
+        ) -> object:
+            assert status == "open"
+            calls.append((series_ticker, limit, cursor))
+            market = kalshi_market().model_copy(
+                update={"ticker": f"KXBTCTEST-30DEC31-T{len(calls)}"}
+            )
+            return type(
+                "Page",
+                (),
+                {"markets": [market], "cursor": "next" if cursor is None else ""},
+            )()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("prediction_market_system.cli.KalshiClient", FakeKalshiClient)
+
+    markets = asyncio.run(_fetch_kalshi_markets("kxbtctest", 2))
+
+    assert [market.ticker for market in markets] == [
+        "KXBTCTEST-30DEC31-T1",
+        "KXBTCTEST-30DEC31-T2",
+    ]
+    assert calls == [("KXBTCTEST", 2, None), ("KXBTCTEST", 1, "next")]
 
 
 def market_pair(

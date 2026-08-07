@@ -7,6 +7,7 @@ from prediction_market_system.domain import (
     Opportunity,
     ProbabilityForecast,
     RecommendationState,
+    TerminalRangeContract,
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
 
@@ -18,5 +19,6 @@ __all__ = [
     "MarketSnapshot",
     "Opportunity",
     "ProbabilityForecast",
+    "TerminalRangeContract",
     "RecommendationState",
 ]

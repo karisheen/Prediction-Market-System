@@ -8,10 +8,12 @@ from decimal import Decimal
 from typing import Any, Literal, Self
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from prediction_market_system.domain import (
+    CryptoPriceContract,
     MarketSnapshot,
+    TerminalRangeContract,
     ThresholdContract,
     ThresholdDirection,
     ThresholdModelKind,
@@ -88,6 +90,17 @@ def _has_explicit_terminal_semantics(rule: str) -> bool:
     )
 
 
+def _settlement_averaging_window_seconds(rules: tuple[str, ...]) -> int:
+    normalized = " ".join(" ".join(rule.casefold().split()) for rule in rules)
+    one_minute_markers = (
+        "average of the sixty seconds",
+        "average of sixty seconds",
+        "60 index prices",
+        "60 rti prices",
+    )
+    return 60 if any(marker in normalized for marker in one_minute_markers) else 0
+
+
 class _KalshiModel(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -95,6 +108,7 @@ class _KalshiModel(BaseModel):
 class KalshiMarket(_KalshiModel):
     ticker: str
     event_ticker: str
+    series_ticker: str = ""
     market_type: str
     title: str = ""
     yes_sub_title: str
@@ -141,7 +155,47 @@ class KalshiMarket(_KalshiModel):
         rules = [rule.strip() for rule in (self.rules_primary, self.rules_secondary) if rule]
         return "\n\n".join(rules)
 
-    def threshold_contract(self, override: float | None = None) -> ThresholdContract:
+    @property
+    def normalized_series_ticker(self) -> str:
+        return self.series_ticker.strip().upper() or self.event_ticker.split("-", 1)[0].upper()
+
+    @property
+    def market_url(self) -> HttpUrl:
+        return HttpUrl(f"https://kalshi.com/markets/{self.normalized_series_ticker.lower()}")
+
+    @property
+    def contract_label(self) -> str:
+        return self.yes_sub_title.strip() or self.question
+
+    def price_contract(self, threshold_override: float | None = None) -> CryptoPriceContract:
+        rules = tuple(rule for rule in (self.rules_primary, self.rules_secondary) if rule.strip())
+        has_touch_semantics = any(_has_explicit_touch_semantics(rule) for rule in rules)
+        has_terminal_semantics = any(_has_explicit_terminal_semantics(rule) for rule in rules)
+
+        if self.strike_type == "between":
+            if threshold_override is not None:
+                raise UnsupportedMarketError(
+                    "a threshold override cannot be used for a range market"
+                )
+            if (
+                self.floor_strike is None
+                or self.cap_strike is None
+                or self.floor_strike <= 0
+                or self.floor_strike >= self.cap_strike
+            ):
+                raise UnsupportedMarketError(
+                    "positive, increasing lower and upper bounds are required for a range market"
+                )
+            if has_touch_semantics or not has_terminal_semantics:
+                raise UnsupportedMarketError(
+                    "range markets require an explicit fixed-time terminal observation"
+                )
+            return TerminalRangeContract(
+                lower_bound=self.floor_strike,
+                upper_bound=self.cap_strike,
+                settlement_window_seconds=_settlement_averaging_window_seconds(rules),
+            )
+
         if self.strike_type in {"greater", "greater_or_equal"}:
             direction = ThresholdDirection.ABOVE
             metadata_strike = self.floor_strike
@@ -153,13 +207,10 @@ class KalshiMarket(_KalshiModel):
                 f"unsupported Kalshi strike type: {self.strike_type or 'missing'}"
             )
 
-        strike = override if override is not None else metadata_strike
+        strike = threshold_override if threshold_override is not None else metadata_strike
         if strike is None or strike <= 0:
             raise UnsupportedMarketError("a positive threshold strike is required for this market")
 
-        rules = tuple(rule for rule in (self.rules_primary, self.rules_secondary) if rule.strip())
-        has_touch_semantics = any(_has_explicit_touch_semantics(rule) for rule in rules)
-        has_terminal_semantics = any(_has_explicit_terminal_semantics(rule) for rule in rules)
         if has_touch_semantics:
             model_kind = ThresholdModelKind.BARRIER
         elif self.can_close_early and not has_terminal_semantics:
@@ -271,35 +322,41 @@ class KalshiOrderBookResponse(_KalshiModel):
 
 
 class ExecutableBook(_KalshiModel):
-    yes_bid: float
-    yes_ask: float
-    no_bid: float
-    no_ask: float
-    yes_ask_size: float
-    no_ask_size: float
+    yes_bid: float | None
+    yes_ask: float | None
+    no_bid: float | None
+    no_ask: float | None
+    yes_ask_size: float | None
+    no_ask_size: float | None
 
 
 def normalize_order_book(order_book: KalshiOrderBook) -> ExecutableBook:
-    if not order_book.yes_dollars or not order_book.no_dollars:
-        raise IncompleteOrderBookError(
-            "both YES and NO bids are required to derive executable asks"
-        )
+    if not order_book.yes_dollars and not order_book.no_dollars:
+        raise IncompleteOrderBookError("at least one bid is required to derive an executable ask")
 
-    yes_bid_price, yes_bid_size = max(order_book.yes_dollars, key=lambda level: level[0])
-    no_bid_price, no_bid_size = max(order_book.no_dollars, key=lambda level: level[0])
-    yes_ask_price = Decimal("1") - no_bid_price
-    no_ask_price = Decimal("1") - yes_bid_price
+    yes_level = (
+        max(order_book.yes_dollars, key=lambda level: level[0]) if order_book.yes_dollars else None
+    )
+    no_level = (
+        max(order_book.no_dollars, key=lambda level: level[0]) if order_book.no_dollars else None
+    )
+    yes_bid_price, yes_bid_size = yes_level if yes_level is not None else (None, None)
+    no_bid_price, no_bid_size = no_level if no_level is not None else (None, None)
+    yes_ask_price = Decimal("1") - no_bid_price if no_bid_price is not None else None
+    no_ask_price = Decimal("1") - yes_bid_price if yes_bid_price is not None else None
 
-    if yes_bid_price > yes_ask_price or no_bid_price > no_ask_price:
+    if (
+        yes_bid_price is not None and yes_ask_price is not None and yes_bid_price > yes_ask_price
+    ) or (no_bid_price is not None and no_ask_price is not None and no_bid_price > no_ask_price):
         raise ValueError("Kalshi order book is crossed or internally inconsistent")
 
     return ExecutableBook(
-        yes_bid=float(yes_bid_price),
-        yes_ask=float(yes_ask_price),
-        no_bid=float(no_bid_price),
-        no_ask=float(no_ask_price),
-        yes_ask_size=float(no_bid_size),
-        no_ask_size=float(yes_bid_size),
+        yes_bid=None if yes_bid_price is None else float(yes_bid_price),
+        yes_ask=None if yes_ask_price is None else float(yes_ask_price),
+        no_bid=None if no_bid_price is None else float(no_bid_price),
+        no_ask=None if no_ask_price is None else float(no_ask_price),
+        yes_ask_size=None if no_bid_size is None else float(no_bid_size),
+        no_ask_size=None if yes_bid_size is None else float(yes_bid_size),
     )
 
 
@@ -330,6 +387,10 @@ def to_market_snapshot(
         yes_ask_size=book.yes_ask_size,
         no_ask_size=book.no_ask_size,
         resolution_rule=market.resolution_rule,
+        series_id=market.normalized_series_ticker,
+        event_id=market.event_ticker,
+        contract_label=market.contract_label,
+        market_url=market.market_url,
     )
 
 

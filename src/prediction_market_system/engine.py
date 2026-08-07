@@ -9,13 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prediction_market_system.calibration import UncertaintyCalibrationProfile
 from prediction_market_system.domain import (
+    CryptoPriceContract,
     CryptoSnapshot,
     MarketSide,
     MarketSnapshot,
     Opportunity,
     ProbabilityForecast,
     RecommendationState,
-    ThresholdContract,
+    TerminalRangeContract,
     ThresholdDirection,
     ThresholdModelKind,
 )
@@ -41,6 +42,7 @@ class EngineConfig(BaseModel):
     minimum_ask_size: float = Field(default=10.0, ge=0.0)
     fractional_kelly: float = Field(default=0.25, ge=0.0, le=1.0)
     max_bankroll_fraction: float = Field(default=0.02, ge=0.0, le=1.0)
+    max_event_bankroll_fraction: float = Field(default=0.02, ge=0.0, le=1.0)
     minimum_seconds_to_expiry: int = Field(default=300, ge=0)
 
 
@@ -126,7 +128,7 @@ def barrier_hitting_probability(
 
 
 class CryptoThresholdEngine:
-    """Evaluate terminal and first-passage crypto threshold contracts.
+    """Evaluate terminal ranges plus terminal and first-passage crypto thresholds.
 
     The selected structural forecast is blended in log-odds space with the
     current market estimate, then widened by a configurable uncertainty margin
@@ -139,16 +141,28 @@ class CryptoThresholdEngine:
         self.config = config or EngineConfig()
 
     @staticmethod
-    def model_name(contract: ThresholdContract) -> str:
+    def model_name(contract: CryptoPriceContract) -> str:
+        if isinstance(contract, TerminalRangeContract):
+            return "crypto-terminal-range-market-anchor"
         return (
             f"crypto-{contract.model_kind.value}-{contract.direction.value}-threshold-market-anchor"
         )
+
+    @property
+    def event_exposure_cap(self) -> float:
+        return self.config.paper_bankroll * self.config.max_event_bankroll_fraction
+
+    @staticmethod
+    def reference_price(contract: CryptoPriceContract) -> float:
+        if isinstance(contract, TerminalRangeContract):
+            return (contract.lower_bound + contract.upper_bound) / 2.0
+        return contract.strike_price
 
     def evaluate(
         self,
         market: MarketSnapshot,
         crypto: CryptoSnapshot,
-        contract: ThresholdContract,
+        contract: CryptoPriceContract,
         calibration_profile: UncertaintyCalibrationProfile | None = None,
     ) -> tuple[ProbabilityForecast, Opportunity]:
         structural_probability = self._structural_probability(market, crypto, contract)
@@ -182,6 +196,7 @@ class CryptoThresholdEngine:
             market_probability,
             structural_probability,
             crypto,
+            contract,
         )
 
         forecast = ProbabilityForecast(
@@ -207,14 +222,36 @@ class CryptoThresholdEngine:
         self,
         market: MarketSnapshot,
         crypto: CryptoSnapshot,
-        contract: ThresholdContract,
+        contract: CryptoPriceContract,
     ) -> float:
-        if not math.isclose(crypto.strike_price, contract.strike_price):
-            raise ValueError("crypto snapshot strike does not match threshold contract")
-
         time_to_expiry = (market.expires_at - market.observed_at).total_seconds()
         years = max(time_to_expiry / _SECONDS_PER_YEAR, _EPSILON)
         sigma = crypto.annualized_volatility
+        if isinstance(contract, TerminalRangeContract):
+            probability_above = (
+                self._terminal_above_probability
+                if contract.settlement_window_seconds == 0
+                else lambda snapshot, strike, horizon: self._averaged_terminal_above_probability(
+                    snapshot,
+                    strike,
+                    horizon,
+                    contract.settlement_window_seconds,
+                )
+            )
+            lower_cdf = 1.0 - probability_above(
+                crypto,
+                contract.lower_bound,
+                years,
+            )
+            upper_cdf = 1.0 - probability_above(
+                crypto,
+                contract.upper_bound,
+                years,
+            )
+            return _clamp_probability(max(upper_cdf - lower_cdf, 0.0))
+
+        if not math.isclose(crypto.strike_price, contract.strike_price):
+            raise ValueError("crypto snapshot strike does not match threshold contract")
         if contract.model_kind is ThresholdModelKind.BARRIER:
             probability = barrier_hitting_probability(
                 spot_price=crypto.spot_price,
@@ -226,11 +263,11 @@ class CryptoThresholdEngine:
             )
             return _clamp_probability(probability)
 
-        numerator = (
-            math.log(crypto.spot_price / contract.strike_price)
-            + (crypto.expected_annual_return - 0.5 * sigma**2) * years
+        above_probability = self._terminal_above_probability(
+            crypto,
+            contract.strike_price,
+            years,
         )
-        above_probability = _normal_cdf(numerator / (sigma * math.sqrt(years)))
         probability = (
             above_probability
             if contract.direction is ThresholdDirection.ABOVE
@@ -239,10 +276,70 @@ class CryptoThresholdEngine:
         return _clamp_probability(probability)
 
     @staticmethod
+    def _terminal_above_probability(
+        crypto: CryptoSnapshot,
+        strike_price: float,
+        years: float,
+    ) -> float:
+        numerator = (
+            math.log(crypto.spot_price / strike_price)
+            + (crypto.expected_annual_return - 0.5 * crypto.annualized_volatility**2) * years
+        )
+        denominator = crypto.annualized_volatility * math.sqrt(years)
+        return _normal_cdf(numerator / denominator)
+
+    @staticmethod
+    def _averaged_terminal_above_probability(
+        crypto: CryptoSnapshot,
+        strike_price: float,
+        years: float,
+        window_seconds: int,
+    ) -> float:
+        sample_count = min(window_seconds, 60)
+        window_years = min(window_seconds / _SECONDS_PER_YEAR, years)
+        step = window_years / sample_count
+        sample_times = [
+            years - window_years + (index + 0.5) * step for index in range(sample_count)
+        ]
+        drift = crypto.expected_annual_return
+        variance = crypto.annualized_volatility**2
+        first_moment = (
+            sum(crypto.spot_price * math.exp(drift * time) for time in sample_times) / sample_count
+        )
+        second_moment = (
+            sum(
+                crypto.spot_price**2
+                * math.exp(drift * (first + second) + variance * min(first, second))
+                for first in sample_times
+                for second in sample_times
+            )
+            / sample_count**2
+        )
+        log_variance = max(math.log(second_moment / first_moment**2), _EPSILON**2)
+        log_mean = math.log(first_moment) - 0.5 * log_variance
+        z_score = (log_mean - math.log(strike_price)) / math.sqrt(log_variance)
+        return _normal_cdf(z_score)
+
+    @staticmethod
     def _market_probability(market: MarketSnapshot) -> float:
-        yes_midpoint = (market.yes_bid + market.yes_ask) / 2.0
-        no_implied_yes = 1.0 - (market.no_bid + market.no_ask) / 2.0
-        return _clamp_probability((yes_midpoint + no_implied_yes) / 2.0)
+        estimates: list[float] = []
+        if market.yes_bid is not None and market.yes_ask is not None:
+            estimates.append((market.yes_bid + market.yes_ask) / 2.0)
+        elif market.yes_bid is not None:
+            estimates.append(market.yes_bid)
+        elif market.yes_ask is not None:
+            estimates.append(market.yes_ask)
+
+        if market.no_bid is not None and market.no_ask is not None:
+            estimates.append(1.0 - (market.no_bid + market.no_ask) / 2.0)
+        elif market.no_bid is not None:
+            estimates.append(1.0 - market.no_bid)
+        elif market.no_ask is not None:
+            estimates.append(1.0 - market.no_ask)
+
+        if not estimates:
+            raise ValueError("at least one market quote is required")
+        return _clamp_probability(sum(estimates) / len(estimates))
 
     def _blend_probabilities(
         self,
@@ -260,11 +357,11 @@ class CryptoThresholdEngine:
         market_probability: float,
         structural_probability: float,
         crypto: CryptoSnapshot,
+        contract: CryptoPriceContract,
     ) -> tuple[list[str], list[str]]:
         supporting: list[str] = []
         opposing: list[str] = []
         difference = structural_probability - market_probability
-        distance_percent = (crypto.spot_price / crypto.strike_price - 1.0) * 100.0
 
         if difference >= 0.02:
             supporting.append(
@@ -277,6 +374,21 @@ class CryptoThresholdEngine:
         else:
             supporting.append("Structural and market probabilities broadly agree.")
 
+        if isinstance(contract, TerminalRangeContract):
+            if crypto.spot_price < contract.lower_bound:
+                position = f"below the ${contract.lower_bound:,.2f} lower bound"
+                opposing.append(f"{crypto.symbol} spot is {position}.")
+            elif crypto.spot_price > contract.upper_bound:
+                position = f"above the ${contract.upper_bound:,.2f} upper bound"
+                opposing.append(f"{crypto.symbol} spot is {position}.")
+            else:
+                supporting.append(
+                    f"{crypto.symbol} spot is inside the "
+                    f"${contract.lower_bound:,.2f}–${contract.upper_bound:,.2f} range."
+                )
+            return supporting, opposing
+
+        distance_percent = (crypto.spot_price / contract.strike_price - 1.0) * 100.0
         position = "above" if distance_percent >= 0 else "below"
         evidence = (
             f"{crypto.symbol} spot is {abs(distance_percent):.2f}% {position} the contract strike."
@@ -317,19 +429,28 @@ class CryptoThresholdEngine:
         forecast: ProbabilityForecast,
         crypto: CryptoSnapshot,
     ) -> Opportunity:
-        yes = self._candidate(
-            MarketSide.YES,
-            market.yes_ask,
-            market.yes_ask_size,
-            forecast.lower_probability_yes,
-        )
-        no = self._candidate(
-            MarketSide.NO,
-            market.no_ask,
-            market.no_ask_size,
-            1.0 - forecast.upper_probability_yes,
-        )
-        best = max((yes, no), key=lambda candidate: candidate.conservative_net_edge)
+        candidates: list[_Candidate] = []
+        if market.yes_ask is not None and market.yes_ask_size is not None:
+            candidates.append(
+                self._candidate(
+                    MarketSide.YES,
+                    market.yes_ask,
+                    market.yes_ask_size,
+                    forecast.lower_probability_yes,
+                )
+            )
+        if market.no_ask is not None and market.no_ask_size is not None:
+            candidates.append(
+                self._candidate(
+                    MarketSide.NO,
+                    market.no_ask,
+                    market.no_ask_size,
+                    1.0 - forecast.upper_probability_yes,
+                )
+            )
+        if not candidates:
+            raise ValueError("no executable side is available")
+        best = max(candidates, key=lambda candidate: candidate.conservative_net_edge)
 
         warnings: list[str] = []
         reasons = [
@@ -341,9 +462,17 @@ class CryptoThresholdEngine:
 
         if abs(market.observed_at - crypto.observed_at) > timedelta(minutes=1):
             warnings.append("Market and crypto observations are more than one minute apart.")
-        if market.yes_ask + market.no_ask < 0.99:
+        if (
+            market.yes_ask is not None
+            and market.no_ask is not None
+            and market.yes_ask + market.no_ask < 0.99
+        ):
             warnings.append("Complementary asks appear incoherent; verify quote freshness.")
-        if market.yes_bid + market.no_bid > 1.01:
+        if (
+            market.yes_bid is not None
+            and market.no_bid is not None
+            and market.yes_bid + market.no_bid > 1.01
+        ):
             warnings.append("Complementary bids appear incoherent; verify quote freshness.")
 
         seconds_to_expiry = (market.expires_at - market.observed_at).total_seconds()

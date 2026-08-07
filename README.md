@@ -4,19 +4,19 @@ A crypto-first research and decision-support system for estimating calibrated
 prediction-market probabilities, ranking conservative opportunities, preserving
 an audit history, and delivering manual-review alerts to Discord.
 
-This first vertical slice evaluates binary contracts of the form “Will a crypto
-asset be above a specified price at expiry?” It does **not** place trades.
+This first vertical slice evaluates binary crypto terminal ranges plus upper and
+lower terminal/touch thresholds. It does **not** place trades.
 
 ## What is implemented
 
-- Lognormal terminal-price and geometric-Brownian first-passage probability
-  models for upper and lower crypto thresholds.
+- Lognormal terminal-price models for bounded crypto ranges and upper/lower
+  thresholds, plus geometric-Brownian first-passage models for touch barriers.
 - A market-anchored forecast blended in log-odds space.
 - Held-out, time-ordered uncertainty calibration plus explicit fees, slippage,
   resolution haircuts, liquidity checks, fractional Kelly sizing, and a no-trade
   `WATCH` state.
-- An unauthenticated Kalshi REST adapter for market metadata and executable
-  order-book quotes.
+- An unauthenticated Kalshi REST adapter for paginated market metadata and
+  side-specific executable order-book quotes.
 - Historical Kalshi ingestion for archived markets, candlesticks, rule snapshots,
   resolutions, and scheduled series/event fee changes.
 - Public Coinbase spot candles plus Deribit DVOL, funding history, perpetual basis,
@@ -27,7 +27,7 @@ asset be above a specified price at expiry?” It does **not** place trades.
 - A persisted walk-forward backtester with delayed executable quotes, adverse
   intraperiod pricing, partial fills, and point-in-time fee schedules.
 - Append-oriented SQLite storage for forecasts, recommendations, alert events,
-  point-in-time venue research data, and backtest runs.
+  per-market paper-cycle checks, point-in-time venue research data, and backtest runs.
 - Discord webhook delivery with idempotent retries and in-place market updates.
 - A CLI for manual/live evaluations, ingestion, research sync, walk-forward
   backtesting, one-shot multi-market paper-alert cycles, and regime-coverage reporting.
@@ -111,8 +111,8 @@ uv run pms kalshi-markets --series KALSHI_SERIES_TICKER
 uv run pms kalshi-inspect --ticker KALSHI_MARKET_TICKER
 ```
 
-For a supported terminal price threshold or explicit early-close touch barrier,
-fetch current Kalshi quotes and evaluate them against user-supplied crypto inputs:
+For a supported fixed-time terminal range/threshold or explicit early-close touch
+barrier, fetch current Kalshi quotes and evaluate them against user-supplied crypto inputs:
 
 ```bash
 uv run pms kalshi-evaluate \
@@ -127,16 +127,18 @@ symbol, structural model, and model version. Profiles are produced and persisted
 by `pms backtest`. `--allow-uncalibrated` permits local research with the configured
 fixed margin, but uncalibrated Discord alerts are rejected.
 
-Terminal markets use the probability of finishing beyond the strike. Early-close
-markets use the continuous-time first-passage probability of touching the strike
-before expiry. Upper and lower barriers, already-crossed barriers, physical drift,
-and numerically extreme tails are supported.
+Terminal markets use the probability of finishing within a bounded range or beyond
+a threshold. Early-close markets use the continuous-time first-passage probability
+of touching a threshold before expiry. Upper and lower barriers, already-crossed
+barriers, physical drift, and numerically extreme tails are supported. A market
+with only one executable side remains evaluable on that side; missing liquidity is
+never synthesized for the other side.
 
-Classification fails closed. An early-close market is accepted only when Kalshi's
-strike metadata identifies its direction and its resolution rules explicitly
-describe touch semantics such as reaching, touching, or trading beyond the
-threshold at any time before expiry. Ambiguous rules remain unsupported rather
-than being routed to a mathematically incorrect model.
+Classification fails closed. Range contracts require positive, increasing bounds
+and an explicit fixed-time terminal observation. An early-close threshold is
+accepted only when Kalshi's strike metadata identifies its direction and its
+resolution rules explicitly describe terminal or touch semantics. Ambiguous rules
+remain unsupported rather than being routed to a mathematically incorrect model.
 
 The first-passage model assumes continuous geometric Brownian motion with constant
 volatility and drift over the remaining contract life. It does not model jumps,
@@ -283,13 +285,16 @@ uv run pms paper-alerts \
   --realized-window-days 30
 ```
 
-Each invocation fetches and persists the current Coinbase and Deribit research
-window, classifies the trailing price/realized-volatility regime, scans up to 100
-open markets, and evaluates every supported threshold contract. All evaluations,
-including `WATCH`, remain in SQLite. Only calibrated `ENTER YES` or `ENTER NO`
-recommendations are delivered to Discord. A market missing its matching held-out
-calibration is skipped, and the command exits unsuccessfully so scheduled
-operation cannot silently treat an incomplete cycle as healthy.
+Each invocation fetches and persists the Coinbase and Deribit research window,
+classifies the trailing price/realized-volatility regime, adds a completed
+one-minute Coinbase decision price, follows Kalshi cursors across up to 1,000 open
+markets, and evaluates every supported range or threshold contract. A stale
+decision price fails the cycle closed. All evaluations, including `WATCH`, remain
+in SQLite; every skipped market is recorded with its rejection reason. Only
+calibrated `ENTER YES` or `ENTER NO` recommendations are delivered to Discord. A
+market missing its matching held-out calibration is skipped, and the command exits
+unsuccessfully so scheduled operation cannot silently treat an incomplete cycle as
+healthy.
 
 The default regime matrix uses a 5% absolute trailing-return threshold for
 `uptrend`, `range`, and `downtrend`, plus 40% and 80% annualized realized-volatility

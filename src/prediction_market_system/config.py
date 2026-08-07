@@ -26,4 +26,6 @@ class Settings(BaseSettings):
     minimum_ask_size: float = Field(default=10.0, ge=0.0)
     fractional_kelly: float = Field(default=0.25, ge=0.0, le=1.0)
     max_bankroll_fraction: float = Field(default=0.02, ge=0.0, le=1.0)
+    max_event_bankroll_fraction: float = Field(default=0.02, ge=0.0, le=1.0)
+    maximum_live_spot_age_seconds: int = Field(default=120, ge=1, le=3600)
     minimum_seconds_to_expiry: int = Field(default=300, ge=0)
