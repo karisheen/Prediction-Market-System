@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 from typing import Annotated, Literal, Protocol, Self, TypeVar
@@ -14,10 +15,12 @@ from prediction_market_system.calibration import (
     fit_uncertainty_profiles,
 )
 from prediction_market_system.domain import (
+    CryptoPriceContract,
     MarketSide,
     MarketSnapshot,
+    Opportunity,
+    ProbabilityForecast,
     RecommendationState,
-    TerminalRangeContract,
 )
 from prediction_market_system.engine import BinaryFeeType, CryptoThresholdEngine, EngineConfig
 from prediction_market_system.research import ResearchContext, ResearchDataUnavailable
@@ -54,6 +57,11 @@ class BacktestConfig(BacktestModel):
     minimum_calibration_samples: Annotated[int, Field(gt=0)] = 30
     maximum_calibration_bins: Annotated[int, Field(gt=0, le=20)] = 5
     calibration_confidence: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.95
+    calibration_lead_seconds: Annotated[int, Field(ge=0)] = 5 * 60
+    minimum_validation_events: Annotated[int, Field(gt=0)] = 20
+    minimum_validation_folds: Annotated[int, Field(gt=0)] = 2
+    minimum_return_on_cost: float = 0.0
+    maximum_brier_score: Annotated[float, Field(gt=0.0, le=1.0)] = 0.25
 
     @field_validator("start", "end")
     @classmethod
@@ -104,6 +112,7 @@ class HistoricalMarketData(BacktestModel):
 
 class BacktestTrade(BacktestModel):
     fold_index: int
+    event_ticker: str
     ticker: str
     signal_at: datetime
     executed_at: datetime
@@ -143,6 +152,22 @@ class BacktestFoldResult(BacktestModel):
     brier_score: float | None
 
 
+class BacktestModelValidation(BacktestModel):
+    model_name: str
+    model_version: str
+    calibration_profile_id: UUID | None
+    independent_calibration_events: int
+    held_out_events: int
+    held_out_folds: int
+    held_out_trades: int
+    total_cost_dollars: Decimal
+    total_pnl_dollars: Decimal
+    return_on_cost: float | None
+    brier_score: float | None
+    accepted_for_paper_alerts: bool
+    rejection_reasons: tuple[str, ...]
+
+
 class BacktestResult(BacktestModel):
     run_id: UUID = Field(default_factory=uuid4)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -157,6 +182,8 @@ class BacktestResult(BacktestModel):
     total_pnl_dollars: Decimal
     return_on_cost: float | None
     brier_score: float | None
+    deployment_profiles: tuple[UncertaintyCalibrationProfile, ...]
+    model_validations: tuple[BacktestModelValidation, ...]
 
 
 class BacktestResearchSource(Protocol):
@@ -232,6 +259,17 @@ def _latest_change(
     return max(eligible, key=lambda change: change.scheduled_ts, default=None)
 
 
+@dataclass(frozen=True)
+class _BacktestCandidate:
+    historical_market: HistoricalMarketData
+    signal_at: datetime
+    execution_at: datetime
+    execution_candle: KalshiCandlestick
+    opportunity: Opportunity
+    forecast: ProbabilityForecast
+    execution_fee: EffectiveFee
+
+
 class HistoricalBacktester:
     def __init__(
         self,
@@ -251,6 +289,10 @@ class HistoricalBacktester:
         without_candles: set[str] = set()
         traded_markets: set[str] = set()
         fold_results: list[BacktestFoldResult] = []
+        configured_fee = EffectiveFee(
+            fee_type=("flat" if self._engine_config.binary_fee_type == "flat" else "quadratic"),
+            multiplier=self._engine_config.binary_fee_coefficient,
+        )
 
         for fold in walk_forward_folds(config):
             calibration_profiles = self.calibrate(
@@ -260,32 +302,24 @@ class HistoricalBacktester:
                 cutoff_at=fold.train_end,
             )
             profiles_by_model = {profile.model_name: profile for profile in calibration_profiles}
-            trades: list[BacktestTrade] = []
-            considered = 0
-            evaluated_signals = 0
-            missing_context = 0
-            missing_fee = 0
-            missing_calibration = 0
+            signals_by_time: dict[
+                int,
+                list[tuple[HistoricalMarketData, CryptoPriceContract, KalshiCandlestick]],
+            ] = {}
+            considered_markets: set[str] = set()
             for historical_market in markets:
-                ticker = historical_market.market.ticker
-                if ticker in traded_markets:
-                    continue
                 market = historical_market.market
                 if market.result not in {"yes", "no"}:
-                    unresolved.add(ticker)
+                    unresolved.add(market.ticker)
                     continue
                 if not historical_market.candlesticks:
-                    without_candles.add(ticker)
+                    without_candles.add(market.ticker)
                     continue
                 try:
                     contract = market.price_contract()
                 except UnsupportedMarketError:
-                    unsupported.add(ticker)
+                    unsupported.add(market.ticker)
                     continue
-                if isinstance(contract, TerminalRangeContract):
-                    unsupported.add(ticker)
-                    continue
-
                 signal_candles = tuple(
                     candle
                     for candle in historical_market.candlesticks
@@ -295,20 +329,38 @@ class HistoricalBacktester:
                 )
                 if not signal_candles:
                     continue
-                considered += 1
-                calibration_profile = profiles_by_model.get(
-                    CryptoThresholdEngine.model_name(contract)
-                )
+                considered_markets.add(market.ticker)
+                for candle in signal_candles:
+                    signals_by_time.setdefault(candle.end_period_ts, []).append(
+                        (historical_market, contract, candle)
+                    )
 
-                for signal_candle in signal_candles:
+            trades: list[BacktestTrade] = []
+            evaluated_signals = 0
+            missing_context = 0
+            missing_fee = 0
+            missing_calibration = 0
+            remaining_by_event: dict[str, float] = {}
+            for signal_ts, cycle_signals in sorted(signals_by_time.items()):
+                signal_at = datetime.fromtimestamp(signal_ts, UTC)
+                candidates: list[_BacktestCandidate] = []
+                for historical_market, contract, signal_candle in cycle_signals:
+                    market = historical_market.market
+                    if market.ticker in traded_markets:
+                        continue
+                    calibration_profile = profiles_by_model.get(
+                        CryptoThresholdEngine.model_name(contract)
+                    )
                     if config.require_calibration and calibration_profile is None:
                         missing_calibration += 1
                         continue
-                    signal_at = datetime.fromtimestamp(signal_candle.end_period_ts, UTC)
-                    fee = effective_fee_at(historical_market, signal_at)
-                    if fee is None:
-                        missing_fee += 1
-                        continue
+                    fee = (
+                        effective_fee_at(
+                            historical_market,
+                            signal_at,
+                        )
+                        or configured_fee
+                    )
                     try:
                         context = self._research_source.research_context_as_of(
                             symbol=config.symbol,
@@ -320,7 +372,6 @@ class HistoricalBacktester:
                     except ResearchDataUnavailable:
                         missing_context += 1
                         continue
-
                     snapshot = _market_snapshot(market, signal_candle, config)
                     engine = CryptoThresholdEngine(
                         self._engine_config.model_copy(
@@ -345,11 +396,12 @@ class HistoricalBacktester:
                         RecommendationState.ENTER_NO,
                     }:
                         continue
-                    if opportunity.side is None or opportunity.executable_price is None:
+                    if (
+                        opportunity.side is None
+                        or opportunity.executable_price is None
+                        or opportunity.conservative_net_edge is None
+                    ):
                         continue
-                    if opportunity.conservative_net_edge is None:
-                        continue
-
                     execution = _execution_candle(
                         historical_market.candlesticks,
                         signal_at,
@@ -359,38 +411,78 @@ class HistoricalBacktester:
                     if execution is None:
                         continue
                     execution_at = datetime.fromtimestamp(execution.end_period_ts, UTC)
-                    execution_fee = effective_fee_at(historical_market, execution_at)
-                    if execution_fee is None:
-                        missing_fee += 1
+                    execution_fee = (
+                        effective_fee_at(historical_market, execution_at) or configured_fee
+                    )
+                    candidates.append(
+                        _BacktestCandidate(
+                            historical_market=historical_market,
+                            signal_at=signal_at,
+                            execution_at=execution_at,
+                            execution_candle=execution,
+                            opportunity=opportunity,
+                            forecast=forecast,
+                            execution_fee=execution_fee,
+                        )
+                    )
+
+                candidates.sort(
+                    key=lambda candidate: (
+                        candidate.opportunity.conservative_net_edge
+                        if candidate.opportunity.conservative_net_edge is not None
+                        else float("-inf")
+                    ),
+                    reverse=True,
+                )
+                for candidate in candidates:
+                    market = candidate.historical_market.market
+                    if market.ticker in traded_markets:
+                        continue
+                    opportunity = candidate.opportunity
+                    remaining = remaining_by_event.setdefault(
+                        market.event_ticker,
+                        self._engine_config.paper_bankroll
+                        * self._engine_config.max_event_bankroll_fraction,
+                    )
+                    allowed_exposure = min(opportunity.suggested_max_exposure, remaining)
+                    side = opportunity.side
+                    executable_price = opportunity.executable_price
+                    conservative_edge = opportunity.conservative_net_edge
+                    if side is None or executable_price is None or conservative_edge is None:
+                        continue
+                    if allowed_exposure <= 0:
                         continue
                     trade = _fill_trade(
                         fold.index,
                         market,
-                        signal_at,
-                        execution_at,
-                        execution,
-                        opportunity.side,
-                        float(opportunity.executable_price),
-                        float(opportunity.suggested_max_exposure),
-                        forecast.probability_yes,
-                        forecast.model_name,
-                        forecast.uncertainty_margin,
-                        forecast.uncertainty_source,
-                        forecast.calibration_profile_id,
-                        opportunity.conservative_net_edge,
-                        execution_fee,
+                        candidate.signal_at,
+                        candidate.execution_at,
+                        candidate.execution_candle,
+                        side,
+                        float(executable_price),
+                        float(allowed_exposure),
+                        candidate.forecast.probability_yes,
+                        candidate.forecast.model_name,
+                        candidate.forecast.uncertainty_margin,
+                        candidate.forecast.uncertainty_source,
+                        candidate.forecast.calibration_profile_id,
+                        conservative_edge,
+                        candidate.execution_fee,
                         config.max_volume_participation,
                     )
                     if trade is None:
                         continue
                     trades.append(trade)
-                    traded_markets.add(ticker)
-                    break
+                    traded_markets.add(market.ticker)
+                    remaining_by_event[market.event_ticker] = max(
+                        remaining - allowed_exposure,
+                        0.0,
+                    )
 
             fold_results.append(
                 _fold_result(
                     fold,
-                    considered,
+                    len(considered_markets),
                     evaluated_signals,
                     missing_context,
                     missing_fee,
@@ -403,6 +495,17 @@ class HistoricalBacktester:
         all_trades = tuple(trade for fold in fold_results for trade in fold.trades)
         total_cost = sum((trade.cost_dollars for trade in all_trades), Decimal("0.00"))
         total_pnl = sum((trade.pnl_dollars for trade in all_trades), Decimal("0.00"))
+        deployment_profiles = self.calibrate(
+            config,
+            markets,
+            training_start=max(config.start, config.end - timedelta(days=config.train_days)),
+            cutoff_at=config.end,
+        )
+        validations = _model_validations(
+            config,
+            tuple(fold_results),
+            deployment_profiles,
+        )
         return BacktestResult(
             config=config,
             folds=tuple(fold_results),
@@ -414,7 +517,9 @@ class HistoricalBacktester:
             total_cost_dollars=total_cost,
             total_pnl_dollars=total_pnl,
             return_on_cost=_ratio(total_pnl, total_cost),
-            brier_score=_brier_score(all_trades),
+            brier_score=_event_weighted_trade_brier_score(all_trades),
+            deployment_profiles=deployment_profiles,
+            model_validations=validations,
         )
 
     def calibrate(
@@ -437,17 +542,19 @@ class HistoricalBacktester:
                 contract = market.price_contract()
             except UnsupportedMarketError:
                 continue
-            if isinstance(contract, TerminalRangeContract):
-                continue
-            signal_candle = next(
+            target_at = market.expiry - timedelta(seconds=config.calibration_lead_seconds)
+            signal_candle = max(
                 (
                     candle
                     for candle in historical_market.candlesticks
                     if training_start
                     <= datetime.fromtimestamp(candle.end_period_ts, UTC)
+                    <= target_at
+                    and datetime.fromtimestamp(candle.end_period_ts, UTC)
                     < min(cutoff_at, market.expiry, market.settlement_ts)
                 ),
-                None,
+                key=lambda candle: candle.end_period_ts,
+                default=None,
             )
             if signal_candle is None:
                 continue
@@ -473,6 +580,7 @@ class HistoricalBacktester:
             samples.append(
                 CalibrationSample(
                     market_id=market.ticker,
+                    event_id=market.event_ticker,
                     symbol=config.symbol,
                     model_name=forecast.model_name,
                     model_version=forecast.model_version,
@@ -514,6 +622,10 @@ def _market_snapshot(
         yes_ask_size=volume,
         no_ask_size=volume,
         resolution_rule=market.resolution_rule,
+        series_id=market.normalized_series_ticker,
+        event_id=market.event_ticker,
+        contract_label=market.contract_label,
+        market_url=market.market_url,
     )
 
 
@@ -578,6 +690,7 @@ def _fill_trade(
     pnl = payout - cost
     return BacktestTrade(
         fold_index=fold_index,
+        event_ticker=market.event_ticker,
         ticker=market.ticker,
         signal_at=signal_at,
         executed_at=execution_at,
@@ -627,7 +740,7 @@ def _fold_result(
         total_cost_dollars=total_cost,
         total_pnl_dollars=total_pnl,
         return_on_cost=_ratio(total_pnl, total_cost),
-        brier_score=_brier_score(tuple(trades)),
+        brier_score=_event_weighted_trade_brier_score(tuple(trades)),
     )
 
 
@@ -635,9 +748,91 @@ def _ratio(numerator: Decimal, denominator: Decimal) -> float | None:
     return None if denominator == 0 else float(numerator / denominator)
 
 
-def _brier_score(trades: tuple[BacktestTrade, ...]) -> float | None:
+def _event_weighted_trade_brier_score(
+    trades: tuple[BacktestTrade, ...],
+) -> float | None:
     if not trades:
         return None
-    return sum(
-        (trade.probability_yes - (1.0 if trade.result == "yes" else 0.0)) ** 2 for trade in trades
-    ) / len(trades)
+    by_event: dict[str, list[float]] = {}
+    for trade in trades:
+        by_event.setdefault(trade.event_ticker, []).append(
+            (trade.probability_yes - (1.0 if trade.result == "yes" else 0.0)) ** 2
+        )
+    return sum(sum(scores) / len(scores) for scores in by_event.values()) / len(by_event)
+
+
+def _model_validations(
+    config: BacktestConfig,
+    folds: tuple[BacktestFoldResult, ...],
+    deployment_profiles: tuple[UncertaintyCalibrationProfile, ...],
+) -> tuple[BacktestModelValidation, ...]:
+    profiles_by_model = {profile.model_name: profile for profile in deployment_profiles}
+    trades = tuple(trade for fold in folds for trade in fold.trades)
+    model_names = sorted(set(profiles_by_model) | {trade.model_name for trade in trades})
+    validations: list[BacktestModelValidation] = []
+    for model_name in model_names:
+        profile = profiles_by_model.get(model_name)
+        model_trades = tuple(trade for trade in trades if trade.model_name == model_name)
+        event_count = len({trade.event_ticker for trade in model_trades})
+        fold_count = len({trade.fold_index for trade in model_trades})
+        total_cost = sum(
+            (trade.cost_dollars for trade in model_trades),
+            Decimal("0.00"),
+        )
+        total_pnl = sum(
+            (trade.pnl_dollars for trade in model_trades),
+            Decimal("0.00"),
+        )
+        return_on_cost = _ratio(total_pnl, total_cost)
+        brier_score = _event_weighted_trade_brier_score(model_trades)
+        reasons: list[str] = []
+        if profile is None:
+            reasons.append("no deployment calibration profile")
+        elif profile.independent_event_count < config.minimum_calibration_samples:
+            reasons.append(
+                "deployment calibration has "
+                f"{profile.independent_event_count} independent events; "
+                f"minimum is {config.minimum_calibration_samples}"
+            )
+        if event_count < config.minimum_validation_events:
+            reasons.append(
+                f"held-out backtest has {event_count} traded events; "
+                f"minimum is {config.minimum_validation_events}"
+            )
+        if fold_count < config.minimum_validation_folds:
+            reasons.append(
+                f"held-out backtest has {fold_count} traded folds; "
+                f"minimum is {config.minimum_validation_folds}"
+            )
+        if return_on_cost is None or return_on_cost <= config.minimum_return_on_cost:
+            reasons.append(
+                f"held-out return on cost does not exceed {config.minimum_return_on_cost:.2%}"
+            )
+        if brier_score is None or brier_score > config.maximum_brier_score:
+            reasons.append(
+                f"event-weighted held-out Brier score exceeds {config.maximum_brier_score:.4f}"
+            )
+        validations.append(
+            BacktestModelValidation(
+                model_name=model_name,
+                model_version=(
+                    profile.model_version
+                    if profile is not None
+                    else CryptoThresholdEngine.model_version
+                ),
+                calibration_profile_id=None if profile is None else profile.profile_id,
+                independent_calibration_events=(
+                    0 if profile is None else profile.independent_event_count
+                ),
+                held_out_events=event_count,
+                held_out_folds=fold_count,
+                held_out_trades=len(model_trades),
+                total_cost_dollars=total_cost,
+                total_pnl_dollars=total_pnl,
+                return_on_cost=return_on_cost,
+                brier_score=brier_score,
+                accepted_for_paper_alerts=not reasons,
+                rejection_reasons=tuple(reasons),
+            )
+        )
+    return tuple(validations)

@@ -45,6 +45,7 @@ class PaperAlertCycleResult:
     unsupported: int
     uncalibrated: int
     failures: tuple[str, ...]
+    unapproved: int = 0
 
 
 class PaperAlertRunner:
@@ -56,7 +57,7 @@ class PaperAlertRunner:
         repository: SQLiteRepository,
         engine: CryptoThresholdEngine,
         market_reader: PaperAlertMarketReader,
-        alert_service: PaperAlertPublisher,
+        alert_service: PaperAlertPublisher | None,
         clock: Callable[[], datetime] | None = None,
         maximum_spot_age: timedelta = timedelta(minutes=2),
     ) -> None:
@@ -77,6 +78,7 @@ class PaperAlertRunner:
         regime: MarketRegimeSnapshot,
         expected_annual_return: float = 0.0,
         cycle_id: str | None = None,
+        deliver_entries: bool = True,
     ) -> PaperAlertCycleResult:
         if context.symbol != regime.symbol:
             raise ValueError("research context and market regime symbols must match")
@@ -110,6 +112,7 @@ class PaperAlertRunner:
         unsupported = 0
         uncalibrated = 0
         failures: list[str] = []
+        unapproved = 0
         evaluated_opportunities: list[tuple[KalshiMarket, Opportunity]] = []
 
         for market in markets:
@@ -140,6 +143,19 @@ class PaperAlertRunner:
                     cycle_observed_at,
                     MarketCheckStatus.MISSING_CALIBRATION,
                     f"no held-out calibration for {self.engine.model_name(contract)}",
+                )
+                continue
+            if deliver_entries and not self.repository.is_calibration_approved(profile.profile_id):
+                unapproved += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    cycle_observed_at,
+                    MarketCheckStatus.UNAPPROVED_MODEL,
+                    (
+                        "held-out backtest criteria have not approved calibration "
+                        f"{profile.profile_id}"
+                    ),
                 )
                 continue
 
@@ -197,6 +213,10 @@ class PaperAlertRunner:
                     None,
                     opportunity=opportunity,
                 )
+                if not deliver_entries:
+                    continue
+                if self.alert_service is None:
+                    raise ValueError("alert publisher is required when delivery is enabled")
                 await self.alert_service.publish(opportunity)
                 delivered += 1
                 self._record_check(
@@ -226,6 +246,7 @@ class PaperAlertRunner:
             delivered=delivered,
             unsupported=unsupported,
             uncalibrated=uncalibrated,
+            unapproved=unapproved,
             failures=tuple(failures),
         )
 

@@ -288,6 +288,52 @@ async def test_fetches_historical_research_inputs_and_fee_changes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lists_settled_events_and_fetches_their_markets() -> None:
+    event_payload = {
+        "event_ticker": "KXBTCTEST-30DEC31",
+        "series_ticker": "KXBTCTEST",
+        "title": "BTC range",
+        "sub_title": "At 5 PM",
+        "mutually_exclusive": True,
+        "strike_date": "2030-12-31T23:59:00Z",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events"):
+            assert request.url.params["status"] == "settled"
+            assert request.url.params["series_ticker"] == "KXBTCTEST"
+            assert request.url.params["min_close_ts"] == "1924988400"
+            return httpx.Response(200, json={"events": [event_payload], "cursor": "next"})
+        if request.url.path.endswith("/events/KXBTCTEST-30DEC31"):
+            return httpx.Response(
+                200,
+                json={
+                    "event": event_payload,
+                    "markets": [historical_market_payload()],
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(client=http_client)
+
+    events = await client.list_events(
+        status="settled",
+        series_ticker="KXBTCTEST",
+        min_close_ts=1_924_988_400,
+    )
+    event = await client.get_event(events.events[0].event_ticker)
+
+    assert events.cursor == "next"
+    assert events.events[0].mutually_exclusive is True
+    assert event.markets[0].ticker == "KXBTCTEST-30DEC31-T100000"
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_fetches_flexible_kalshi_event_live_data() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/live_data/events/KXBTCTEST-30DEC31")

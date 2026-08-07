@@ -34,6 +34,9 @@ def evaluation() -> tuple[object, object]:
         no_ask_size=1_000,
         resolution_rule="Test index at expiry.",
         market_url="https://example.com/market",
+        series_id="KXBTCTEST",
+        event_id="KXBTCTEST-30DEC31",
+        contract_label="Above $100",
     )
     crypto = CryptoSnapshot(
         symbol="BTC",
@@ -93,6 +96,12 @@ async def test_discord_alert_is_idempotent_and_updates_by_market(tmp_path: Path)
     assert [method for method, _, _ in requests] == ["POST", "PATCH"]
     assert requests[0][2]["allowed_mentions"] == {"parse": []}
     assert requests[1][1].endswith("/messages/message-1")
+    fields = requests[0][2]["embeds"][0]["fields"]
+    action = next(field["value"] for field in fields if field["name"] == "Manual-review action")
+    assert "BUY YES" in action
+    assert "do not pay above 42.0%" in action
+    assert "YES condition: Above $100" in action
+    assert "Contract: `btc-discord-test`" in action
 
     await http_client.aclose()
 

@@ -207,6 +207,7 @@ async def test_runner_delivers_calibrated_entries_and_persists_regime(
         "latest_uncertainty_calibration",
         lambda **kwargs: profile,
     )
+    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id: True)
     reader = FakeMarketReader()
     publisher = FakePublisher()
     runner = PaperAlertRunner(
@@ -256,6 +257,61 @@ async def test_runner_delivers_calibrated_entries_and_persists_regime(
         "KXBTCTEST-30DEC31-T100": "delivered",
         "KXBTCTEST-30DEC31-UNSUPPORTED": "unsupported",
     }
+
+
+@pytest.mark.asyncio
+async def test_runner_shadows_candidates_and_blocks_unapproved_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, candles = research_context(end_price="130", realized_volatility=0.60)
+    regime = classify_market_regime(context, candles)
+    repository = SQLiteRepository(tmp_path / "audit.db")
+    repository.initialize()
+    monkeypatch.setattr(
+        repository,
+        "latest_uncertainty_calibration",
+        lambda **kwargs: calibration_profile(),
+    )
+    reader = FakeMarketReader()
+    publisher = FakePublisher()
+    runner = PaperAlertRunner(
+        repository=repository,
+        engine=CryptoThresholdEngine(
+            EngineConfig(
+                min_conservative_edge=0.0,
+                binary_fee_coefficient=0.0,
+                slippage_bps=0.0,
+                resolution_haircut=0.0,
+            )
+        ),
+        market_reader=reader,
+        alert_service=publisher,
+        clock=lambda: AS_OF,
+    )
+
+    shadow = await runner.run(
+        markets=[kalshi_market()],
+        context=context,
+        regime=regime,
+        cycle_id="cycle-shadow",
+        deliver_entries=False,
+    )
+    blocked = await runner.run(
+        markets=[kalshi_market()],
+        context=context,
+        regime=regime,
+        cycle_id="cycle-unapproved",
+        deliver_entries=True,
+    )
+
+    assert shadow.evaluated == 1
+    assert shadow.delivered == 0
+    assert publisher.published == []
+    assert repository.paper_market_checks("cycle-shadow")[0]["status"] == "entry_candidate"
+    assert blocked.unapproved == 1
+    assert blocked.evaluated == 0
+    assert repository.paper_market_checks("cycle-unapproved")[0]["status"] == ("unapproved_model")
 
 
 @pytest.mark.asyncio
@@ -333,6 +389,7 @@ async def test_runner_caps_combined_entries_for_one_event(
         "latest_uncertainty_calibration",
         lambda **kwargs: calibration_profile(),
     )
+    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id: True)
     first = kalshi_market()
     second = first.model_copy(update={"ticker": "KXBTCTEST-30DEC31-T101"})
     publisher = FakePublisher()
@@ -447,6 +504,19 @@ def test_paper_alert_command_records_regime_cycle(
     monkeypatch.setattr("prediction_market_system.cli._load_kalshi_markets", lambda *args: [])
     monkeypatch.setattr("prediction_market_system.cli._run_paper_alert_cycle", run_cycle)
 
+    research_result = cli_runner.invoke(
+        app,
+        [
+            "paper-alert-research",
+            "--series",
+            "KXBTC",
+            "--symbol",
+            "BTC",
+            "--interval",
+            "1440",
+        ],
+    )
+    assert research_result.exit_code == 0, research_result.output
     result = cli_runner.invoke(
         app,
         [

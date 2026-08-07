@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from prediction_market_system.backtest import BacktestResult, HistoricalMarketData
 from prediction_market_system.calibration import UncertaintyCalibrationProfile
@@ -30,6 +31,7 @@ class AlertStatus(StrEnum):
 class MarketCheckStatus(StrEnum):
     UNSUPPORTED = "unsupported"
     MISSING_CALIBRATION = "missing_calibration"
+    UNAPPROVED_MODEL = "unapproved_model"
     FAILED = "failed"
     WATCH = "watch"
     ENTRY_CANDIDATE = "entry_candidate"
@@ -217,6 +219,23 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 CREATE INDEX IF NOT EXISTS idx_calibrations_model_cutoff
                 ON uncertainty_calibrations (
                     symbol, model_name, model_version, cutoff_at
+                );
+
+                CREATE TABLE IF NOT EXISTS paper_model_validations (
+                    run_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    calibration_profile_id TEXT,
+                    accepted INTEGER NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (run_id, model_name),
+                    FOREIGN KEY (run_id) REFERENCES backtest_runs (run_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_model_validations_profile
+                ON paper_model_validations (
+                    calibration_profile_id, accepted, generated_at
                 );
 
                 CREATE TABLE IF NOT EXISTS market_regime_snapshots (
@@ -499,26 +518,43 @@ class SQLiteRepository(ResearchRepositoryMixin):
         start: datetime,
         end: datetime,
         period_interval: CandlestickPeriod,
-        max_markets: int,
+        max_events: int,
     ) -> tuple[HistoricalMarketData, ...]:
         with self._connect() as connection:
             market_rows = connection.execute(
                 """
                 WITH ranked_snapshots AS (
-                    SELECT series_ticker, ticker, close_time, payload_json,
+                    SELECT series_ticker, event_ticker, ticker, close_time, payload_json,
                            ROW_NUMBER() OVER (
                                PARTITION BY ticker ORDER BY observed_at DESC
                            ) AS snapshot_rank
                     FROM kalshi_market_snapshots
-                    WHERE series_ticker = ? AND close_time > ?
+                    WHERE series_ticker = ? AND close_time >= ? AND close_time <= ?
+                ),
+                latest_snapshots AS (
+                    SELECT series_ticker, event_ticker, ticker, close_time, payload_json
+                    FROM ranked_snapshots
+                    WHERE snapshot_rank = 1
+                ),
+                selected_events AS (
+                    SELECT event_ticker, MIN(close_time) AS event_close
+                    FROM latest_snapshots
+                    GROUP BY event_ticker
+                    ORDER BY event_close ASC
+                    LIMIT ?
                 )
-                SELECT series_ticker, ticker, close_time, payload_json
-                FROM ranked_snapshots
-                WHERE snapshot_rank = 1
-                ORDER BY close_time ASC
-                LIMIT ?
+                SELECT latest.series_ticker, latest.ticker, latest.close_time,
+                       latest.payload_json
+                FROM latest_snapshots AS latest
+                JOIN selected_events USING (event_ticker)
+                ORDER BY latest.close_time ASC, latest.ticker ASC
                 """,
-                (series_ticker.upper(), start.isoformat(), max_markets),
+                (
+                    series_ticker.upper(),
+                    start.isoformat(),
+                    end.isoformat(),
+                    max_events,
+                ),
             ).fetchall()
             series_fee_rows = connection.execute(
                 """
@@ -627,25 +663,50 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     result.model_dump_json(),
                 ),
             )
-            for fold in result.folds:
-                for profile in fold.calibration_profiles:
-                    connection.execute(
-                        """
-                        INSERT OR IGNORE INTO uncertainty_calibrations (
-                            profile_id, symbol, model_name, model_version,
-                            cutoff_at, generated_at, payload_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
+            profiles = (
+                *(profile for fold in result.folds for profile in fold.calibration_profiles),
+                *result.deployment_profiles,
+            )
+            for profile in profiles:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO uncertainty_calibrations (
+                        profile_id, symbol, model_name, model_version,
+                        cutoff_at, generated_at, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(profile.profile_id),
+                        profile.symbol,
+                        profile.model_name,
+                        profile.model_version,
+                        profile.cutoff_at.isoformat(),
+                        profile.generated_at.isoformat(),
+                        profile.model_dump_json(),
+                    ),
+                )
+            for validation in result.model_validations:
+                connection.execute(
+                    """
+                    INSERT INTO paper_model_validations (
+                        run_id, model_name, model_version, calibration_profile_id,
+                        accepted, generated_at, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(result.run_id),
+                        validation.model_name,
+                        validation.model_version,
                         (
-                            str(profile.profile_id),
-                            profile.symbol,
-                            profile.model_name,
-                            profile.model_version,
-                            profile.cutoff_at.isoformat(),
-                            profile.generated_at.isoformat(),
-                            profile.model_dump_json(),
+                            None
+                            if validation.calibration_profile_id is None
+                            else str(validation.calibration_profile_id)
                         ),
-                    )
+                        int(validation.accepted_for_paper_alerts),
+                        result.generated_at.isoformat(),
+                        validation.model_dump_json(),
+                    ),
+                )
 
     def latest_uncertainty_calibration(
         self,
@@ -671,6 +732,20 @@ class SQLiteRepository(ResearchRepositoryMixin):
             return None
         return UncertaintyCalibrationProfile.model_validate_json(str(row["payload_json"]))
 
+    def is_calibration_approved(self, profile_id: UUID) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT accepted
+                FROM paper_model_validations
+                WHERE calibration_profile_id = ?
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """,
+                (str(profile_id),),
+            ).fetchone()
+        return row is not None and bool(row["accepted"])
+
     def save_market_regime(
         self,
         *,
@@ -692,6 +767,32 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     regime.model_dump_json(),
                 ),
             )
+
+    def latest_market_regime(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        as_of: datetime,
+    ) -> MarketRegimeSnapshot | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM market_regime_snapshots
+                WHERE series_ticker = ? AND symbol = ? AND observed_at <= ?
+                ORDER BY observed_at DESC
+                LIMIT 1
+                """,
+                (
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    as_of.isoformat(),
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        return MarketRegimeSnapshot.model_validate_json(str(row["payload_json"]))
 
     def market_regime_coverage(
         self,
