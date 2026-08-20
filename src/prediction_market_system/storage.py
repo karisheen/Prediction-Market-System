@@ -96,6 +96,11 @@ class SQLiteRepository(ResearchRepositoryMixin):
         with self._connect() as connection:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    migration_name TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS forecasts (
                     forecast_id TEXT PRIMARY KEY,
                     market_id TEXT NOT NULL,
@@ -349,7 +354,18 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 )
                 SELECT cycle_id, series_ticker, MIN(observed_at)
                 FROM paper_alert_market_checks
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM schema_migrations
+                    WHERE migration_name = 'paper_alert_cycles_backfill_v1'
+                )
                 GROUP BY cycle_id, series_ticker;
+
+                INSERT OR IGNORE INTO schema_migrations (
+                    migration_name, applied_at
+                ) VALUES (
+                    'paper_alert_cycles_backfill_v1', CURRENT_TIMESTAMP
+                );
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
@@ -1515,8 +1531,9 @@ class SQLiteRepository(ResearchRepositoryMixin):
         return [json.loads(str(row["payload_json"])) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=120.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 120000")
         connection.execute("PRAGMA journal_mode = WAL")
         return connection

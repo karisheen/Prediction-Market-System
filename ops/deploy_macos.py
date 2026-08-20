@@ -381,6 +381,7 @@ def main() -> int:
             skip_checks=args.skip_checks,
         )
         previous = _activate_release(app_path, release, releases, release_id)
+        _run([uv_path, "run", "pms", "init-db"], cwd=app_path)
         for spec in specs:
             _write_plist(
                 launch_agents / f"{spec.label}.plist",

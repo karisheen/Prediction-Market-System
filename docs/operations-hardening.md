@@ -64,8 +64,9 @@ exclusive rewrite of the database.
 5. Runs `uv sync --frozen`, the full test suite, Ruff, and strict Mypy checks inside the staged
    release.
 6. Switches the stable `app` symlink to the verified release.
-7. Rewrites and reloads the alert, research, archive, validation, and maintenance launch agents.
-8. Restores the previous application pointer and agents if activation fails.
+7. Runs schema migrations once while all managed agents remain stopped.
+8. Rewrites and reloads the alert, research, archive, validation, and maintenance launch agents.
+9. Restores the previous application pointer and agents if activation fails.
 
 Run from a clean, committed checkout:
 

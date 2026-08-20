@@ -570,6 +570,47 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
     assert repository.paper_watch_rollups("KXBTC")[0]["evaluation_count"] == 1
 
 
+def test_legacy_cycle_backfill_runs_once(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy-cycle.db"
+    repository = SQLiteRepository(database_path)
+    repository.initialize()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            DELETE FROM schema_migrations
+            WHERE migration_name = 'paper_alert_cycles_backfill_v1'
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO paper_alert_market_checks (
+                cycle_id, market_id, series_ticker, event_ticker,
+                observed_at, status, reason, payload_json
+            ) VALUES (?, ?, ?, ?, ?, 'watch', NULL, '{}')
+            """,
+            (
+                "legacy-cycle",
+                "legacy-market",
+                "KXBTC",
+                "legacy-event",
+                AS_OF.isoformat(),
+            ),
+        )
+
+    repository.initialize()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM paper_alert_cycles WHERE cycle_id = 'legacy-cycle'"
+        ).fetchone() == (1,)
+        connection.execute("DELETE FROM paper_alert_cycles WHERE cycle_id = 'legacy-cycle'")
+
+    repository.initialize()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM paper_alert_cycles WHERE cycle_id = 'legacy-cycle'"
+        ).fetchone() == (0,)
+
+
 def test_paper_alert_maintenance_previews_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
