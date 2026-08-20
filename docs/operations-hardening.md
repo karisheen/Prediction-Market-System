@@ -2,16 +2,18 @@
 
 ## Implemented changes
 
-### Approved-only production alerts
+### Shadow-only production schedule
 
-The managed `paper-alerts` launch agent still uses `--send-discord`, but no longer uses
-`--allow-unapproved-discord`. An entry candidate can reach Discord only when the exact
-calibration profile used by the forecast has a persisted passing model validation. Shadow
-research and all SQLite audit writes continue while approval is absent. The system remains
-read-only with respect to trading venues.
+The managed `paper-alerts` launch agent uses neither `--send-discord` nor
+`--allow-unapproved-discord`. It continues calibrated shadow evaluations and SQLite audit
+writes while the validation campaign accumulates evidence, but no entry candidate can reach
+Discord from the managed schedule. The system remains read-only with respect to trading
+venues.
 
-The CLI keeps `--allow-unapproved-discord` for an explicitly initiated local/manual review.
-It is not part of the managed production schedule.
+The CLI keeps both delivery flags for an explicitly initiated local/manual review. After the
+exact live calibration profiles pass the persisted approval gates, enabling approved-only
+Discord delivery is a deliberate deployment-policy change rather than an automatic side
+effect of model validation.
 
 ### Bounded detailed WATCH retention
 

@@ -372,10 +372,11 @@ range or threshold contract. A stale decision price fails the cycle closed. Ever
 evaluation and skipped-market reason is initially recorded in SQLite. The managed
 deployment retains detailed `WATCH` evaluations for 14 days, then preserves daily
 counts while keeping entry candidates, deliveries, failures, and model evidence
-indefinitely. Shadow mode never sends Discord messages. Add `--send-discord` only
-after backtesting has approved the exact calibration profile. The managed schedule
-does not use `--allow-unapproved-discord`; that override is reserved for explicitly
-initiated local/manual review and still cannot execute trades.
+indefinitely. The managed schedule is shadow-only and uses neither Discord delivery
+flag. Enable `--send-discord` through a deliberate deployment-policy change only
+after backtesting has approved the exact calibration profile.
+`--allow-unapproved-discord` remains an explicitly initiated local/manual-review
+override and still cannot execute trades.
 
 The research command classifies a 5% absolute trailing-return threshold for
 `uptrend`, `range`, and `downtrend`, plus 40% and 80% annualized realized-volatility

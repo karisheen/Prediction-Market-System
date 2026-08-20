@@ -116,7 +116,6 @@ def _agent_specs(
                 "60",
                 "--realized-window-days",
                 "30",
-                "--send-discord",
             ),
             schedule={"RunAtLoad": True, "StartInterval": 300},
             log_name="paper-alerts.log",
@@ -410,7 +409,7 @@ def main() -> int:
 
     print(f"Activated {release_id}")
     print(f"Application pointer: {app_path} -> {release}")
-    print("Discord delivery requires an approved calibration profile.")
+    print("Paper-alert schedule is shadow-only; Discord delivery is disabled.")
     print(f"Detailed WATCH retention: {args.watch_retention_days} days")
     return 0
 

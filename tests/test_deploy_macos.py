@@ -21,7 +21,7 @@ _ignore_source = deploy._ignore_source
 _plist_payload = deploy._plist_payload
 
 
-def test_launch_agents_require_model_approval_and_schedule_maintenance() -> None:
+def test_launch_agents_use_shadow_mode_and_schedule_maintenance() -> None:
     specs = _agent_specs(
         series="KXBTC",
         symbol="BTC",
@@ -30,7 +30,7 @@ def test_launch_agents_require_model_approval_and_schedule_maintenance() -> None
     )
     by_suffix = {spec.suffix: spec for spec in specs}
 
-    assert "--send-discord" in by_suffix["alerts"].arguments
+    assert "--send-discord" not in by_suffix["alerts"].arguments
     assert "--allow-unapproved-discord" not in by_suffix["alerts"].arguments
     assert by_suffix["maintenance"].arguments == (
         "paper-alert-maintain",
