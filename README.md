@@ -110,7 +110,8 @@ require one.
 | `backtest` | Run walk-forward calibration, execution replay, and model approval |
 | `paper-alert-research` | Refresh slower research data and persist the current regime |
 | `paper-alerts` | Scan all open contracts; shadow-only unless `--send-discord` is supplied |
-| `paper-alert-status` | Report accumulated forward regime coverage |
+| `paper-alert-status` | Report cycles since the previous request, all-time resolved alert profitability, and regime coverage |
+| `paper-alert-maintain` | Preview or apply bounded detailed `WATCH` retention with daily rollups |
 | `history` | Review persisted forecasts and recommendations |
 | `discord-test` | Send a non-trading webhook health check |
 
@@ -122,7 +123,8 @@ require one.
    decisions.
 4. Schedule `paper-alert-research` hourly.
 5. Schedule `paper-alerts` every five minutes in its default shadow mode.
-6. Review forward candidates in SQLite and track regime coverage with
+6. Schedule `paper-alert-maintain --apply` daily to bound detailed `WATCH` storage.
+7. Review forward candidates in SQLite and track regime coverage with
    `paper-alert-status`; enable `--send-discord` only when the exact live profile
    has passed the configured approval gates.
 
@@ -366,11 +368,14 @@ uv run pms paper-alerts \
 
 Each evaluation adds a completed one-minute Coinbase decision price, follows
 Kalshi cursors across up to 1,000 open markets, and evaluates every supported
-range or threshold contract. A stale decision price fails the cycle closed. All
-evaluations, including `WATCH`, remain in SQLite; every skipped market is recorded
-with its rejection reason. Shadow mode never sends Discord messages. Add
-`--send-discord` only after backtesting has persisted an approval for the exact
-calibration profile; unapproved models fail closed even when delivery is requested.
+range or threshold contract. A stale decision price fails the cycle closed. Every
+evaluation and skipped-market reason is initially recorded in SQLite. The managed
+deployment retains detailed `WATCH` evaluations for 14 days, then preserves daily
+counts while keeping entry candidates, deliveries, failures, and model evidence
+indefinitely. Shadow mode never sends Discord messages. Add `--send-discord` only
+after backtesting has approved the exact calibration profile. The managed schedule
+does not use `--allow-unapproved-discord`; that override is reserved for explicitly
+initiated local/manual review and still cannot execute trades.
 
 The research command classifies a 5% absolute trailing-return threshold for
 `uptrend`, `range`, and `downtrend`, plus 40% and 80% annualized realized-volatility
@@ -387,10 +392,47 @@ forward coverage with:
 uv run pms paper-alert-status --series KXBTC --symbol BTC
 ```
 
+The first request reports all recorded cycles. Later requests count cycles from the
+persisted series/symbol checkpoint. Alert totals are all-time so an alert that was
+unresolved during an earlier request is included after its Kalshi resolution is
+archived. Resolved, profitable, and unresolved counts are shown separately; an
+alert is profitable when its recommended side matches the archived resolution.
+
+Validation evidence maintenance is automated with two idempotent commands:
+
+```bash
+uv run pms paper-alert-archive \
+  --series KXBTC --symbol BTC \
+  --campaign-start 2026-08-07T00:00:00Z
+
+uv run pms paper-alert-validate \
+  --series KXBTC --symbol BTC \
+  --campaign-start 2026-08-07T00:00:00Z \
+  --send-discord
+```
+
+Preview bounded `WATCH` retention before applying it:
+
+```bash
+uv run pms paper-alert-maintain \
+  --series KXBTC \
+  --watch-retention-days 14
+```
+
+Archive completed UTC days daily. Validation can run weekly: before the configured
+chronological window is complete it updates one Discord readiness message; once
+ready, it runs the walk-forward backtest and replaces that message with the exact
+per-model approval gates and decisions.
+
 Run `pms backtest` first to produce held-out calibration profiles in the same
 database. Regime coverage is forward evidence gathered over time; adding the
 runner does not itself establish that the model has survived multiple real market
 regimes.
+
+The managed macOS deployment uses a verified release directory and an atomic
+`app` symlink rather than copying source over the running installation. See the
+[operational hardening change record](docs/operations-hardening.md) for deployment,
+retention, rollback, verification, and future infrastructure work.
 
 ## Discord delivery
 

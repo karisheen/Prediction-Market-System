@@ -79,6 +79,7 @@ class PaperAlertRunner:
         expected_annual_return: float = 0.0,
         cycle_id: str | None = None,
         deliver_entries: bool = True,
+        allow_unapproved_delivery: bool = False,
     ) -> PaperAlertCycleResult:
         if context.symbol != regime.symbol:
             raise ValueError("research context and market regime symbols must match")
@@ -145,7 +146,8 @@ class PaperAlertRunner:
                     f"no held-out calibration for {self.engine.model_name(contract)}",
                 )
                 continue
-            if deliver_entries and not self.repository.is_calibration_approved(profile.profile_id):
+            profile_approved = self.repository.is_calibration_approved(profile.profile_id)
+            if deliver_entries and not profile_approved and not allow_unapproved_delivery:
                 unapproved += 1
                 self._record_check(
                     cycle,
@@ -168,9 +170,13 @@ class PaperAlertRunner:
                     expected_annual_return=expected_annual_return,
                 )
                 _, opportunity = self.engine.evaluate(snapshot, crypto, contract, profile)
-                evaluated_opportunities.append(
-                    (market, opportunity.model_copy(update={"market_regime": regime}))
-                )
+                updates: dict[str, object] = {"market_regime": regime}
+                if deliver_entries and not profile_approved:
+                    updates["warnings"] = (
+                        *opportunity.warnings,
+                        "UNAPPROVED MODEL: held-out approval is missing; manual review only",
+                    )
+                evaluated_opportunities.append((market, opportunity.model_copy(update=updates)))
             except (
                 IncompleteOrderBookError,
                 KalshiAPIError,

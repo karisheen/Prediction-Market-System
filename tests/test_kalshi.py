@@ -92,6 +92,39 @@ def candlestick_payload() -> dict[str, object]:
     }
 
 
+def live_candlestick_payload() -> dict[str, object]:
+    return {
+        "ticker": "KXBTCTEST-30DEC31-T100000",
+        "candlesticks": [
+            {
+                "end_period_ts": 1_924_991_940,
+                "yes_bid": {
+                    "open_dollars": "0.4000",
+                    "low_dollars": "0.3900",
+                    "high_dollars": "0.4300",
+                    "close_dollars": "0.4200",
+                },
+                "yes_ask": {
+                    "open_dollars": "0.4200",
+                    "low_dollars": "0.4100",
+                    "high_dollars": "0.4500",
+                    "close_dollars": "0.4400",
+                },
+                "price": {
+                    "open_dollars": None,
+                    "low_dollars": None,
+                    "high_dollars": None,
+                    "close_dollars": None,
+                    "mean_dollars": None,
+                    "previous_dollars": "0.4100",
+                },
+                "volume_fp": "12.50",
+                "open_interest_fp": "200.00",
+            }
+        ],
+    }
+
+
 def order_book_payload() -> dict[str, object]:
     return {
         "orderbook_fp": {
@@ -153,7 +186,9 @@ async def test_fetches_public_market_snapshot_without_authentication() -> None:
     assert snapshot.series_id == "KXBTCTEST"
     assert snapshot.event_id == "KXBTCTEST-30DEC31"
     assert snapshot.contract_label == "Above $100,000"
-    assert str(snapshot.market_url) == "https://kalshi.com/markets/kxbtctest"
+    assert str(snapshot.market_url) == (
+        "https://kalshi.com/markets/kxbtctest/bitcoin-range/kxbtctest-30dec31"
+    )
     await http_client.aclose()
 
 
@@ -284,6 +319,38 @@ async def test_fetches_historical_research_inputs_and_fee_changes() -> None:
     assert candles[0].price.previous == Decimal("0.4100")
     assert series_fees[0].fee_multiplier == pytest.approx(0.07)
     assert event_fees.event_fee_changes[0].fee_type_override is None
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_candlesticks_fall_back_to_recent_market_endpoint() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if "/historical/markets/" in request.url.path:
+            return httpx.Response(404)
+        return httpx.Response(200, json=live_candlestick_payload())
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(client=http_client)
+
+    candles = await client.get_candlesticks(
+        "KXBTCTEST",
+        "KXBTCTEST-30DEC31-T100000",
+        start_ts=1_924_988_400,
+        end_ts=1_924_991_940,
+        period_interval=60,
+    )
+
+    assert requested_paths == [
+        "/trade-api/v2/historical/markets/KXBTCTEST-30DEC31-T100000/candlesticks",
+        ("/trade-api/v2/series/KXBTCTEST/markets/KXBTCTEST-30DEC31-T100000/candlesticks"),
+    ]
+    assert candles[0].price.previous == Decimal("0.4100")
     await http_client.aclose()
 
 

@@ -7,15 +7,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, cast
 from uuid import uuid4
 
+import httpx
 import typer
 from pydantic import HttpUrl
 from rich.console import Console
 from rich.table import Table
 
-from prediction_market_system.backtest import (
-    BacktestConfig,
-    HistoricalBacktester,
-)
+from prediction_market_system.backtest import BacktestConfig, BacktestResult, HistoricalBacktester
 from prediction_market_system.config import Settings
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
 from prediction_market_system.domain import (
@@ -52,6 +50,7 @@ from prediction_market_system.sources import (
     DeribitDataError,
 )
 from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.validation import ValidationCampaignReport, ValidationCampaignState
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
     KalshiAPIError,
@@ -400,6 +399,157 @@ def kalshi_sync_history(
     )
     console.print(table)
     console.print(f"Stored in [bold]{settings.database_path}[/bold]")
+
+
+@app.command("paper-alert-archive")
+def paper_alert_archive(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker to archive.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    campaign_start: Annotated[
+        str,
+        typer.Option(help="Earliest UTC date eligible for automated archival."),
+    ],
+    period: Annotated[
+        int,
+        typer.Option(help="Candlestick length in minutes: 1, 60, or 1440."),
+    ] = 1,
+    catch_up_days: Annotated[
+        int,
+        typer.Option(min=1, max=31, help="Maximum completed UTC days checked per run."),
+    ] = 7,
+    max_events: Annotated[
+        int,
+        typer.Option(min=1, max=5_000, help="Maximum settled events fetched per day."),
+    ] = 100,
+    range_contracts_per_event: Annotated[
+        int,
+        typer.Option(min=1, max=500, help="Range contracts retained per event."),
+    ] = 3,
+    history_hours: Annotated[
+        int,
+        typer.Option(min=1, max=168, help="Pre-expiry candlestick history per contract."),
+    ] = 24,
+) -> None:
+    """Archive completed UTC days for future paper-model validation."""
+    if period not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--period")
+    normalized_series = series.upper()
+    normalized_symbol = symbol.upper()
+    period_interval = cast(CandlestickPeriod, period)
+    today = _utc_day(datetime.now(UTC))
+    first_day = max(
+        _utc_day(_parse_timestamp(campaign_start)), today - timedelta(days=catch_up_days)
+    )
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+
+    archived = 0
+    skipped = 0
+    window_start = first_day
+    while window_start < today:
+        window_end = window_start + timedelta(days=1)
+        if repository.validation_archive_succeeded(
+            series_ticker=normalized_series,
+            symbol=normalized_symbol,
+            start_at=window_start,
+            end_at=window_end,
+            period_interval=period_interval,
+        ):
+            skipped += 1
+            window_start = window_end
+            continue
+        repository.begin_validation_archive(
+            series_ticker=normalized_series,
+            symbol=normalized_symbol,
+            start_at=window_start,
+            end_at=window_end,
+            period_interval=period_interval,
+        )
+        try:
+            market_batch = asyncio.run(
+                _fetch_kalshi_history(
+                    normalized_series,
+                    window_start,
+                    window_end,
+                    period_interval,
+                    max_events,
+                    range_contracts_per_event,
+                    history_hours,
+                )
+            )
+            candle_count = sum(len(candles) for candles in market_batch.candlesticks.values())
+            if market_batch.markets and candle_count == 0:
+                raise ValueError(
+                    "Kalshi returned settled markets but no point-in-time candlesticks"
+                )
+            market_written = repository.save_kalshi_history(
+                series_ticker=normalized_series,
+                observed_at=market_batch.observed_at,
+                markets=market_batch.markets,
+                candlesticks=market_batch.candlesticks,
+                period_interval=period_interval,
+                series_fee_changes=market_batch.series_fee_changes,
+                event_fee_changes=market_batch.event_fee_changes,
+            )
+            research_batch = asyncio.run(
+                _fetch_research_data(
+                    normalized_symbol,
+                    window_start,
+                    window_end,
+                    period_interval * 60,
+                    None,
+                )
+            )
+            research_written = repository.save_research_data(
+                spot_candles=research_batch.spot_candles,
+                volatility_observations=research_batch.volatility_observations,
+                funding_observations=research_batch.funding_observations,
+                derivatives_snapshots=research_batch.derivatives_snapshots,
+            )
+            counts = {
+                "market_snapshots": market_written.market_snapshots,
+                "candlesticks": candle_count,
+                "resolutions": market_written.resolutions,
+                "spot_candles": research_written.spot_candles,
+                "volatility_observations": research_written.volatility_observations,
+                "funding_observations": research_written.funding_observations,
+            }
+            repository.complete_validation_archive(
+                series_ticker=normalized_series,
+                symbol=normalized_symbol,
+                start_at=window_start,
+                end_at=window_end,
+                period_interval=period_interval,
+                counts=counts,
+            )
+            archived += 1
+            console.print(
+                f"Archived {window_start.date()} • "
+                f"{counts['candlesticks']} market candles • "
+                f"{counts['spot_candles']} spot candles"
+            )
+        except Exception as exc:
+            repository.complete_validation_archive(
+                series_ticker=normalized_series,
+                symbol=normalized_symbol,
+                start_at=window_start,
+                end_at=window_end,
+                period_interval=period_interval,
+                error=str(exc),
+            )
+            if isinstance(
+                exc,
+                (CoinbaseDataError, DeribitDataError, KalshiAPIError, ValueError),
+            ):
+                console.print(
+                    f"[red]Validation archive failed for {window_start.date()}: {exc}[/red]"
+                )
+                raise typer.Exit(code=1) from exc
+            raise
+        window_start = window_end
+
+    console.print(f"Validation archive complete • {archived} archived • {skipped} already stored")
 
 
 @app.command("sync-research-data")
@@ -824,6 +974,124 @@ def backtest(
         )
 
 
+@app.command("paper-alert-validate")
+def paper_alert_validate(
+    series: Annotated[str, typer.Option(help="Stored Kalshi series ticker.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    campaign_start: Annotated[str, typer.Option(help="Validation campaign UTC start.")],
+    period: Annotated[int, typer.Option(help="Stored candle interval in minutes.")] = 1,
+    train_days: Annotated[int, typer.Option(min=1)] = 90,
+    test_days: Annotated[int, typer.Option(min=1)] = 30,
+    step_days: Annotated[int, typer.Option(min=1)] = 30,
+    realized_window_days: Annotated[int, typer.Option(min=1, max=365)] = 30,
+    minimum_calibration_samples: Annotated[int, typer.Option(min=1)] = 30,
+    minimum_validation_events: Annotated[int, typer.Option(min=1)] = 20,
+    minimum_validation_folds: Annotated[int, typer.Option(min=1)] = 2,
+    minimum_return_on_cost: float = 0.0,
+    maximum_brier_score: Annotated[float, typer.Option(min=0.000001, max=1.0)] = 0.25,
+    max_events: Annotated[int, typer.Option(min=1, max=5_000)] = 5_000,
+    send_discord: Annotated[bool, typer.Option(help="Update Discord validation status.")] = True,
+) -> None:
+    """Run validation when coverage is ready; otherwise report collection progress."""
+    if period not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--period")
+    settings = Settings()
+    if send_discord and settings.discord_webhook_url is None:
+        raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
+    normalized_series = series.upper()
+    normalized_symbol = symbol.upper()
+    period_interval = cast(CandlestickPeriod, period)
+    start_at = _utc_day(_parse_timestamp(campaign_start))
+    required_days = train_days + test_days + step_days * (minimum_validation_folds - 1)
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    coverage_days, coverage_end = repository.validation_archive_coverage(
+        series_ticker=normalized_series,
+        symbol=normalized_symbol,
+        period_interval=period_interval,
+        campaign_start=start_at,
+    )
+    result: BacktestResult | None = None
+    if coverage_days >= required_days:
+        end_at = start_at + timedelta(days=coverage_days)
+        config = BacktestConfig(
+            series_ticker=normalized_series,
+            symbol=normalized_symbol,
+            start=start_at,
+            end=end_at,
+            period_minutes=period_interval,
+            realized_window_days=realized_window_days,
+            train_days=train_days,
+            test_days=test_days,
+            step_days=step_days,
+            minimum_calibration_samples=minimum_calibration_samples,
+            minimum_validation_events=minimum_validation_events,
+            minimum_validation_folds=minimum_validation_folds,
+            minimum_return_on_cost=minimum_return_on_cost,
+            maximum_brier_score=maximum_brier_score,
+        )
+        markets = repository.load_kalshi_backtest_data(
+            series_ticker=normalized_series,
+            start=start_at,
+            end=end_at,
+            period_interval=period_interval,
+            max_events=max_events,
+        )
+        if markets:
+            result = HistoricalBacktester(repository, _engine_config(settings)).run(config, markets)
+            repository.save_backtest_result(result)
+
+    validations = () if result is None else result.model_validations
+    approved = sum(item.accepted_for_paper_alerts for item in validations)
+    if coverage_days < required_days or result is None:
+        state = ValidationCampaignState.COLLECTING
+    elif approved == len(validations) and validations:
+        state = ValidationCampaignState.APPROVED
+    elif approved:
+        state = ValidationCampaignState.PARTIALLY_APPROVED
+    else:
+        state = ValidationCampaignState.REJECTED
+    report = ValidationCampaignReport(
+        series_ticker=normalized_series,
+        symbol=normalized_symbol,
+        generated_at=datetime.now(UTC),
+        state=state,
+        coverage_start=start_at,
+        coverage_end=coverage_end,
+        coverage_days=coverage_days,
+        required_days=required_days,
+        validations=validations,
+        run_id=None if result is None else str(result.run_id),
+    )
+    message_id: str | None = None
+    if send_discord and settings.discord_webhook_url is not None:
+        message_id = asyncio.run(
+            _publish_validation_report(
+                settings.discord_webhook_url.get_secret_value(),
+                repository,
+                report,
+            )
+        )
+    repository.save_validation_campaign(
+        series_ticker=normalized_series,
+        symbol=normalized_symbol,
+        state=state.value,
+        payload=_validation_report_payload(report),
+        discord_message_id=message_id,
+    )
+    console.print(
+        f"Validation campaign: [bold]{state.value}[/bold] • "
+        f"{coverage_days}/{required_days} archived days"
+    )
+    for validation in validations:
+        decision = (
+            "APPROVED"
+            if validation.accepted_for_paper_alerts
+            else "; ".join(validation.rejection_reasons)
+        )
+        console.print(f"{validation.model_name}: {decision}")
+
+
 @app.command("paper-alert-research")
 def paper_alert_research(
     series: Annotated[str, typer.Option(help="Kalshi series ticker for regime records.")],
@@ -971,10 +1239,24 @@ def paper_alerts(
         bool,
         typer.Option(help="Deliver approved entry candidates; default is shadow mode."),
     ] = False,
+    allow_unapproved_discord: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Deliver calibrated candidates without held-out approval for manual "
+                "review; requires --send-discord."
+            )
+        ),
+    ] = False,
 ) -> None:
     """Evaluate open markets from stored research; default to delivery-free shadow mode."""
     if interval not in {1, 60, 1440}:
         raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--interval")
+    if allow_unapproved_discord and not send_discord:
+        raise typer.BadParameter(
+            "requires --send-discord",
+            param_hint="--allow-unapproved-discord",
+        )
     settings = Settings()
     if send_discord and settings.discord_webhook_url is None:
         raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
@@ -1008,16 +1290,23 @@ def paper_alerts(
         raise typer.Exit(code=1)
 
     markets = _load_kalshi_markets(normalized_series, max_markets)
+    cycle_id = str(uuid4())
+    repository.save_paper_alert_cycle(
+        cycle_id=cycle_id,
+        series_ticker=normalized_series,
+        observed_at=decision_at,
+    )
     result = asyncio.run(
         _run_paper_alert_cycle(
             repository=repository,
             settings=settings,
             markets=markets,
-            cycle_id=str(uuid4()),
+            cycle_id=cycle_id,
             context=context,
             regime=regime,
             expected_annual_return=expected_return,
             send_discord=send_discord,
+            allow_unapproved_discord=allow_unapproved_discord,
         )
     )
 
@@ -1044,15 +1333,82 @@ def paper_alerts(
         raise typer.Exit(code=1)
 
 
+@app.command("paper-alert-maintain")
+def paper_alert_maintain(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker to compact.")],
+    watch_retention_days: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Days of detailed WATCH evaluations to retain."),
+    ] = 14,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Apply compaction; without this flag, preview only."),
+    ] = False,
+) -> None:
+    """Roll up and prune old WATCH-only audit records while preserving signals."""
+    settings = Settings()
+    repository = SQLiteRepository(settings.database_path)
+    repository.initialize()
+    cutoff_at = datetime.now(UTC) - timedelta(days=watch_retention_days)
+    result = repository.compact_watch_history(
+        series_ticker=series,
+        cutoff_at=cutoff_at,
+        apply=apply,
+    )
+
+    mode = "applied" if result.applied else "preview"
+    table = Table(title=f"Paper-alert WATCH maintenance: {series.upper()} / {mode}")
+    table.add_column("Metric")
+    table.add_column("Count", justify="right")
+    table.add_row("Eligible WATCH checks", str(result.eligible_checks))
+    table.add_row("Rolled-up WATCH checks", str(result.rolled_up_checks))
+    table.add_row("Deleted detailed checks", str(result.deleted_checks))
+    table.add_row("Deleted WATCH opportunities", str(result.deleted_opportunities))
+    table.add_row("Deleted orphaned forecasts", str(result.deleted_forecasts))
+    table.add_row("Deleted empty cycles", str(result.deleted_cycles))
+    console.print(table)
+    console.print(f"Detailed WATCH cutoff: {result.cutoff_at.isoformat()}")
+    if not result.applied:
+        console.print("[yellow]Preview only; pass --apply to compact stored history.[/yellow]")
+
+
 @app.command("paper-alert-status")
 def paper_alert_status(
     series: Annotated[str, typer.Option(help="Kalshi series ticker.")],
     symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
 ) -> None:
-    """Show forward paper-alert coverage by observed market regime."""
+    """Show activity since the last status request and forward regime coverage."""
     settings = Settings()
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
+    activity = repository.paper_alert_status_since_last_request(
+        series_ticker=series,
+        symbol=symbol,
+    )
+    activity_table = Table(
+        title=f"Paper-alert activity: {series.upper()} / {symbol.upper()}"
+    )
+    activity_table.add_column("Metric")
+    activity_table.add_column("Count", justify="right")
+    activity_table.add_row("Cycles since last request", str(activity.cycles))
+    activity_table.add_row(
+        "Discord alerts delivered (all time)",
+        str(activity.delivered_alerts),
+    )
+    activity_table.add_row("Resolved alerts (all time)", str(activity.resolved_alerts))
+    activity_table.add_row("Profitable alerts (all time)", str(activity.profitable_alerts))
+    activity_table.add_row("Unresolved alerts (all time)", str(activity.unresolved_alerts))
+    console.print(activity_table)
+    if activity.previous_requested_at is None:
+        console.print(
+            "[yellow]No previous status request; counts include all recorded activity.[/yellow]"
+        )
+    else:
+        console.print(
+            "Previous status request: "
+            f"{activity.previous_requested_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+
     coverage = repository.market_regime_coverage(
         series_ticker=series,
         symbol=symbol,
@@ -1166,6 +1522,7 @@ async def _fetch_kalshi_markets(
     client = KalshiClient()
     try:
         markets: list[KalshiMarket] = []
+        event_titles: dict[str, str] = {}
         cursor: str | None = None
         while len(markets) < limit:
             page = await client.list_markets(
@@ -1173,7 +1530,13 @@ async def _fetch_kalshi_markets(
                 limit=min(100, limit - len(markets)),
                 cursor=cursor,
             )
-            markets.extend(page.markets)
+            for market in page.markets:
+                event_title = event_titles.get(market.event_ticker)
+                if event_title is None:
+                    event = await client.get_event(market.event_ticker)
+                    event_title = event.event.title
+                    event_titles[market.event_ticker] = event_title
+                markets.append(market.model_copy(update={"event_title": event_title}))
             if not page.cursor:
                 break
             if page.cursor == cursor:
@@ -1235,18 +1598,20 @@ async def _fetch_kalshi_history(
                 for market in response.markets
                 if market.result in {"yes", "no"} and market.expiry <= end_at
             ]
-            markets.extend(event_markets)
-            selected_by_event[event.event_ticker] = _select_history_markets(
+            selected_markets = _select_history_markets(
                 event_markets,
                 range_contracts_per_event=range_contracts_per_event,
             )
+            markets.extend(selected_markets)
+            selected_by_event[event.event_ticker] = selected_markets
 
         semaphore = asyncio.Semaphore(8)
 
         async def fetch_candles(market: KalshiMarket) -> tuple[str, list[KalshiCandlestick]]:
             async with semaphore:
                 candle_start = max(start_at, market.expiry - timedelta(hours=history_hours))
-                candles = await client.get_historical_candlesticks(
+                candles = await client.get_candlesticks(
+                    series_ticker,
                     market.ticker,
                     start_ts=int(candle_start.timestamp()),
                     end_ts=int(min(end_at, market.expiry).timestamp()),
@@ -1279,7 +1644,7 @@ async def _fetch_kalshi_history(
                 event_cursor = fee_page.cursor
 
         return _KalshiHistoryBatch(
-            observed_at=datetime.now(UTC),
+            observed_at=end_at,
             markets=markets,
             candlesticks=candlesticks,
             series_fee_changes=series_fee_changes,
@@ -1470,6 +1835,7 @@ async def _run_paper_alert_cycle(
     expected_annual_return: float,
     cycle_id: str,
     send_discord: bool,
+    allow_unapproved_discord: bool = False,
 ) -> PaperAlertCycleResult:
     kalshi = KalshiClient()
     discord: DiscordWebhookClient | None = None
@@ -1494,11 +1860,54 @@ async def _run_paper_alert_cycle(
             expected_annual_return=expected_annual_return,
             cycle_id=cycle_id,
             deliver_entries=send_discord,
+            allow_unapproved_delivery=allow_unapproved_discord,
         )
     finally:
         await kalshi.close()
         if discord is not None:
             await discord.close()
+
+
+async def _publish_validation_report(
+    webhook_url: str,
+    repository: SQLiteRepository,
+    report: ValidationCampaignReport,
+) -> str:
+    client = DiscordWebhookClient(webhook_url)
+    previous_message_id = repository.validation_campaign_message_id(
+        series_ticker=report.series_ticker,
+        symbol=report.symbol,
+    )
+    try:
+        if previous_message_id is not None:
+            try:
+                return await client.update_validation_report(previous_message_id, report)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != httpx.codes.NOT_FOUND:
+                    raise
+        return await client.send_validation_report(report)
+    finally:
+        await client.close()
+
+
+def _validation_report_payload(report: ValidationCampaignReport) -> dict[str, object]:
+    return {
+        "series_ticker": report.series_ticker,
+        "symbol": report.symbol,
+        "generated_at": report.generated_at.isoformat(),
+        "state": report.state.value,
+        "coverage_start": report.coverage_start.isoformat(),
+        "coverage_end": report.coverage_end.isoformat(),
+        "coverage_days": report.coverage_days,
+        "required_days": report.required_days,
+        "run_id": report.run_id,
+        "validations": [validation.model_dump(mode="json") for validation in report.validations],
+    }
+
+
+def _utc_day(value: datetime) -> datetime:
+    value = value.astimezone(UTC)
+    return value.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 async def _send_discord_health_check(webhook_url: str) -> str:

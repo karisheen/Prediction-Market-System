@@ -46,6 +46,32 @@ class AlertRecord:
 
 
 @dataclass(frozen=True)
+class PaperAlertStatusSummary:
+    previous_requested_at: datetime | None
+    requested_at: datetime
+    cycles: int
+    delivered_alerts: int
+    resolved_alerts: int
+    profitable_alerts: int
+
+    @property
+    def unresolved_alerts(self) -> int:
+        return self.delivered_alerts - self.resolved_alerts
+
+
+@dataclass(frozen=True)
+class WatchCompactionResult:
+    cutoff_at: datetime
+    eligible_checks: int
+    rolled_up_checks: int
+    deleted_checks: int
+    deleted_opportunities: int
+    deleted_forecasts: int
+    deleted_cycles: int
+    applied: bool
+
+
+@dataclass(frozen=True)
 class KalshiHistoryWriteResult:
     market_snapshots: int = 0
     candlesticks: int = 0
@@ -238,6 +264,33 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     calibration_profile_id, accepted, generated_at
                 );
 
+                CREATE TABLE IF NOT EXISTS paper_validation_archive_runs (
+                    series_ticker TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    start_at TEXT NOT NULL,
+                    end_at TEXT NOT NULL,
+                    period_interval_minutes INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    counts_json TEXT,
+                    error TEXT,
+                    PRIMARY KEY (
+                        series_ticker, symbol, start_at, end_at,
+                        period_interval_minutes
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS paper_validation_campaigns (
+                    series_ticker TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    discord_message_id TEXT,
+                    state TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (series_ticker, symbol)
+                );
+
                 CREATE TABLE IF NOT EXISTS market_regime_snapshots (
                     series_ticker TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -249,6 +302,15 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_market_regimes_series_observed
                 ON market_regime_snapshots (series_ticker, symbol, observed_at);
+
+                CREATE TABLE IF NOT EXISTS paper_alert_cycles (
+                    cycle_id TEXT PRIMARY KEY,
+                    series_ticker TEXT NOT NULL,
+                    observed_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_paper_cycles_series_observed
+                ON paper_alert_cycles (series_ticker, observed_at);
 
                 CREATE TABLE IF NOT EXISTS paper_alert_market_checks (
                     cycle_id TEXT NOT NULL,
@@ -264,6 +326,30 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_paper_checks_series_observed
                 ON paper_alert_market_checks (series_ticker, observed_at);
+
+                CREATE TABLE IF NOT EXISTS paper_alert_status_requests (
+                    series_ticker TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    PRIMARY KEY (series_ticker, symbol)
+                );
+
+                CREATE TABLE IF NOT EXISTS paper_alert_watch_rollups (
+                    series_ticker TEXT NOT NULL,
+                    observed_day TEXT NOT NULL,
+                    evaluation_count INTEGER NOT NULL,
+                    first_observed_at TEXT NOT NULL,
+                    last_observed_at TEXT NOT NULL,
+                    compacted_at TEXT NOT NULL,
+                    PRIMARY KEY (series_ticker, observed_day)
+                );
+
+                INSERT OR IGNORE INTO paper_alert_cycles (
+                    cycle_id, series_ticker, observed_at
+                )
+                SELECT cycle_id, series_ticker, MIN(observed_at)
+                FROM paper_alert_market_checks
+                GROUP BY cycle_id, series_ticker;
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
@@ -305,6 +391,25 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 ),
             )
 
+    def save_paper_alert_cycle(
+        self,
+        *,
+        cycle_id: str,
+        series_ticker: str,
+        observed_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paper_alert_cycles (
+                    cycle_id, series_ticker, observed_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(cycle_id) DO UPDATE SET
+                    observed_at = MIN(paper_alert_cycles.observed_at, excluded.observed_at)
+                """,
+                (cycle_id, series_ticker.upper(), observed_at.isoformat()),
+            )
+
     def save_paper_market_check(
         self,
         *,
@@ -318,6 +423,16 @@ class SQLiteRepository(ResearchRepositoryMixin):
         payload: dict[str, Any],
     ) -> None:
         with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paper_alert_cycles (
+                    cycle_id, series_ticker, observed_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(cycle_id) DO UPDATE SET
+                    observed_at = MIN(paper_alert_cycles.observed_at, excluded.observed_at)
+                """,
+                (cycle_id, series_ticker.upper(), observed_at.isoformat()),
+            )
             connection.execute(
                 """
                 INSERT INTO paper_alert_market_checks (
@@ -361,6 +476,293 @@ class SQLiteRepository(ResearchRepositoryMixin):
             }
             for row in rows
         ]
+
+    def compact_watch_history(
+        self,
+        *,
+        series_ticker: str,
+        cutoff_at: datetime,
+        apply: bool = False,
+        compacted_at: datetime | None = None,
+    ) -> WatchCompactionResult:
+        if cutoff_at.tzinfo is None or cutoff_at.utcoffset() is None:
+            raise ValueError("WATCH retention cutoff must be timezone-aware")
+        normalized_series = series_ticker.upper()
+        cutoff = cutoff_at.astimezone(UTC)
+        cutoff_text = cutoff.isoformat()
+        compacted = compacted_at or datetime.now(UTC)
+        if compacted.tzinfo is None or compacted.utcoffset() is None:
+            raise ValueError("WATCH compaction timestamp must be timezone-aware")
+        compacted_text = compacted.astimezone(UTC).isoformat()
+
+        with self._connect() as connection:
+            eligible_row = connection.execute(
+                """
+                SELECT COUNT(*) AS eligible_checks
+                FROM paper_alert_market_checks
+                WHERE series_ticker = ? AND status = ? AND observed_at < ?
+                """,
+                (normalized_series, MarketCheckStatus.WATCH.value, cutoff_text),
+            ).fetchone()
+            eligible_checks = int(eligible_row["eligible_checks"])
+            if not apply or eligible_checks == 0:
+                return WatchCompactionResult(
+                    cutoff_at=cutoff,
+                    eligible_checks=eligible_checks,
+                    rolled_up_checks=0,
+                    deleted_checks=0,
+                    deleted_opportunities=0,
+                    deleted_forecasts=0,
+                    deleted_cycles=0,
+                    applied=apply,
+                )
+
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                CREATE TEMP TABLE watch_compaction_targets (
+                    opportunity_id TEXT PRIMARY KEY,
+                    forecast_id TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO watch_compaction_targets (opportunity_id, forecast_id)
+                SELECT opportunities.opportunity_id, opportunities.forecast_id
+                FROM paper_alert_market_checks AS checks
+                JOIN opportunities
+                  ON opportunities.opportunity_id = json_extract(
+                      checks.payload_json, '$.opportunity.opportunity_id'
+                  )
+                WHERE checks.series_ticker = ?
+                  AND checks.status = ?
+                  AND checks.observed_at < ?
+                """,
+                (normalized_series, MarketCheckStatus.WATCH.value, cutoff_text),
+            )
+            target_row = connection.execute(
+                "SELECT COUNT(*) AS target_count FROM watch_compaction_targets"
+            ).fetchone()
+            target_count = int(target_row["target_count"])
+            if target_count != eligible_checks:
+                raise RuntimeError(
+                    "refusing to compact WATCH history: "
+                    f"{eligible_checks - target_count} checks lack linked evaluations"
+                )
+
+            connection.execute(
+                """
+                INSERT INTO paper_alert_watch_rollups (
+                    series_ticker, observed_day, evaluation_count,
+                    first_observed_at, last_observed_at, compacted_at
+                )
+                SELECT series_ticker, substr(observed_at, 1, 10), COUNT(*),
+                       MIN(observed_at), MAX(observed_at), ?
+                FROM paper_alert_market_checks
+                WHERE series_ticker = ? AND status = ? AND observed_at < ?
+                GROUP BY series_ticker, substr(observed_at, 1, 10)
+                ON CONFLICT(series_ticker, observed_day) DO UPDATE SET
+                    evaluation_count = (
+                        paper_alert_watch_rollups.evaluation_count
+                        + excluded.evaluation_count
+                    ),
+                    first_observed_at = MIN(
+                        paper_alert_watch_rollups.first_observed_at,
+                        excluded.first_observed_at
+                    ),
+                    last_observed_at = MAX(
+                        paper_alert_watch_rollups.last_observed_at,
+                        excluded.last_observed_at
+                    ),
+                    compacted_at = excluded.compacted_at
+                """,
+                (
+                    compacted_text,
+                    normalized_series,
+                    MarketCheckStatus.WATCH.value,
+                    cutoff_text,
+                ),
+            )
+            deleted_checks = connection.execute(
+                """
+                DELETE FROM paper_alert_market_checks
+                WHERE series_ticker = ? AND status = ? AND observed_at < ?
+                """,
+                (normalized_series, MarketCheckStatus.WATCH.value, cutoff_text),
+            ).rowcount
+            deleted_opportunities = connection.execute(
+                """
+                DELETE FROM opportunities
+                WHERE opportunity_id IN (
+                    SELECT opportunity_id FROM watch_compaction_targets
+                )
+                  AND state = 'WATCH'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM alert_events
+                      WHERE alert_events.opportunity_id = opportunities.opportunity_id
+                  )
+                """
+            ).rowcount
+            deleted_forecasts = connection.execute(
+                """
+                DELETE FROM forecasts
+                WHERE forecast_id IN (
+                    SELECT forecast_id FROM watch_compaction_targets
+                )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM opportunities
+                      WHERE opportunities.forecast_id = forecasts.forecast_id
+                  )
+                """
+            ).rowcount
+            deleted_cycles = connection.execute(
+                """
+                DELETE FROM paper_alert_cycles
+                WHERE series_ticker = ? AND observed_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM paper_alert_market_checks
+                      WHERE paper_alert_market_checks.cycle_id = paper_alert_cycles.cycle_id
+                  )
+                """,
+                (normalized_series, cutoff_text),
+            ).rowcount
+
+        return WatchCompactionResult(
+            cutoff_at=cutoff,
+            eligible_checks=eligible_checks,
+            rolled_up_checks=eligible_checks,
+            deleted_checks=deleted_checks,
+            deleted_opportunities=deleted_opportunities,
+            deleted_forecasts=deleted_forecasts,
+            deleted_cycles=deleted_cycles,
+            applied=True,
+        )
+
+    def paper_watch_rollups(self, series_ticker: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT series_ticker, observed_day, evaluation_count,
+                       first_observed_at, last_observed_at, compacted_at
+                FROM paper_alert_watch_rollups
+                WHERE series_ticker = ?
+                ORDER BY observed_day
+                """,
+                (series_ticker.upper(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def paper_alert_status_since_last_request(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        requested_at: datetime | None = None,
+    ) -> PaperAlertStatusSummary:
+        requested = requested_at or datetime.now(UTC)
+        if requested.tzinfo is None or requested.utcoffset() is None:
+            raise ValueError("status request timestamp must be timezone-aware")
+        requested = requested.astimezone(UTC)
+        requested_text = requested.isoformat()
+        normalized_series = series_ticker.upper()
+        normalized_symbol = symbol.upper()
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            checkpoint = connection.execute(
+                """
+                SELECT requested_at
+                FROM paper_alert_status_requests
+                WHERE series_ticker = ? AND symbol = ?
+                """,
+                (normalized_series, normalized_symbol),
+            ).fetchone()
+            previous = (
+                None
+                if checkpoint is None
+                else datetime.fromisoformat(str(checkpoint["requested_at"])).astimezone(UTC)
+            )
+            previous_text = None if previous is None else previous.isoformat()
+            cycle_row = connection.execute(
+                """
+                SELECT COUNT(*) AS cycle_count
+                FROM paper_alert_cycles
+                WHERE series_ticker = ?
+                  AND observed_at <= ?
+                  AND (? IS NULL OR observed_at > ?)
+                """,
+                (
+                    normalized_series,
+                    requested_text,
+                    previous_text,
+                    previous_text,
+                ),
+            ).fetchone()
+            alert_rows = connection.execute(
+                """
+                WITH latest_resolutions AS (
+                    SELECT ticker, result,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ticker
+                               ORDER BY COALESCE(settlement_ts, observed_at) DESC,
+                                        observed_at DESC
+                           ) AS resolution_rank
+                    FROM kalshi_resolutions
+                    WHERE observed_at <= ?
+                      AND (settlement_ts IS NULL OR settlement_ts <= ?)
+                )
+                SELECT checks.payload_json, resolutions.result
+                FROM paper_alert_market_checks AS checks
+                LEFT JOIN latest_resolutions AS resolutions
+                  ON resolutions.ticker = checks.market_id
+                 AND resolutions.resolution_rank = 1
+                WHERE checks.series_ticker = ?
+                  AND checks.status = ?
+                  AND checks.observed_at <= ?
+                """,
+                (
+                    requested_text,
+                    requested_text,
+                    normalized_series,
+                    MarketCheckStatus.DELIVERED.value,
+                    requested_text,
+                ),
+            ).fetchall()
+            connection.execute(
+                """
+                INSERT INTO paper_alert_status_requests (
+                    series_ticker, symbol, requested_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(series_ticker, symbol) DO UPDATE SET
+                    requested_at = excluded.requested_at
+                """,
+                (normalized_series, normalized_symbol, requested_text),
+            )
+
+        resolved_alerts = 0
+        profitable_alerts = 0
+        for row in alert_rows:
+            result = row["result"]
+            if result is None:
+                continue
+            resolved_alerts += 1
+            payload = json.loads(str(row["payload_json"]))
+            side = payload.get("opportunity", {}).get("side")
+            if isinstance(side, str) and side.casefold() == str(result).casefold():
+                profitable_alerts += 1
+
+        return PaperAlertStatusSummary(
+            previous_requested_at=previous,
+            requested_at=requested,
+            cycles=int(cycle_row["cycle_count"]),
+            delivered_alerts=len(alert_rows),
+            resolved_alerts=resolved_alerts,
+            profitable_alerts=profitable_alerts,
+        )
 
     def save_kalshi_history(
         self,
@@ -745,6 +1147,190 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 (str(profile_id),),
             ).fetchone()
         return row is not None and bool(row["accepted"])
+
+    def validation_archive_succeeded(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+        period_interval: CandlestickPeriod,
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT status
+                FROM paper_validation_archive_runs
+                WHERE series_ticker = ? AND symbol = ?
+                  AND start_at = ? AND end_at = ?
+                  AND period_interval_minutes = ?
+                """,
+                (
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    period_interval,
+                ),
+            ).fetchone()
+        return row is not None and str(row["status"]) == "succeeded"
+
+    def begin_validation_archive(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+        period_interval: CandlestickPeriod,
+    ) -> None:
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paper_validation_archive_runs (
+                    series_ticker, symbol, start_at, end_at,
+                    period_interval_minutes, status, started_at,
+                    completed_at, counts_json, error
+                ) VALUES (?, ?, ?, ?, ?, 'running', ?, NULL, NULL, NULL)
+                ON CONFLICT (
+                    series_ticker, symbol, start_at, end_at,
+                    period_interval_minutes
+                ) DO UPDATE SET
+                    status = 'running',
+                    started_at = excluded.started_at,
+                    completed_at = NULL,
+                    counts_json = NULL,
+                    error = NULL
+                """,
+                (
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    period_interval,
+                    now,
+                ),
+            )
+
+    def complete_validation_archive(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+        period_interval: CandlestickPeriod,
+        counts: dict[str, int] | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE paper_validation_archive_runs
+                SET status = ?, completed_at = ?, counts_json = ?, error = ?
+                WHERE series_ticker = ? AND symbol = ?
+                  AND start_at = ? AND end_at = ?
+                  AND period_interval_minutes = ?
+                """,
+                (
+                    "failed" if error is not None else "succeeded",
+                    _utc_now(),
+                    None if counts is None else json.dumps(counts, sort_keys=True),
+                    error,
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    period_interval,
+                ),
+            )
+
+    def validation_archive_coverage(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        period_interval: CandlestickPeriod,
+        campaign_start: datetime,
+    ) -> tuple[int, datetime]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS archived_days, MAX(end_at) AS coverage_end
+                FROM paper_validation_archive_runs
+                WHERE series_ticker = ? AND symbol = ?
+                  AND period_interval_minutes = ?
+                  AND start_at >= ? AND status = 'succeeded'
+                  AND CAST(json_extract(counts_json, '$.candlesticks') AS INTEGER) > 0
+                """,
+                (
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    period_interval,
+                    campaign_start.isoformat(),
+                ),
+            ).fetchone()
+        archived_days = 0 if row is None else int(row["archived_days"])
+        coverage_end = campaign_start
+        if row is not None and row["coverage_end"] is not None:
+            coverage_end = datetime.fromisoformat(str(row["coverage_end"]))
+        return archived_days, coverage_end
+
+    def validation_campaign_message_id(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+    ) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT discord_message_id
+                FROM paper_validation_campaigns
+                WHERE series_ticker = ? AND symbol = ?
+                """,
+                (series_ticker.upper(), symbol.upper()),
+            ).fetchone()
+        if row is None or row["discord_message_id"] is None:
+            return None
+        return str(row["discord_message_id"])
+
+    def save_validation_campaign(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        state: str,
+        payload: dict[str, Any],
+        discord_message_id: str | None,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paper_validation_campaigns (
+                    series_ticker, symbol, discord_message_id,
+                    state, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(series_ticker, symbol) DO UPDATE SET
+                    discord_message_id = COALESCE(
+                        excluded.discord_message_id,
+                        paper_validation_campaigns.discord_message_id
+                    ),
+                    state = excluded.state,
+                    updated_at = excluded.updated_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    discord_message_id,
+                    state,
+                    _utc_now(),
+                    json.dumps(payload, sort_keys=True),
+                ),
+            )
 
     def save_market_regime(
         self,

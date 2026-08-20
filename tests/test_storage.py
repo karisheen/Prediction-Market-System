@@ -221,3 +221,49 @@ def test_persists_complete_kalshi_history_idempotently(tmp_path: Path) -> None:
     assert loaded[0].candlesticks == (candle,)
     assert loaded[0].series_fee_changes == (series_fee,)
     assert loaded[0].event_fee_changes == (event_fee,)
+
+
+def test_tracks_validation_archive_and_campaign(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "validation.db")
+    repository.initialize()
+    start_at = datetime(2026, 8, 1, tzinfo=UTC)
+    end_at = start_at + timedelta(days=1)
+    archive = {
+        "series_ticker": "KXBTC",
+        "symbol": "BTC",
+        "start_at": start_at,
+        "end_at": end_at,
+        "period_interval": 1,
+    }
+
+    assert repository.validation_archive_succeeded(**archive) is False
+    repository.begin_validation_archive(**archive)
+    repository.complete_validation_archive(**archive, counts={"candlesticks": 42})
+
+    assert repository.validation_archive_succeeded(**archive) is True
+    assert repository.validation_archive_coverage(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        period_interval=1,
+        campaign_start=start_at,
+    ) == (1, end_at)
+
+    repository.save_validation_campaign(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        state="COLLECTING EVIDENCE",
+        payload={"coverage_days": 1},
+        discord_message_id="status-message",
+    )
+    repository.save_validation_campaign(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        state="APPROVED",
+        payload={"coverage_days": 150},
+        discord_message_id=None,
+    )
+
+    assert repository.validation_campaign_message_id(
+        series_ticker="KXBTC",
+        symbol="BTC",
+    ) == "status-message"

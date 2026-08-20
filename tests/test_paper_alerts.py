@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -16,7 +17,7 @@ from prediction_market_system.paper_alerts import (
     classify_market_regime,
 )
 from prediction_market_system.research import ResearchContext, SpotCandle, VolatilityObservation
-from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.storage import MarketCheckStatus, SQLiteRepository
 from prediction_market_system.venues.kalshi import KalshiMarket, KalshiOrderBook
 
 AS_OF = datetime(2026, 7, 28, 12, tzinfo=UTC)
@@ -260,7 +261,7 @@ async def test_runner_delivers_calibrated_entries_and_persists_regime(
 
 
 @pytest.mark.asyncio
-async def test_runner_shadows_candidates_and_blocks_unapproved_delivery(
+async def test_runner_shadows_candidates_and_controls_unapproved_delivery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -304,14 +305,28 @@ async def test_runner_shadows_candidates_and_blocks_unapproved_delivery(
         cycle_id="cycle-unapproved",
         deliver_entries=True,
     )
+    manual_review = await runner.run(
+        markets=[kalshi_market()],
+        context=context,
+        regime=regime,
+        cycle_id="cycle-unapproved-manual-review",
+        deliver_entries=True,
+        allow_unapproved_delivery=True,
+    )
 
     assert shadow.evaluated == 1
     assert shadow.delivered == 0
-    assert publisher.published == []
+    assert manual_review.delivered == 1
+    assert publisher.published[0].warnings[-1] == (
+        "UNAPPROVED MODEL: held-out approval is missing; manual review only"
+    )
     assert repository.paper_market_checks("cycle-shadow")[0]["status"] == "entry_candidate"
     assert blocked.unapproved == 1
     assert blocked.evaluated == 0
     assert repository.paper_market_checks("cycle-unapproved")[0]["status"] == ("unapproved_model")
+    assert repository.paper_market_checks("cycle-unapproved-manual-review")[0]["status"] == (
+        "delivered"
+    )
 
 
 @pytest.mark.asyncio
@@ -446,6 +461,301 @@ def test_repository_reports_regime_coverage(tmp_path: Path) -> None:
     ]
 
 
+def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
+    database_path = tmp_path / "audit.db"
+    repository = SQLiteRepository(database_path)
+    repository.initialize()
+    old_at = AS_OF - timedelta(days=2)
+    recent_at = AS_OF + timedelta(minutes=1)
+
+    with sqlite3.connect(database_path) as connection:
+        for suffix, created_at in (("old", old_at), ("recent", recent_at)):
+            connection.execute(
+                """
+                INSERT INTO forecasts (
+                    forecast_id, market_id, generated_at, payload_json
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (f"forecast-{suffix}", f"market-{suffix}", created_at.isoformat(), "{}"),
+            )
+            connection.execute(
+                """
+                INSERT INTO opportunities (
+                    opportunity_id, forecast_id, market_id, state,
+                    created_at, payload_json
+                ) VALUES (?, ?, ?, 'WATCH', ?, ?)
+                """,
+                (
+                    f"opportunity-{suffix}",
+                    f"forecast-{suffix}",
+                    f"market-{suffix}",
+                    created_at.isoformat(),
+                    "{}",
+                ),
+            )
+
+    repository.save_paper_market_check(
+        cycle_id="cycle-old-watch",
+        market_id="market-old",
+        series_ticker="KXBTC",
+        event_ticker="event-old",
+        observed_at=old_at,
+        status=MarketCheckStatus.WATCH,
+        reason=None,
+        payload={"opportunity": {"opportunity_id": "opportunity-old"}},
+    )
+    repository.save_paper_market_check(
+        cycle_id="cycle-recent-watch",
+        market_id="market-recent",
+        series_ticker="KXBTC",
+        event_ticker="event-recent",
+        observed_at=recent_at,
+        status=MarketCheckStatus.WATCH,
+        reason=None,
+        payload={"opportunity": {"opportunity_id": "opportunity-recent"}},
+    )
+    repository.save_paper_market_check(
+        cycle_id="cycle-old-delivery",
+        market_id="market-delivered",
+        series_ticker="KXBTC",
+        event_ticker="event-delivered",
+        observed_at=old_at,
+        status=MarketCheckStatus.DELIVERED,
+        reason=None,
+        payload={"opportunity": {"side": "YES"}},
+    )
+
+    preview = repository.compact_watch_history(
+        series_ticker="KXBTC",
+        cutoff_at=AS_OF,
+    )
+    assert preview.eligible_checks == 1
+    assert preview.applied is False
+    assert repository.paper_market_checks("cycle-old-watch")
+
+    applied = repository.compact_watch_history(
+        series_ticker="KXBTC",
+        cutoff_at=AS_OF,
+        apply=True,
+        compacted_at=AS_OF,
+    )
+
+    assert applied.eligible_checks == 1
+    assert applied.rolled_up_checks == 1
+    assert applied.deleted_checks == 1
+    assert applied.deleted_opportunities == 1
+    assert applied.deleted_forecasts == 1
+    assert applied.deleted_cycles == 1
+    assert repository.paper_market_checks("cycle-old-watch") == []
+    assert repository.paper_market_checks("cycle-recent-watch")
+    assert repository.paper_market_checks("cycle-old-delivery")
+    assert repository.paper_watch_rollups("KXBTC") == [
+        {
+            "series_ticker": "KXBTC",
+            "observed_day": old_at.date().isoformat(),
+            "evaluation_count": 1,
+            "first_observed_at": old_at.isoformat(),
+            "last_observed_at": old_at.isoformat(),
+            "compacted_at": AS_OF.isoformat(),
+        }
+    ]
+
+    repeated = repository.compact_watch_history(
+        series_ticker="KXBTC",
+        cutoff_at=AS_OF,
+        apply=True,
+        compacted_at=AS_OF + timedelta(minutes=1),
+    )
+    assert repeated.eligible_checks == 0
+    assert repository.paper_watch_rollups("KXBTC")[0]["evaluation_count"] == 1
+
+
+def test_paper_alert_maintenance_previews_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "maintenance.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+
+    result = cli_runner.invoke(
+        app,
+        ["paper-alert-maintain", "--series", "KXBTC", "--watch-retention-days", "14"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Paper-alert WATCH maintenance" in result.output
+    assert "preview" in result.output
+    assert "Preview only; pass --apply" in result.output
+
+def test_repository_reports_activity_since_previous_status_request(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "audit.db")
+    repository.initialize()
+
+    def save_check(
+        cycle_id: str,
+        ticker: str,
+        observed_at: datetime,
+        status: MarketCheckStatus,
+        side: str | None = None,
+    ) -> None:
+        payload: dict[str, object] = {}
+        if side is not None:
+            payload["opportunity"] = {"side": side}
+        repository.save_paper_market_check(
+            cycle_id=cycle_id,
+            market_id=ticker,
+            series_ticker="KXBTC",
+            event_ticker="KXBTCTEST-30DEC31",
+            observed_at=observed_at,
+            status=status,
+            reason=None,
+            payload=payload,
+        )
+
+    def save_resolution(ticker: str, result: str, settled_at: datetime) -> None:
+        market = kalshi_market().model_copy(
+            update={
+                "ticker": ticker,
+                "status": "settled",
+                "result": result,
+                "settlement_ts": settled_at,
+                "settlement_value_dollars": Decimal("1.00"),
+                "expiration_value": "101.00",
+            }
+        )
+        repository.save_kalshi_history(
+            series_ticker="KXBTC",
+            observed_at=settled_at + timedelta(seconds=1),
+            markets=[market],
+            candlesticks={},
+            period_interval=1,
+            series_fee_changes=[],
+            event_fee_changes=[],
+        )
+
+    save_check(
+        "cycle-before-first-request",
+        "KXBTCTEST-30DEC31-T100",
+        AS_OF - timedelta(minutes=5),
+        MarketCheckStatus.DELIVERED,
+        "YES",
+    )
+    save_resolution(
+        "KXBTCTEST-30DEC31-T100",
+        "yes",
+        AS_OF - timedelta(minutes=3),
+    )
+
+    first = repository.paper_alert_status_since_last_request(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        requested_at=AS_OF,
+    )
+
+    assert first.previous_requested_at is None
+    assert first.cycles == 1
+    assert first.delivered_alerts == 1
+    assert first.resolved_alerts == 1
+    assert first.profitable_alerts == 1
+    assert first.unresolved_alerts == 0
+
+    save_check(
+        "cycle-winning-alert",
+        "KXBTCTEST-30DEC31-T101",
+        AS_OF + timedelta(minutes=1),
+        MarketCheckStatus.DELIVERED,
+        "YES",
+    )
+    save_check(
+        "cycle-losing-alert",
+        "KXBTCTEST-30DEC31-T102",
+        AS_OF + timedelta(minutes=2),
+        MarketCheckStatus.DELIVERED,
+        "NO",
+    )
+    save_check(
+        "cycle-without-alert",
+        "KXBTCTEST-30DEC31-T103",
+        AS_OF + timedelta(minutes=3),
+        MarketCheckStatus.WATCH,
+    )
+    save_check(
+        "cycle-unresolved-alert",
+        "KXBTCTEST-30DEC31-T104",
+        AS_OF + timedelta(minutes=3, seconds=30),
+        MarketCheckStatus.DELIVERED,
+        "YES",
+    )
+    save_resolution(
+        "KXBTCTEST-30DEC31-T101",
+        "yes",
+        AS_OF + timedelta(minutes=4),
+    )
+    save_resolution(
+        "KXBTCTEST-30DEC31-T102",
+        "yes",
+        AS_OF + timedelta(minutes=5),
+    )
+
+    second = repository.paper_alert_status_since_last_request(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        requested_at=AS_OF + timedelta(minutes=10),
+    )
+
+    assert second.previous_requested_at == AS_OF
+    assert second.cycles == 4
+    assert second.delivered_alerts == 4
+    assert second.resolved_alerts == 3
+    assert second.profitable_alerts == 2
+    assert second.unresolved_alerts == 1
+
+    third = repository.paper_alert_status_since_last_request(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        requested_at=AS_OF + timedelta(minutes=11),
+    )
+    assert third.cycles == 0
+    assert third.delivered_alerts == 4
+    assert third.profitable_alerts == 2
+
+
+def test_paper_alert_status_displays_activity_since_previous_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "paper-alert-status.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+    repository = SQLiteRepository(database_path)
+    repository.initialize()
+    repository.save_paper_market_check(
+        cycle_id="cycle-status-display",
+        market_id="KXBTCTEST-30DEC31-T100",
+        series_ticker="KXBTC",
+        event_ticker="KXBTCTEST-30DEC31",
+        observed_at=AS_OF,
+        status=MarketCheckStatus.WATCH,
+        reason=None,
+        payload={},
+    )
+
+    first = cli_runner.invoke(
+        app,
+        ["paper-alert-status", "--series", "KXBTC", "--symbol", "BTC"],
+    )
+    second = cli_runner.invoke(
+        app,
+        ["paper-alert-status", "--series", "KXBTC", "--symbol", "BTC"],
+    )
+
+    assert first.exit_code == 0, first.output
+    assert "Cycles since last request" in first.output
+    assert "Profitable alerts" in first.output
+    assert "counts include all recorded activity" in first.output
+    assert second.exit_code == 0, second.output
+    assert "Previous status request:" in second.output
+
+
 def test_paper_alert_command_records_regime_cycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -482,7 +792,10 @@ def test_paper_alert_command_records_regime_cycle(
     async def fetch_live_spot(symbol: str, as_of: datetime) -> SpotCandle:
         return spot_candle(as_of, "100", interval_seconds=60)
 
+    cycle_arguments: dict[str, object] = {}
+
     async def run_cycle(**kwargs: object) -> PaperAlertCycleResult:
+        cycle_arguments.update(kwargs)
         return PaperAlertCycleResult(
             discovered=0,
             evaluated=0,
@@ -527,13 +840,23 @@ def test_paper_alert_command_records_regime_cycle(
             "BTC",
             "--interval",
             "1440",
+            "--send-discord",
+            "--allow-unapproved-discord",
         ],
     )
 
     assert result.exit_code == 0, result.output
     assert "Paper-alert cycle: KXBTC" in result.output
+    assert cycle_arguments["send_discord"] is True
+    assert cycle_arguments["allow_unapproved_discord"] is True
     coverage = SQLiteRepository(database_path).market_regime_coverage(
         series_ticker="KXBTC",
         symbol="BTC",
     )
     assert sum(int(row["observation_count"]) for row in coverage) == 1
+    activity = SQLiteRepository(database_path).paper_alert_status_since_last_request(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        requested_at=datetime.now(UTC) + timedelta(seconds=1),
+    )
+    assert activity.cycles == 1

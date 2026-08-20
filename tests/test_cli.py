@@ -94,6 +94,19 @@ def test_fetches_every_live_market_page(monkeypatch: object) -> None:
                 {"markets": [market], "cursor": "next" if cursor is None else ""},
             )()
 
+        async def get_event(self, event_ticker: str) -> object:
+            return type(
+                "EventResponse",
+                (),
+                {
+                    "event": type(
+                        "Event",
+                        (),
+                        {"title": "BTC price range on Dec 31, 2030 at 5pm CST?"},
+                    )()
+                },
+            )()
+
         async def close(self) -> None:
             return None
 
@@ -106,6 +119,9 @@ def test_fetches_every_live_market_page(monkeypatch: object) -> None:
         "KXBTCTEST-30DEC31-T2",
     ]
     assert calls == [("KXBTCTEST", 2, None), ("KXBTCTEST", 1, "next")]
+    assert all(
+        market.event_title == "BTC price range on Dec 31, 2030 at 5pm CST?" for market in markets
+    )
 
 
 def test_history_sampling_is_event_grouped_and_outcome_independent() -> None:

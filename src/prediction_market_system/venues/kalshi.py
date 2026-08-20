@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Literal, Self
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from prediction_market_system.domain import (
     CryptoPriceContract,
@@ -25,6 +25,10 @@ FeeType = Literal["quadratic", "quadratic_with_maker_fees", "flat"]
 
 
 class KalshiAPIError(RuntimeError):
+    pass
+
+
+class KalshiNotFoundError(KalshiAPIError):
     pass
 
 
@@ -113,6 +117,7 @@ class KalshiMarket(_KalshiModel):
     title: str = ""
     yes_sub_title: str
     no_sub_title: str
+    event_title: str = ""
     close_time: datetime
     expected_expiration_time: datetime | None = None
     latest_expiration_time: datetime
@@ -144,6 +149,9 @@ class KalshiMarket(_KalshiModel):
 
     @property
     def question(self) -> str:
+        event_title = self.event_title.strip()
+        if event_title:
+            return event_title
         title = self.title.strip()
         yes_title = self.yes_sub_title.strip()
         if title and yes_title and yes_title.casefold() not in title.casefold():
@@ -161,7 +169,11 @@ class KalshiMarket(_KalshiModel):
 
     @property
     def market_url(self) -> HttpUrl:
-        return HttpUrl(f"https://kalshi.com/markets/{self.normalized_series_ticker.lower()}")
+        event_slug = self.event_ticker.lower()
+        return HttpUrl(
+            f"https://kalshi.com/markets/{self.normalized_series_ticker.lower()}/"
+            f"bitcoin-range/{event_slug}"
+        )
 
     @property
     def contract_label(self) -> str:
@@ -257,19 +269,29 @@ class KalshiEventResponse(_KalshiModel):
 
 
 class KalshiBidAskDistribution(_KalshiModel):
-    open: Decimal
-    low: Decimal
-    high: Decimal
-    close: Decimal
+    open: Decimal = Field(validation_alias=AliasChoices("open", "open_dollars"))
+    low: Decimal = Field(validation_alias=AliasChoices("low", "low_dollars"))
+    high: Decimal = Field(validation_alias=AliasChoices("high", "high_dollars"))
+    close: Decimal = Field(validation_alias=AliasChoices("close", "close_dollars"))
 
 
 class KalshiPriceDistribution(_KalshiModel):
-    open: Decimal | None = None
-    low: Decimal | None = None
-    high: Decimal | None = None
-    close: Decimal | None = None
-    mean: Decimal | None = None
-    previous: Decimal | None = None
+    open: Decimal | None = Field(
+        default=None, validation_alias=AliasChoices("open", "open_dollars")
+    )
+    low: Decimal | None = Field(default=None, validation_alias=AliasChoices("low", "low_dollars"))
+    high: Decimal | None = Field(
+        default=None, validation_alias=AliasChoices("high", "high_dollars")
+    )
+    close: Decimal | None = Field(
+        default=None, validation_alias=AliasChoices("close", "close_dollars")
+    )
+    mean: Decimal | None = Field(
+        default=None, validation_alias=AliasChoices("mean", "mean_dollars")
+    )
+    previous: Decimal | None = Field(
+        default=None, validation_alias=AliasChoices("previous", "previous_dollars")
+    )
 
 
 class KalshiCandlestick(_KalshiModel):
@@ -277,8 +299,10 @@ class KalshiCandlestick(_KalshiModel):
     yes_bid: KalshiBidAskDistribution
     yes_ask: KalshiBidAskDistribution
     price: KalshiPriceDistribution
-    volume: Decimal
-    open_interest: Decimal
+    volume: Decimal = Field(validation_alias=AliasChoices("volume", "volume_fp"))
+    open_interest: Decimal = Field(
+        validation_alias=AliasChoices("open_interest", "open_interest_fp")
+    )
 
 
 class KalshiCandlesticksResponse(_KalshiModel):
@@ -524,6 +548,33 @@ class KalshiClient:
         response = await self._get("/historical/markets", params=params)
         return KalshiMarketsResponse.model_validate(response.json())
 
+    async def get_candlesticks(
+        self,
+        series_ticker: str,
+        ticker: str,
+        *,
+        start_ts: int,
+        end_ts: int,
+        period_interval: CandlestickPeriod,
+    ) -> list[KalshiCandlestick]:
+        try:
+            return await self.get_historical_candlesticks(
+                ticker,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                period_interval=period_interval,
+            )
+        except KalshiNotFoundError:
+            response = await self._get(
+                f"/series/{series_ticker}/markets/{ticker}/candlesticks",
+                params={
+                    "start_ts": start_ts,
+                    "end_ts": end_ts,
+                    "period_interval": period_interval,
+                },
+            )
+            return self._parse_candlesticks(response, ticker)
+
     async def get_historical_candlesticks(
         self,
         ticker: str,
@@ -542,6 +593,13 @@ class KalshiClient:
                 "period_interval": period_interval,
             },
         )
+        return self._parse_candlesticks(response, ticker)
+
+    @staticmethod
+    def _parse_candlesticks(
+        response: httpx.Response,
+        ticker: str,
+    ) -> list[KalshiCandlestick]:
         payload = KalshiCandlesticksResponse.model_validate(response.json())
         if payload.ticker != ticker:
             raise KalshiAPIError(
@@ -611,6 +669,8 @@ class KalshiClient:
                 response.raise_for_status()
                 return response
             except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == httpx.codes.NOT_FOUND:
+                    raise KalshiNotFoundError(f"Kalshi request failed for {path}: {exc}") from exc
                 retryable = exc.response.status_code == httpx.codes.TOO_MANY_REQUESTS
                 if retryable and attempt < self._max_rate_limit_retries:
                     retry_after = exc.response.headers.get("Retry-After")
