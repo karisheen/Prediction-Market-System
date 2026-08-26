@@ -1340,6 +1340,14 @@ def paper_alert_maintain(
         int,
         typer.Option(min=1, max=365, help="Days of detailed WATCH evaluations to retain."),
     ] = 14,
+    batch_size: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            max=100_000,
+            help="Maximum WATCH evaluations removed per committed transaction.",
+        ),
+    ] = 5_000,
     apply: Annotated[
         bool,
         typer.Option("--apply", help="Apply compaction; without this flag, preview only."),
@@ -1354,6 +1362,7 @@ def paper_alert_maintain(
         series_ticker=series,
         cutoff_at=cutoff_at,
         apply=apply,
+        batch_size=batch_size,
     )
 
     mode = "applied" if result.applied else "preview"
@@ -1366,6 +1375,7 @@ def paper_alert_maintain(
     table.add_row("Deleted WATCH opportunities", str(result.deleted_opportunities))
     table.add_row("Deleted orphaned forecasts", str(result.deleted_forecasts))
     table.add_row("Deleted empty cycles", str(result.deleted_cycles))
+    table.add_row("Committed batches", str(result.batches))
     console.print(table)
     console.print(f"Detailed WATCH cutoff: {result.cutoff_at.isoformat()}")
     if not result.applied:

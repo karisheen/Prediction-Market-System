@@ -68,6 +68,7 @@ class WatchCompactionResult:
     deleted_opportunities: int
     deleted_forecasts: int
     deleted_cycles: int
+    batches: int
     applied: bool
 
 
@@ -123,6 +124,9 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_opportunities_market_created
                 ON opportunities (market_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_opportunities_forecast
+                ON opportunities (forecast_id);
 
                 CREATE TABLE IF NOT EXISTS alert_events (
                     opportunity_id TEXT PRIMARY KEY,
@@ -332,6 +336,9 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 CREATE INDEX IF NOT EXISTS idx_paper_checks_series_observed
                 ON paper_alert_market_checks (series_ticker, observed_at);
 
+                CREATE INDEX IF NOT EXISTS idx_paper_checks_compaction
+                ON paper_alert_market_checks (series_ticker, status, observed_at);
+
                 CREATE TABLE IF NOT EXISTS paper_alert_status_requests (
                     series_ticker TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -349,26 +356,49 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     PRIMARY KEY (series_ticker, observed_day)
                 );
 
-                INSERT OR IGNORE INTO paper_alert_cycles (
-                    cycle_id, series_ticker, observed_at
-                )
-                SELECT cycle_id, series_ticker, MIN(observed_at)
-                FROM paper_alert_market_checks
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM schema_migrations
-                    WHERE migration_name = 'paper_alert_cycles_backfill_v1'
-                )
-                GROUP BY cycle_id, series_ticker;
-
-                INSERT OR IGNORE INTO schema_migrations (
-                    migration_name, applied_at
-                ) VALUES (
-                    'paper_alert_cycles_backfill_v1', CURRENT_TIMESTAMP
-                );
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
+            self._apply_migrations(connection)
+
+    @staticmethod
+    def _apply_migrations(connection: sqlite3.Connection) -> None:
+        migration_name = "paper_alert_cycles_backfill_v1"
+        applied = connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+            (migration_name,),
+        ).fetchone()
+        if applied is not None:
+            return
+
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            applied = connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+                (migration_name,),
+            ).fetchone()
+            if applied is None:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO paper_alert_cycles (
+                        cycle_id, series_ticker, observed_at
+                    )
+                    SELECT cycle_id, series_ticker, MIN(observed_at)
+                    FROM paper_alert_market_checks
+                    GROUP BY cycle_id, series_ticker
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO schema_migrations (migration_name, applied_at)
+                    VALUES (?, CURRENT_TIMESTAMP)
+                    """,
+                    (migration_name,),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
     def save_evaluation(
         self,
@@ -500,9 +530,12 @@ class SQLiteRepository(ResearchRepositoryMixin):
         cutoff_at: datetime,
         apply: bool = False,
         compacted_at: datetime | None = None,
+        batch_size: int = 5_000,
     ) -> WatchCompactionResult:
         if cutoff_at.tzinfo is None or cutoff_at.utcoffset() is None:
             raise ValueError("WATCH retention cutoff must be timezone-aware")
+        if batch_size < 1:
+            raise ValueError("WATCH compaction batch size must be positive")
         normalized_series = series_ticker.upper()
         cutoff = cutoff_at.astimezone(UTC)
         cutoff_text = cutoff.isoformat()
@@ -520,51 +553,121 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 """,
                 (normalized_series, MarketCheckStatus.WATCH.value, cutoff_text),
             ).fetchone()
-            eligible_checks = int(eligible_row["eligible_checks"])
-            if not apply or eligible_checks == 0:
-                return WatchCompactionResult(
-                    cutoff_at=cutoff,
-                    eligible_checks=eligible_checks,
-                    rolled_up_checks=0,
-                    deleted_checks=0,
-                    deleted_opportunities=0,
-                    deleted_forecasts=0,
-                    deleted_cycles=0,
-                    applied=apply,
-                )
+        eligible_checks = int(eligible_row["eligible_checks"])
+        if not apply or eligible_checks == 0:
+            return WatchCompactionResult(
+                cutoff_at=cutoff,
+                eligible_checks=eligible_checks,
+                rolled_up_checks=0,
+                deleted_checks=0,
+                deleted_opportunities=0,
+                deleted_forecasts=0,
+                deleted_cycles=0,
+                batches=0,
+                applied=apply,
+            )
 
-            connection.execute("BEGIN IMMEDIATE")
+        deleted_checks = 0
+        deleted_opportunities = 0
+        deleted_forecasts = 0
+        deleted_cycles = 0
+        batches = 0
+        while deleted_checks < eligible_checks:
+            batch = self._compact_watch_batch(
+                series_ticker=normalized_series,
+                cutoff_text=cutoff_text,
+                compacted_text=compacted_text,
+                batch_size=min(batch_size, eligible_checks - deleted_checks),
+            )
+            batch_checks, batch_opportunities, batch_forecasts, batch_cycles = batch
+            if batch_checks == 0:
+                raise RuntimeError(
+                    "WATCH compaction made no progress before all eligible checks were removed"
+                )
+            deleted_checks += batch_checks
+            deleted_opportunities += batch_opportunities
+            deleted_forecasts += batch_forecasts
+            deleted_cycles += batch_cycles
+            batches += 1
+
+        return WatchCompactionResult(
+            cutoff_at=cutoff,
+            eligible_checks=eligible_checks,
+            rolled_up_checks=deleted_checks,
+            deleted_checks=deleted_checks,
+            deleted_opportunities=deleted_opportunities,
+            deleted_forecasts=deleted_forecasts,
+            deleted_cycles=deleted_cycles,
+            batches=batches,
+            applied=True,
+        )
+
+    def _compact_watch_batch(
+        self,
+        *,
+        series_ticker: str,
+        cutoff_text: str,
+        compacted_text: str,
+        batch_size: int,
+    ) -> tuple[int, int, int, int]:
+        with self._connect() as connection:
             connection.execute(
                 """
                 CREATE TEMP TABLE watch_compaction_targets (
-                    opportunity_id TEXT PRIMARY KEY,
-                    forecast_id TEXT NOT NULL
+                    cycle_id TEXT NOT NULL,
+                    market_id TEXT NOT NULL,
+                    series_ticker TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    opportunity_id TEXT,
+                    forecast_id TEXT,
+                    PRIMARY KEY (cycle_id, market_id)
                 )
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
-                INSERT INTO watch_compaction_targets (opportunity_id, forecast_id)
-                SELECT opportunities.opportunity_id, opportunities.forecast_id
+                INSERT INTO watch_compaction_targets (
+                    cycle_id, market_id, series_ticker, observed_at,
+                    opportunity_id, forecast_id
+                )
+                SELECT checks.cycle_id, checks.market_id, checks.series_ticker,
+                       checks.observed_at,
+                       json_extract(
+                           checks.payload_json, '$.opportunity.opportunity_id'
+                       ),
+                       opportunities.forecast_id
                 FROM paper_alert_market_checks AS checks
-                JOIN opportunities
+                LEFT JOIN opportunities
                   ON opportunities.opportunity_id = json_extract(
                       checks.payload_json, '$.opportunity.opportunity_id'
                   )
                 WHERE checks.series_ticker = ?
                   AND checks.status = ?
                   AND checks.observed_at < ?
+                ORDER BY checks.observed_at, checks.cycle_id, checks.market_id
+                LIMIT ?
                 """,
-                (normalized_series, MarketCheckStatus.WATCH.value, cutoff_text),
+                (
+                    series_ticker,
+                    MarketCheckStatus.WATCH.value,
+                    cutoff_text,
+                    batch_size,
+                ),
             )
             target_row = connection.execute(
-                "SELECT COUNT(*) AS target_count FROM watch_compaction_targets"
+                """
+                SELECT COUNT(*) AS target_count,
+                       SUM(forecast_id IS NULL) AS missing_count
+                FROM watch_compaction_targets
+                """
             ).fetchone()
             target_count = int(target_row["target_count"])
-            if target_count != eligible_checks:
+            missing_count = int(target_row["missing_count"] or 0)
+            if missing_count:
                 raise RuntimeError(
                     "refusing to compact WATCH history: "
-                    f"{eligible_checks - target_count} checks lack linked evaluations"
+                    f"{missing_count} checks lack linked evaluations"
                 )
 
             connection.execute(
@@ -575,8 +678,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 )
                 SELECT series_ticker, substr(observed_at, 1, 10), COUNT(*),
                        MIN(observed_at), MAX(observed_at), ?
-                FROM paper_alert_market_checks
-                WHERE series_ticker = ? AND status = ? AND observed_at < ?
+                FROM watch_compaction_targets
                 GROUP BY series_ticker, substr(observed_at, 1, 10)
                 ON CONFLICT(series_ticker, observed_day) DO UPDATE SET
                     evaluation_count = (
@@ -593,20 +695,22 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     ),
                     compacted_at = excluded.compacted_at
                 """,
-                (
-                    compacted_text,
-                    normalized_series,
-                    MarketCheckStatus.WATCH.value,
-                    cutoff_text,
-                ),
+                (compacted_text,),
             )
             deleted_checks = connection.execute(
                 """
                 DELETE FROM paper_alert_market_checks
-                WHERE series_ticker = ? AND status = ? AND observed_at < ?
-                """,
-                (normalized_series, MarketCheckStatus.WATCH.value, cutoff_text),
+                WHERE (cycle_id, market_id) IN (
+                    SELECT cycle_id, market_id
+                    FROM watch_compaction_targets
+                )
+                """
             ).rowcount
+            if deleted_checks != target_count:
+                raise RuntimeError(
+                    "WATCH compaction target changed during deletion: "
+                    f"expected {target_count}, deleted {deleted_checks}"
+                )
             deleted_opportunities = connection.execute(
                 """
                 DELETE FROM opportunities
@@ -637,26 +741,18 @@ class SQLiteRepository(ResearchRepositoryMixin):
             deleted_cycles = connection.execute(
                 """
                 DELETE FROM paper_alert_cycles
-                WHERE series_ticker = ? AND observed_at < ?
+                WHERE cycle_id IN (
+                    SELECT cycle_id FROM watch_compaction_targets
+                )
                   AND NOT EXISTS (
                       SELECT 1
                       FROM paper_alert_market_checks
                       WHERE paper_alert_market_checks.cycle_id = paper_alert_cycles.cycle_id
                   )
-                """,
-                (normalized_series, cutoff_text),
+                """
             ).rowcount
 
-        return WatchCompactionResult(
-            cutoff_at=cutoff,
-            eligible_checks=eligible_checks,
-            rolled_up_checks=eligible_checks,
-            deleted_checks=deleted_checks,
-            deleted_opportunities=deleted_opportunities,
-            deleted_forecasts=deleted_forecasts,
-            deleted_cycles=deleted_cycles,
-            applied=True,
-        )
+        return deleted_checks, deleted_opportunities, deleted_forecasts, deleted_cycles
 
     def paper_watch_rollups(self, series_ticker: str) -> list[dict[str, Any]]:
         with self._connect() as connection:

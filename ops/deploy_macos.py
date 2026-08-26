@@ -207,6 +207,8 @@ def _agent_specs(
                 series,
                 "--watch-retention-days",
                 str(watch_retention_days),
+                "--batch-size",
+                "5000",
                 "--apply",
             ),
             schedule={"StartCalendarInterval": {"Hour": 3, "Minute": 15}},

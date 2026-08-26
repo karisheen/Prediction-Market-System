@@ -19,7 +19,8 @@ effect of model validation.
 
 `pms paper-alert-maintain` compacts detailed `WATCH` evaluations older than a configured UTC
 cutoff. The command defaults to a preview and requires `--apply` before it changes data.
-The managed launch agent applies a 14-day retention window daily at 03:15 local time.
+The managed launch agent applies a 14-day retention window daily at 03:15 local time and
+commits at most 5,000 evaluations per transaction.
 
 Before deletion, the command writes daily counts to `paper_alert_watch_rollups`. It then
 removes only the linked detailed records:
@@ -31,9 +32,10 @@ removes only the linked detailed records:
 
 Entry candidates, delivered alerts, failures, unsupported-market records, missing-calibration
 records, unapproved-model records, Discord delivery state, model evidence, market regimes,
-research inputs, venue history, and resolutions are not pruned. Compaction is transactional
-and refuses to proceed if a WATCH check cannot be linked to its persisted evaluation.
-Re-running a completed compaction does not double-count its rollup.
+research inputs, venue history, and resolutions are not pruned. Each bounded batch is
+transactional and releases the SQLite writer lock before the next batch. Compaction refuses
+to proceed if a WATCH check cannot be linked to its persisted evaluation. Re-running a
+completed compaction does not double-count its rollup.
 
 Preview or apply maintenance manually:
 
@@ -45,6 +47,7 @@ uv run pms paper-alert-maintain \
 uv run pms paper-alert-maintain \
   --series KXBTC \
   --watch-retention-days 14 \
+  --batch-size 5000 \
   --apply
 ```
 

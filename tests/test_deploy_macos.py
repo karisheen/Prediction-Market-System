@@ -38,6 +38,8 @@ def test_launch_agents_use_shadow_mode_and_schedule_maintenance() -> None:
         "KXBTC",
         "--watch-retention-days",
         "14",
+        "--batch-size",
+        "5000",
         "--apply",
     )
     assert by_suffix["maintenance"].schedule == {

@@ -466,10 +466,15 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
     repository = SQLiteRepository(database_path)
     repository.initialize()
     old_at = AS_OF - timedelta(days=2)
+    second_old_at = old_at + timedelta(seconds=1)
     recent_at = AS_OF + timedelta(minutes=1)
 
     with sqlite3.connect(database_path) as connection:
-        for suffix, created_at in (("old", old_at), ("recent", recent_at)):
+        for suffix, created_at in (
+            ("old", old_at),
+            ("old-second", second_old_at),
+            ("recent", recent_at),
+        ):
             connection.execute(
                 """
                 INSERT INTO forecasts (
@@ -505,6 +510,16 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
         payload={"opportunity": {"opportunity_id": "opportunity-old"}},
     )
     repository.save_paper_market_check(
+        cycle_id="cycle-old-watch-second",
+        market_id="market-old-second",
+        series_ticker="KXBTC",
+        event_ticker="event-old",
+        observed_at=second_old_at,
+        status=MarketCheckStatus.WATCH,
+        reason=None,
+        payload={"opportunity": {"opportunity_id": "opportunity-old-second"}},
+    )
+    repository.save_paper_market_check(
         cycle_id="cycle-recent-watch",
         market_id="market-recent",
         series_ticker="KXBTC",
@@ -529,7 +544,7 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
         series_ticker="KXBTC",
         cutoff_at=AS_OF,
     )
-    assert preview.eligible_checks == 1
+    assert preview.eligible_checks == 2
     assert preview.applied is False
     assert repository.paper_market_checks("cycle-old-watch")
 
@@ -537,15 +552,17 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
         series_ticker="KXBTC",
         cutoff_at=AS_OF,
         apply=True,
+        batch_size=1,
         compacted_at=AS_OF,
     )
 
-    assert applied.eligible_checks == 1
-    assert applied.rolled_up_checks == 1
-    assert applied.deleted_checks == 1
-    assert applied.deleted_opportunities == 1
-    assert applied.deleted_forecasts == 1
-    assert applied.deleted_cycles == 1
+    assert applied.eligible_checks == 2
+    assert applied.rolled_up_checks == 2
+    assert applied.deleted_checks == 2
+    assert applied.deleted_opportunities == 2
+    assert applied.deleted_forecasts == 2
+    assert applied.deleted_cycles == 2
+    assert applied.batches == 2
     assert repository.paper_market_checks("cycle-old-watch") == []
     assert repository.paper_market_checks("cycle-recent-watch")
     assert repository.paper_market_checks("cycle-old-delivery")
@@ -553,9 +570,9 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
         {
             "series_ticker": "KXBTC",
             "observed_day": old_at.date().isoformat(),
-            "evaluation_count": 1,
+            "evaluation_count": 2,
             "first_observed_at": old_at.isoformat(),
-            "last_observed_at": old_at.isoformat(),
+            "last_observed_at": second_old_at.isoformat(),
             "compacted_at": AS_OF.isoformat(),
         }
     ]
@@ -567,7 +584,8 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
         compacted_at=AS_OF + timedelta(minutes=1),
     )
     assert repeated.eligible_checks == 0
-    assert repository.paper_watch_rollups("KXBTC")[0]["evaluation_count"] == 1
+    assert repeated.batches == 0
+    assert repository.paper_watch_rollups("KXBTC")[0]["evaluation_count"] == 2
 
 
 def test_legacy_cycle_backfill_runs_once(tmp_path: Path) -> None:
