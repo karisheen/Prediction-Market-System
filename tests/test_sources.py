@@ -4,7 +4,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from prediction_market_system.sources.coinbase import CoinbaseClient
+from prediction_market_system.sources.coinbase import CoinbaseClient, CoinbaseDataError
 from prediction_market_system.sources.deribit import DeribitClient
 
 
@@ -206,4 +206,128 @@ async def test_deribit_paginates_dvol_backward_from_continuation() -> None:
         start_at + timedelta(hours=1),
         end_at,
     ]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_coinbase_retries_transient_transport_failures() -> None:
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+    end_at = start_at + timedelta(hours=1)
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ConnectError("[Errno 8] nodename nor servname provided", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "candles": [
+                    {
+                        "start": str(int(start_at.timestamp())),
+                        "low": "99",
+                        "high": "102",
+                        "open": "100",
+                        "close": "101",
+                        "volume": "10",
+                    }
+                ]
+            },
+        )
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    http_client = httpx.AsyncClient(
+        base_url="https://api.coinbase.com/api/v3/brokerage/market",
+        transport=httpx.MockTransport(handler),
+    )
+    client = CoinbaseClient(client=http_client, max_transient_retries=2, sleep=record_sleep)
+
+    candles = await client.get_candles(
+        "BTC-USD",
+        start_at=start_at,
+        end_at=end_at,
+        interval_seconds=3600,
+    )
+
+    assert len(candles) == 1
+    assert attempts == 3
+    assert delays == [1.0, 2.0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_coinbase_surfaces_exhausted_transient_retries() -> None:
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("[Errno 8] nodename nor servname provided", request=request)
+
+    async def no_sleep(delay: float) -> None:
+        return None
+
+    http_client = httpx.AsyncClient(
+        base_url="https://api.coinbase.com/api/v3/brokerage/market",
+        transport=httpx.MockTransport(handler),
+    )
+    client = CoinbaseClient(client=http_client, max_transient_retries=1, sleep=no_sleep)
+
+    with pytest.raises(CoinbaseDataError, match="nodename nor servname"):
+        await client.get_candles(
+            "BTC-USD",
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            interval_seconds=3600,
+        )
+
+    assert attempts == 2
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deribit_retries_transient_transport_failures() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectTimeout("timed out", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "result": {
+                    "timestamp": int(datetime(2030, 1, 1, tzinfo=UTC).timestamp() * 1000),
+                    "instrument_name": "BTC-PERPETUAL",
+                    "index_price": 100.0,
+                    "mark_price": 101.0,
+                    "open_interest": 5000.0,
+                    "current_funding": 0.0001,
+                    "funding_8h": 0.0008,
+                },
+            },
+        )
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    http_client = httpx.AsyncClient(
+        base_url="https://www.deribit.com/api/v2/public",
+        transport=httpx.MockTransport(handler),
+    )
+    client = DeribitClient(client=http_client, sleep=record_sleep)
+
+    snapshot = await client.get_derivatives_snapshot("BTC-PERPETUAL")
+
+    assert snapshot.instrument_name == "BTC-PERPETUAL"
+    assert attempts == 2
+    assert delays == [1.0]
     await http_client.aclose()

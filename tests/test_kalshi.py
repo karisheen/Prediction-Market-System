@@ -10,6 +10,7 @@ from prediction_market_system.domain import (
     ThresholdModelKind,
 )
 from prediction_market_system.venues.kalshi import (
+    KalshiAPIError,
     KalshiClient,
     KalshiMarket,
     KalshiOrderBook,
@@ -222,6 +223,61 @@ async def test_retries_rate_limited_requests_with_bounded_backoff() -> None:
     assert market.ticker == "KXBTCTEST-30DEC31-T100000"
     assert attempts == 3
     assert delays == [1.0, 2.0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_retries_transient_transport_failures_before_rate_limit_policy() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("[Errno 8] nodename nor servname provided", request=request)
+        if attempts == 2:
+            return httpx.Response(429)
+        return httpx.Response(200, json={"market": market_payload()})
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(
+        client=http_client,
+        max_rate_limit_retries=1,
+        max_transient_retries=1,
+        sleep=record_sleep,
+    )
+
+    market = await client.get_market("KXBTCTEST-30DEC31-T100000")
+
+    assert market.ticker == "KXBTCTEST-30DEC31-T100000"
+    assert attempts == 3
+    assert delays == [1.0, 1.0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_transient_retries_raise_api_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno 8] nodename nor servname provided", request=request)
+
+    async def no_sleep(delay: float) -> None:
+        return None
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(client=http_client, max_transient_retries=1, sleep=no_sleep)
+
+    with pytest.raises(KalshiAPIError, match="nodename nor servname"):
+        await client.get_market("KXBTCTEST-30DEC31-T100000")
     await http_client.aclose()
 
 

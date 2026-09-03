@@ -18,6 +18,7 @@ from prediction_market_system.domain import (
     ThresholdDirection,
     ThresholdModelKind,
 )
+from prediction_market_system.transport import DEFAULT_TRANSIENT_RETRIES, get_with_transient_retry
 
 KALSHI_PRODUCTION_API = "https://external-api.kalshi.com/trade-api/v2"
 CandlestickPeriod = Literal[1, 60, 1440]
@@ -444,6 +445,7 @@ class KalshiClient:
         base_url: str = KALSHI_PRODUCTION_API,
         client: httpx.AsyncClient | None = None,
         max_rate_limit_retries: int = 5,
+        max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client or httpx.AsyncClient(
@@ -454,7 +456,10 @@ class KalshiClient:
         self._owns_client = client is None
         if max_rate_limit_retries < 0:
             raise ValueError("max_rate_limit_retries must be non-negative")
+        if max_transient_retries < 0:
+            raise ValueError("max_transient_retries must be non-negative")
         self._max_rate_limit_retries = max_rate_limit_retries
+        self._max_transient_retries = max_transient_retries
         self._sleep = sleep
 
     async def list_events(
@@ -665,7 +670,13 @@ class KalshiClient:
     ) -> httpx.Response:
         for attempt in range(self._max_rate_limit_retries + 1):
             try:
-                response = await self._client.get(path, params=params)
+                response = await get_with_transient_retry(
+                    self._client,
+                    path,
+                    params=params,
+                    max_retries=self._max_transient_retries,
+                    sleep=self._sleep,
+                )
                 response.raise_for_status()
                 return response
             except httpx.HTTPStatusError as exc:

@@ -97,6 +97,26 @@ completed UTC days; validation remains in `COLLECTING EVIDENCE` until the config
 chronological window is complete. Deployment does not weaken the 90-day training, two 30-day
 held-out windows, minimum sample/event/fold, return-on-cost, or Brier-score gates.
 
+### Self-healing research inputs after host downtime
+
+`paper-alerts` depends on hourly research inputs written by the separate research launch
+agent. After the host is shut down or asleep, the alert schedule resumes before the hourly
+sync does and every 5-minute cycle fails with a stale-candle error until the sync catches
+up; before this change the gap lasted until the next successful hourly run, and one
+missed run during a wake-time DNS failure extended it further.
+
+Now, when stored research is stale or missing, `paper-alerts` performs the same bounded
+refresh the research agent does (Coinbase candles, Deribit DVOL, funding, ticker, and one
+regime snapshot) and retries the evaluation once. Each recovery is recorded in
+`research_data_sync_runs` with `purpose = "paper-alerts-recovery"` so it is distinguishable
+from the scheduled hourly sync. The scheduled research agent remains the primary source;
+the recovery path only runs when a cycle would otherwise fail.
+
+All three HTTP data clients (Coinbase, Deribit, Kalshi) also retry transport-level failures
+that never produced a response (DNS resolution, connection refused, connect/read timeouts)
+up to three times with 1, 2, and 4 second delays. HTTP status errors keep their existing
+handling; Kalshi 429 backoff is unchanged and applies after transport retries.
+
 ## Operational verification
 
 After each deployment:

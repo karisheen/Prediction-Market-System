@@ -1092,6 +1092,105 @@ def paper_alert_validate(
         console.print(f"{validation.model_name}: {decision}")
 
 
+_DEFAULT_TREND_THRESHOLD = 0.05
+_DEFAULT_LOW_VOLATILITY = 0.40
+_DEFAULT_HIGH_VOLATILITY = 0.80
+
+
+@dataclass(frozen=True)
+class _ResearchRefreshResult:
+    run_id: str
+    regime: MarketRegimeSnapshot
+    written: ResearchWriteResult
+
+
+def _refresh_paper_alert_research(
+    repository: SQLiteRepository,
+    *,
+    series_ticker: str,
+    symbol: str,
+    interval_seconds: int,
+    realized_window_days: int,
+    now: datetime,
+    trend_threshold: float = _DEFAULT_TREND_THRESHOLD,
+    low_volatility: float = _DEFAULT_LOW_VOLATILITY,
+    high_volatility: float = _DEFAULT_HIGH_VOLATILITY,
+    purpose: str = "paper-alert-research",
+) -> _ResearchRefreshResult:
+    """Fetch research inputs up to the latest completed interval and persist one regime.
+
+    Every attempt is recorded as an auditable research sync run, including failures, so
+    a recovery refresh triggered from ``paper-alerts`` is distinguishable from the
+    scheduled hourly sync by its ``purpose``.
+    """
+    boundary_timestamp = int(now.timestamp()) // interval_seconds * interval_seconds
+    research_end = datetime.fromtimestamp(boundary_timestamp, UTC)
+    research_start = research_end - timedelta(
+        days=realized_window_days,
+        seconds=interval_seconds,
+    )
+    run_id = repository.begin_research_sync(
+        symbol=symbol,
+        event_ticker=None,
+        request={
+            "purpose": purpose,
+            "series_ticker": series_ticker,
+            "start": research_start.isoformat(),
+            "end": research_end.isoformat(),
+            "interval_seconds": interval_seconds,
+            "realized_window_days": realized_window_days,
+        },
+    )
+    try:
+        batch = asyncio.run(
+            _fetch_research_data(
+                symbol,
+                research_start,
+                research_end,
+                interval_seconds,
+                None,
+            )
+        )
+        written = repository.save_research_data(
+            spot_candles=batch.spot_candles,
+            volatility_observations=batch.volatility_observations,
+            funding_observations=batch.funding_observations,
+            derivatives_snapshots=batch.derivatives_snapshots,
+        )
+        context = repository.research_context_as_of(
+            symbol=symbol,
+            as_of=research_end,
+            interval_seconds=interval_seconds,
+            realized_window_seconds=realized_window_days * 24 * 60 * 60,
+            optional_max_age_seconds=2 * interval_seconds,
+        )
+        realized_written = repository.save_research_data(
+            volatility_observations=[context.realized_volatility]
+        )
+        written = ResearchWriteResult(
+            spot_candles=written.spot_candles,
+            volatility_observations=(
+                written.volatility_observations + realized_written.volatility_observations
+            ),
+            funding_observations=written.funding_observations,
+            derivatives_snapshots=written.derivatives_snapshots,
+            event_snapshots=written.event_snapshots,
+        )
+        regime = classify_market_regime(
+            context,
+            batch.spot_candles,
+            trend_threshold=trend_threshold,
+            low_volatility_threshold=low_volatility,
+            high_volatility_threshold=high_volatility,
+        )
+        repository.save_market_regime(series_ticker=series_ticker, regime=regime)
+        repository.complete_research_sync(run_id, result=written)
+    except Exception as exc:
+        repository.complete_research_sync(run_id, error=str(exc))
+        raise
+    return _ResearchRefreshResult(run_id=run_id, regime=regime, written=written)
+
+
 @app.command("paper-alert-research")
 def paper_alert_research(
     series: Annotated[str, typer.Option(help="Kalshi series ticker for regime records.")],
@@ -1127,91 +1226,34 @@ def paper_alert_research(
         )
     normalized_series = series.upper()
     normalized_symbol = symbol.upper()
-    interval_seconds = interval * 60
-    now = datetime.now(UTC)
-    boundary_timestamp = int(now.timestamp()) // interval_seconds * interval_seconds
-    research_end = datetime.fromtimestamp(boundary_timestamp, UTC)
-    research_start = research_end - timedelta(
-        days=realized_window_days,
-        seconds=interval_seconds,
-    )
     settings = Settings()
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
-    run_id = repository.begin_research_sync(
-        symbol=normalized_symbol,
-        event_ticker=None,
-        request={
-            "purpose": "paper-alert-research",
-            "series_ticker": normalized_series,
-            "start": research_start.isoformat(),
-            "end": research_end.isoformat(),
-            "interval_seconds": interval_seconds,
-            "realized_window_days": realized_window_days,
-        },
-    )
     try:
-        batch = asyncio.run(
-            _fetch_research_data(
-                normalized_symbol,
-                research_start,
-                research_end,
-                interval_seconds,
-                None,
-            )
-        )
-        written = repository.save_research_data(
-            spot_candles=batch.spot_candles,
-            volatility_observations=batch.volatility_observations,
-            funding_observations=batch.funding_observations,
-            derivatives_snapshots=batch.derivatives_snapshots,
-        )
-        context = repository.research_context_as_of(
+        refresh = _refresh_paper_alert_research(
+            repository,
+            series_ticker=normalized_series,
             symbol=normalized_symbol,
-            as_of=research_end,
-            interval_seconds=interval_seconds,
-            realized_window_seconds=realized_window_days * 24 * 60 * 60,
-            optional_max_age_seconds=2 * interval_seconds,
-        )
-        realized_written = repository.save_research_data(
-            volatility_observations=[context.realized_volatility]
-        )
-        written = ResearchWriteResult(
-            spot_candles=written.spot_candles,
-            volatility_observations=(
-                written.volatility_observations + realized_written.volatility_observations
-            ),
-            funding_observations=written.funding_observations,
-            derivatives_snapshots=written.derivatives_snapshots,
-            event_snapshots=written.event_snapshots,
-        )
-        regime = classify_market_regime(
-            context,
-            batch.spot_candles,
+            interval_seconds=interval * 60,
+            realized_window_days=realized_window_days,
+            now=datetime.now(UTC),
             trend_threshold=trend_threshold,
-            low_volatility_threshold=low_volatility,
-            high_volatility_threshold=high_volatility,
+            low_volatility=low_volatility,
+            high_volatility=high_volatility,
         )
-        repository.save_market_regime(series_ticker=normalized_series, regime=regime)
-        repository.complete_research_sync(run_id, result=written)
-    except Exception as exc:
-        repository.complete_research_sync(run_id, error=str(exc))
-        if isinstance(
-            exc,
-            (
-                CoinbaseDataError,
-                DeribitDataError,
-                KalshiAPIError,
-                ResearchDataUnavailable,
-                ValueError,
-            ),
-        ):
-            console.print(f"[red]Paper-alert research sync failed: {exc}[/red]")
-            raise typer.Exit(code=1) from exc
-        raise
+    except (
+        CoinbaseDataError,
+        DeribitDataError,
+        KalshiAPIError,
+        ResearchDataUnavailable,
+        ValueError,
+    ) as exc:
+        console.print(f"[red]Paper-alert research sync failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
     console.print(
-        f"Research sync [bold]{run_id}[/bold] • {regime.label} • "
-        f"{written.spot_candles} spot • {written.volatility_observations} volatility"
+        f"Research sync [bold]{refresh.run_id}[/bold] • {refresh.regime.label} • "
+        f"{refresh.written.spot_candles} spot • "
+        f"{refresh.written.volatility_observations} volatility"
     )
 
 
@@ -1267,17 +1309,43 @@ def paper_alerts(
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
     decision_at = datetime.now(UTC)
-    try:
-        live_spot = asyncio.run(_fetch_live_spot(normalized_symbol, decision_at))
-        repository.save_research_data(spot_candles=[live_spot])
-        context = repository.research_context_as_of(
+
+    def load_context(live_spot: SpotCandle) -> ResearchContext:
+        return repository.research_context_as_of(
             symbol=normalized_symbol,
             as_of=decision_at,
             interval_seconds=interval_seconds,
             realized_window_seconds=realized_window_days * 24 * 60 * 60,
             optional_max_age_seconds=2 * interval_seconds,
         ).model_copy(update={"spot": live_spot})
-    except (CoinbaseDataError, ResearchDataUnavailable, ValueError) as exc:
+
+    try:
+        live_spot = asyncio.run(_fetch_live_spot(normalized_symbol, decision_at))
+        repository.save_research_data(spot_candles=[live_spot])
+        try:
+            context = load_context(live_spot)
+        except ResearchDataUnavailable as stale:
+            console.print(
+                f"[yellow]Stored research unavailable ({stale}); "
+                "refreshing before evaluation.[/yellow]"
+            )
+            _refresh_paper_alert_research(
+                repository,
+                series_ticker=normalized_series,
+                symbol=normalized_symbol,
+                interval_seconds=interval_seconds,
+                realized_window_days=realized_window_days,
+                now=decision_at,
+                purpose="paper-alerts-recovery",
+            )
+            context = load_context(live_spot)
+    except (
+        CoinbaseDataError,
+        DeribitDataError,
+        KalshiAPIError,
+        ResearchDataUnavailable,
+        ValueError,
+    ) as exc:
         console.print(f"[red]Paper-alert evaluation data unavailable: {exc}[/red]")
         raise typer.Exit(code=1) from exc
     regime = repository.latest_market_regime(

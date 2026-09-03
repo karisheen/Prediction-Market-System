@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -8,6 +9,11 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from prediction_market_system.research import SpotCandle
+from prediction_market_system.transport import (
+    DEFAULT_TRANSIENT_RETRIES,
+    SleepFn,
+    get_with_transient_retry,
+)
 
 COINBASE_MARKET_API = "https://api.coinbase.com/api/v3/brokerage/market"
 COINBASE_GRANULARITIES = {
@@ -49,6 +55,8 @@ class CoinbaseClient:
         *,
         base_url: str = COINBASE_MARKET_API,
         client: httpx.AsyncClient | None = None,
+        max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+        sleep: SleepFn = asyncio.sleep,
     ) -> None:
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -56,6 +64,10 @@ class CoinbaseClient:
             headers={"User-Agent": "prediction-market-system/0.1.0"},
         )
         self._owns_client = client is None
+        if max_transient_retries < 0:
+            raise ValueError("max_transient_retries must be non-negative")
+        self._max_transient_retries = max_transient_retries
+        self._sleep = sleep
 
     async def get_candles(
         self,
@@ -125,7 +137,8 @@ class CoinbaseClient:
     ) -> tuple[_CoinbaseCandlesResponse, datetime]:
         path = f"/products/{product_id}/candles"
         try:
-            response = await self._client.get(
+            response = await get_with_transient_retry(
+                self._client,
                 path,
                 params={
                     "start": str(start),
@@ -133,6 +146,8 @@ class CoinbaseClient:
                     "granularity": granularity,
                     "limit": 350,
                 },
+                max_retries=self._max_transient_retries,
+                sleep=self._sleep,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:

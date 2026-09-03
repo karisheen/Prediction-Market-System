@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,6 +11,11 @@ from prediction_market_system.research import (
     DerivativesSnapshot,
     FundingObservation,
     VolatilityObservation,
+)
+from prediction_market_system.transport import (
+    DEFAULT_TRANSIENT_RETRIES,
+    SleepFn,
+    get_with_transient_retry,
 )
 
 DERIBIT_PUBLIC_API = "https://www.deribit.com/api/v2/public"
@@ -49,6 +55,8 @@ class DeribitClient:
         *,
         base_url: str = DERIBIT_PUBLIC_API,
         client: httpx.AsyncClient | None = None,
+        max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+        sleep: SleepFn = asyncio.sleep,
     ) -> None:
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -56,6 +64,10 @@ class DeribitClient:
             headers={"User-Agent": "prediction-market-system/0.1.0"},
         )
         self._owns_client = client is None
+        if max_transient_retries < 0:
+            raise ValueError("max_transient_retries must be non-negative")
+        self._max_transient_retries = max_transient_retries
+        self._sleep = sleep
 
     async def get_dvol_history(
         self,
@@ -204,7 +216,13 @@ class DeribitClient:
         params: dict[str, str | int],
     ) -> tuple[Any, datetime]:
         try:
-            response = await self._client.get(path, params=params)
+            response = await get_with_transient_retry(
+                self._client,
+                path,
+                params=params,
+                max_retries=self._max_transient_retries,
+                sleep=self._sleep,
+            )
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise DeribitDataError(f"Deribit request failed for {path}: {exc}") from exc

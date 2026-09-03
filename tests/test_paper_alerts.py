@@ -17,6 +17,7 @@ from prediction_market_system.paper_alerts import (
     classify_market_regime,
 )
 from prediction_market_system.research import ResearchContext, SpotCandle, VolatilityObservation
+from prediction_market_system.sources import CoinbaseDataError
 from prediction_market_system.storage import MarketCheckStatus, SQLiteRepository
 from prediction_market_system.venues.kalshi import KalshiMarket, KalshiOrderBook
 
@@ -919,3 +920,121 @@ def test_paper_alert_command_records_regime_cycle(
         requested_at=datetime.now(UTC) + timedelta(seconds=1),
     )
     assert activity.cycles == 1
+
+
+def _synthetic_research_batch(
+    start_at: datetime,
+    end_at: datetime,
+    interval_seconds: int,
+) -> _ResearchDataBatch:
+    candles: list[SpotCandle] = []
+    candle_start = start_at
+    price = Decimal("100")
+    while candle_start < end_at:
+        candle_end = candle_start + timedelta(seconds=interval_seconds)
+        candles.append(spot_candle(candle_end, str(price), interval_seconds=interval_seconds))
+        price += Decimal("1")
+        candle_start = candle_end
+    return _ResearchDataBatch(
+        spot_candles=candles,
+        volatility_observations=[],
+        funding_observations=[],
+        derivatives_snapshots=[],
+        event_snapshots=[],
+    )
+
+
+def test_paper_alert_command_refreshes_stale_research_before_evaluating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    research_calls: list[str | None] = []
+
+    async def fetch_research(
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+        interval_seconds: int,
+        event_ticker: str | None,
+    ) -> _ResearchDataBatch:
+        research_calls.append(event_ticker)
+        return _synthetic_research_batch(start_at, end_at, interval_seconds)
+
+    async def fetch_live_spot(symbol: str, as_of: datetime) -> SpotCandle:
+        return spot_candle(as_of, "100", interval_seconds=60)
+
+    async def run_cycle(**kwargs: object) -> PaperAlertCycleResult:
+        return PaperAlertCycleResult(
+            discovered=0,
+            evaluated=0,
+            watch=0,
+            delivered=0,
+            unsupported=0,
+            uncalibrated=0,
+            failures=(),
+        )
+
+    database_path = tmp_path / "paper-alerts.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+    monkeypatch.setattr("prediction_market_system.cli._fetch_research_data", fetch_research)
+    monkeypatch.setattr("prediction_market_system.cli._fetch_live_spot", fetch_live_spot)
+    monkeypatch.setattr("prediction_market_system.cli._load_kalshi_markets", lambda *args: [])
+    monkeypatch.setattr("prediction_market_system.cli._run_paper_alert_cycle", run_cycle)
+
+    result = cli_runner.invoke(
+        app,
+        ["paper-alerts", "--series", "KXBTC", "--symbol", "BTC", "--interval", "1440"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "refreshing before evaluation" in result.output
+    assert "Paper-alert cycle: KXBTC" in result.output
+    assert research_calls == [None]
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT status, request_json FROM research_data_sync_runs"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "succeeded"
+    assert '"purpose": "paper-alerts-recovery"' in rows[0][1]
+    coverage = SQLiteRepository(database_path).market_regime_coverage(
+        series_ticker="KXBTC",
+        symbol="BTC",
+    )
+    assert sum(int(row["observation_count"]) for row in coverage) == 1
+
+
+def test_paper_alert_command_reports_failed_research_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fetch_research(
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+        interval_seconds: int,
+        event_ticker: str | None,
+    ) -> _ResearchDataBatch:
+        raise CoinbaseDataError("Coinbase request failed for /products/BTC-USD/candles")
+
+    async def fetch_live_spot(symbol: str, as_of: datetime) -> SpotCandle:
+        return spot_candle(as_of, "100", interval_seconds=60)
+
+    database_path = tmp_path / "paper-alerts.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+    monkeypatch.setattr("prediction_market_system.cli._fetch_research_data", fetch_research)
+    monkeypatch.setattr("prediction_market_system.cli._fetch_live_spot", fetch_live_spot)
+
+    result = cli_runner.invoke(
+        app,
+        ["paper-alerts", "--series", "KXBTC", "--symbol", "BTC", "--interval", "1440"],
+    )
+
+    assert result.exit_code == 1
+    assert "refreshing before evaluation" in result.output
+    assert "Paper-alert evaluation data unavailable" in result.output
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute("SELECT status, error FROM research_data_sync_runs").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "failed"
+    assert "Coinbase request failed" in rows[0][1]
