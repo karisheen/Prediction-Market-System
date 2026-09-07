@@ -13,6 +13,8 @@ from pydantic import HttpUrl
 from rich.console import Console
 from rich.table import Table
 
+from prediction_market_system.archive import archive_window_complete
+from prediction_market_system.audit_cli import register_audit_commands
 from prediction_market_system.backtest import BacktestConfig, BacktestResult, HistoricalBacktester
 from prediction_market_system.config import Settings
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
@@ -28,11 +30,18 @@ from prediction_market_system.domain import (
     ThresholdModelKind,
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
+from prediction_market_system.evidence import EVIDENCE_MANUAL_RESEARCH
 from prediction_market_system.paper_alerts import (
     PaperAlertCycleResult,
     PaperAlertRunner,
     classify_market_regime,
 )
+from prediction_market_system.recipe import (
+    DECISION_SPOT_INTERVAL_SECONDS,
+    MANAGED_KALSHI_PERIOD_MINUTES,
+    PROSPECTIVE_CANDLE_LOOKBACK_SECONDS,
+)
+from prediction_market_system.redaction import redact_secrets
 from prediction_market_system.research import (
     DerivativesSnapshot,
     EventDataSnapshot,
@@ -50,7 +59,11 @@ from prediction_market_system.sources import (
     DeribitDataError,
 )
 from prediction_market_system.storage import SQLiteRepository
-from prediction_market_system.validation import ValidationCampaignReport, ValidationCampaignState
+from prediction_market_system.validation import (
+    ValidationCampaignReport,
+    ValidationCampaignState,
+    frozen_campaign_configuration,
+)
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
     KalshiAPIError,
@@ -69,6 +82,48 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+register_audit_commands(app)
+
+
+def availability_after_receipt(
+    *,
+    request_started_at: datetime,
+    received_at: datetime,
+) -> datetime:
+    """System availability is actual receipt time, never request start."""
+    if request_started_at.tzinfo is None or request_started_at.utcoffset() is None:
+        raise ValueError("request timestamp must include a timezone")
+    if received_at.tzinfo is None or received_at.utcoffset() is None:
+        raise ValueError("receipt timestamp must include a timezone")
+    if received_at < request_started_at:
+        raise ValueError("evidence availability cannot precede request start")
+    return received_at
+
+
+def save_prospective_kalshi_history(
+    repository: SQLiteRepository,
+    *,
+    series_ticker: str,
+    markets: list[KalshiMarket],
+    candlesticks: dict[str, list[KalshiCandlestick]],
+    request_started_at: datetime,
+    received_at: datetime,
+    period_interval: CandlestickPeriod = MANAGED_KALSHI_PERIOD_MINUTES,
+) -> datetime:
+    availability = availability_after_receipt(
+        request_started_at=request_started_at,
+        received_at=received_at,
+    )
+    repository.save_kalshi_history(
+        series_ticker=series_ticker,
+        observed_at=availability,
+        markets=markets,
+        candlesticks=candlesticks,
+        period_interval=period_interval,
+        series_fee_changes=[],
+        event_fee_changes=[],
+    )
+    return availability
 
 
 @dataclass(frozen=True)
@@ -78,6 +133,7 @@ class _KalshiHistoryBatch:
     candlesticks: dict[str, list[KalshiCandlestick]]
     series_fee_changes: list[KalshiSeriesFeeChange]
     event_fee_changes: list[KalshiEventFeeChange]
+    discovery_complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +172,7 @@ def _engine_config(settings: Settings) -> EngineConfig:
         max_bankroll_fraction=settings.max_bankroll_fraction,
         max_event_bankroll_fraction=settings.max_event_bankroll_fraction,
         minimum_seconds_to_expiry=settings.minimum_seconds_to_expiry,
+        maximum_input_age_seconds=settings.maximum_live_spot_age_seconds,
     )
 
 
@@ -262,10 +319,6 @@ def kalshi_evaluate(
         float,
         typer.Option(min=0.0, help="Annualized volatility as a decimal."),
     ],
-    strike: Annotated[
-        float | None,
-        typer.Option(min=0.0, help="Override missing Kalshi threshold metadata."),
-    ] = None,
     expected_return: Annotated[
         float,
         typer.Option(help="Annualized physical drift assumption."),
@@ -283,9 +336,9 @@ def kalshi_evaluate(
     settings = Settings()
     market, snapshot = _load_kalshi_market(ticker)
     try:
-        contract = market.price_contract(strike)
+        contract = market.evaluation_contract(snapshot.observed_at)
     except UnsupportedMarketError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--ticker") from exc
+        raise typer.BadParameter(redact_secrets(str(exc)), param_hint="--ticker") from None
 
     engine = CryptoThresholdEngine(_engine_config(settings))
     crypto = CryptoSnapshot(
@@ -303,6 +356,7 @@ def kalshi_evaluate(
         model_name=engine.model_name(contract),
         as_of=snapshot.observed_at,
         model_version=engine.model_version,
+        recipe_id=engine.recipe_id(crypto),
     )
     if calibration_profile is None and not allow_uncalibrated:
         raise typer.BadParameter(
@@ -437,9 +491,7 @@ def paper_alert_archive(
     normalized_symbol = symbol.upper()
     period_interval = cast(CandlestickPeriod, period)
     today = _utc_day(datetime.now(UTC))
-    first_day = max(
-        _utc_day(_parse_timestamp(campaign_start)), today - timedelta(days=catch_up_days)
-    )
+    first_day = _utc_day(_parse_timestamp(campaign_start))
     settings = Settings()
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
@@ -447,7 +499,7 @@ def paper_alert_archive(
     archived = 0
     skipped = 0
     window_start = first_day
-    while window_start < today:
+    while window_start < today and archived < catch_up_days:
         window_end = window_start + timedelta(days=1)
         if repository.validation_archive_succeeded(
             series_ticker=normalized_series,
@@ -514,6 +566,22 @@ def paper_alert_archive(
                 "spot_candles": research_written.spot_candles,
                 "volatility_observations": research_written.volatility_observations,
                 "funding_observations": research_written.funding_observations,
+                "coverage_complete": int(
+                    archive_window_complete(
+                        start=window_start,
+                        end=window_end,
+                        period_minutes=period_interval,
+                        discovery_complete=market_batch.discovery_complete,
+                        markets=[
+                            market
+                            for market in market_batch.markets
+                            if market.ticker in market_batch.candlesticks
+                        ],
+                        candlesticks=market_batch.candlesticks,
+                        spot_candles=research_batch.spot_candles,
+                        history_hours=history_hours,
+                    )
+                ),
             }
             repository.complete_validation_archive(
                 series_ticker=normalized_series,
@@ -536,14 +604,15 @@ def paper_alert_archive(
                 start_at=window_start,
                 end_at=window_end,
                 period_interval=period_interval,
-                error=str(exc),
+                error=redact_secrets(str(exc)),
             )
             if isinstance(
                 exc,
                 (CoinbaseDataError, DeribitDataError, KalshiAPIError, ValueError),
             ):
                 console.print(
-                    f"[red]Validation archive failed for {window_start.date()}: {exc}[/red]"
+                    f"[red]Validation archive failed for {window_start.date()}: "
+                    f"{redact_secrets(str(exc))}[/red]"
                 )
                 raise typer.Exit(code=1) from exc
             raise
@@ -637,12 +706,12 @@ def sync_research_data(
             )
         repository.complete_research_sync(run_id, result=written)
     except Exception as exc:
-        repository.complete_research_sync(run_id, error=str(exc))
+        repository.complete_research_sync(run_id, error=redact_secrets(str(exc)))
         if isinstance(
             exc,
             (CoinbaseDataError, DeribitDataError, KalshiAPIError, ValueError),
         ):
-            console.print(f"[red]Research-data sync failed: {exc}[/red]")
+            console.print(f"[red]Research-data sync failed: {redact_secrets(str(exc))}[/red]")
             raise typer.Exit(code=1) from exc
         raise
 
@@ -717,7 +786,7 @@ def research_context(
             optional_max_age_seconds=max_age_minutes * 60,
         )
     except ResearchDataUnavailable as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{redact_secrets(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
 
     table = Table(title=f"Point-in-time research context: {context.symbol}")
@@ -786,6 +855,14 @@ def backtest(
     period: Annotated[
         int,
         typer.Option(help="Stored Kalshi and spot candle interval: 1, 60, or 1440."),
+    ] = 60,
+    spot_interval: Annotated[
+        int,
+        typer.Option(help="Decision-price interval: 1, 60, or 1440 minutes."),
+    ] = 1,
+    research_interval: Annotated[
+        int,
+        typer.Option(help="Research/realized-volatility interval: 1, 60, or 1440 minutes."),
     ] = 60,
     realized_window_days: Annotated[
         int,
@@ -859,6 +936,10 @@ def backtest(
     """Replay resolved Kalshi markets with point-in-time walk-forward evaluation."""
     if period not in {1, 60, 1440}:
         raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--period")
+    if spot_interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--spot-interval")
+    if research_interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--research-interval")
     try:
         config = BacktestConfig(
             series_ticker=series,
@@ -866,6 +947,8 @@ def backtest(
             start=_parse_timestamp(start),
             end=_parse_timestamp(end),
             period_minutes=cast(CandlestickPeriod, period),
+            spot_interval_seconds=spot_interval * 60,
+            realized_interval_seconds=research_interval * 60,
             realized_window_days=realized_window_days,
             train_days=train_days,
             test_days=test_days,
@@ -883,7 +966,7 @@ def backtest(
             maximum_brier_score=maximum_brier_score,
         )
     except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        raise typer.BadParameter(redact_secrets(str(exc))) from None
 
     settings = Settings()
     repository = SQLiteRepository(settings.database_path)
@@ -900,7 +983,7 @@ def backtest(
         raise typer.Exit(code=1)
 
     result = HistoricalBacktester(repository, _engine_config(settings)).run(config, markets)
-    repository.save_backtest_result(result)
+    result = repository.save_backtest_result(result)
 
     table = Table(title=f"Walk-forward backtest: {config.series_ticker}")
     table.add_column("Fold", justify="right")
@@ -933,7 +1016,7 @@ def backtest(
         f"Brier: {'—' if result.brier_score is None else f'{result.brier_score:.4f}'}"
     )
     console.print(f"Backtest run [bold]{result.run_id}[/bold] stored in {settings.database_path}")
-    validation_table = Table(title="Paper-alert model approval")
+    validation_table = Table(title="Research gate results (not deployable)")
     validation_table.add_column("Model")
     validation_table.add_column("Calibration events", justify="right")
     validation_table.add_column("Held-out events", justify="right")
@@ -948,7 +1031,7 @@ def backtest(
             ("—" if validation.return_on_cost is None else f"{validation.return_on_cost:.2%}"),
             "—" if validation.brier_score is None else f"{validation.brier_score:.4f}",
             (
-                "APPROVED"
+                "GATES PASSED"
                 if validation.accepted_for_paper_alerts
                 else "; ".join(validation.rejection_reasons)
             ),
@@ -980,6 +1063,14 @@ def paper_alert_validate(
     symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
     campaign_start: Annotated[str, typer.Option(help="Validation campaign UTC start.")],
     period: Annotated[int, typer.Option(help="Stored candle interval in minutes.")] = 1,
+    spot_interval: Annotated[
+        int,
+        typer.Option(help="Decision-price interval: 1, 60, or 1440 minutes."),
+    ] = 1,
+    research_interval: Annotated[
+        int,
+        typer.Option(help="Research/realized-volatility interval: 1, 60, or 1440 minutes."),
+    ] = 60,
     train_days: Annotated[int, typer.Option(min=1)] = 90,
     test_days: Annotated[int, typer.Option(min=1)] = 30,
     step_days: Annotated[int, typer.Option(min=1)] = 30,
@@ -990,11 +1081,21 @@ def paper_alert_validate(
     minimum_return_on_cost: float = 0.0,
     maximum_brier_score: Annotated[float, typer.Option(min=0.000001, max=1.0)] = 0.25,
     max_events: Annotated[int, typer.Option(min=1, max=5_000)] = 5_000,
-    send_discord: Annotated[bool, typer.Option(help="Update Discord validation status.")] = True,
+    send_discord: Annotated[bool, typer.Option(help="Update Discord validation status.")] = False,
+    replace_campaign: Annotated[
+        bool,
+        typer.Option(
+            help="Explicitly supersede the frozen campaign registration with these settings."
+        ),
+    ] = False,
 ) -> None:
     """Run validation when coverage is ready; otherwise report collection progress."""
     if period not in {1, 60, 1440}:
         raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--period")
+    if spot_interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--spot-interval")
+    if research_interval not in {1, 60, 1440}:
+        raise typer.BadParameter("must be 1, 60, or 1440", param_hint="--research-interval")
     settings = Settings()
     if send_discord and settings.discord_webhook_url is None:
         raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
@@ -1005,21 +1106,16 @@ def paper_alert_validate(
     required_days = train_days + test_days + step_days * (minimum_validation_folds - 1)
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
-    coverage_days, coverage_end = repository.validation_archive_coverage(
-        series_ticker=normalized_series,
-        symbol=normalized_symbol,
-        period_interval=period_interval,
-        campaign_start=start_at,
-    )
-    result: BacktestResult | None = None
-    if coverage_days >= required_days:
-        end_at = start_at + timedelta(days=coverage_days)
-        config = BacktestConfig(
+    engine_config = _engine_config(settings)
+    try:
+        campaign_config = BacktestConfig(
             series_ticker=normalized_series,
             symbol=normalized_symbol,
             start=start_at,
-            end=end_at,
+            end=start_at + timedelta(days=required_days),
             period_minutes=period_interval,
+            spot_interval_seconds=spot_interval * 60,
+            realized_interval_seconds=research_interval * 60,
             realized_window_days=realized_window_days,
             train_days=train_days,
             test_days=test_days,
@@ -1030,6 +1126,29 @@ def paper_alert_validate(
             minimum_return_on_cost=minimum_return_on_cost,
             maximum_brier_score=maximum_brier_score,
         )
+        campaign_id = repository.register_validation_campaign(
+            series_ticker=normalized_series,
+            symbol=normalized_symbol,
+            configuration=frozen_campaign_configuration(
+                campaign_start=start_at,
+                max_events=max_events,
+                config=campaign_config,
+                engine=engine_config,
+            ),
+            replace=replace_campaign,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    coverage_days, coverage_end = repository.validation_archive_coverage(
+        series_ticker=normalized_series,
+        symbol=normalized_symbol,
+        period_interval=period_interval,
+        campaign_start=start_at,
+    )
+    result: BacktestResult | None = None
+    if coverage_days >= required_days:
+        end_at = start_at + timedelta(days=coverage_days)
+        config = campaign_config.model_copy(update={"end": end_at})
         markets = repository.load_kalshi_backtest_data(
             series_ticker=normalized_series,
             start=start_at,
@@ -1038,8 +1157,8 @@ def paper_alert_validate(
             max_events=max_events,
         )
         if markets:
-            result = HistoricalBacktester(repository, _engine_config(settings)).run(config, markets)
-            repository.save_backtest_result(result)
+            result = HistoricalBacktester(repository, engine_config).run(config, markets)
+            result = repository.save_backtest_result(result, campaign_id=campaign_id)
 
     validations = () if result is None else result.model_validations
     approved = sum(item.accepted_for_paper_alerts for item in validations)
@@ -1062,6 +1181,7 @@ def paper_alert_validate(
         required_days=required_days,
         validations=validations,
         run_id=None if result is None else str(result.run_id),
+        campaign_id=campaign_id,
     )
     message_id: str | None = None
     if send_discord and settings.discord_webhook_url is not None:
@@ -1143,12 +1263,15 @@ def _refresh_paper_alert_research(
     )
     try:
         batch = asyncio.run(
-            _fetch_research_data(
-                symbol,
-                research_start,
-                research_end,
-                interval_seconds,
-                None,
+            asyncio.wait_for(
+                _fetch_research_data(
+                    symbol,
+                    research_start,
+                    research_end,
+                    interval_seconds,
+                    None,
+                ),
+                timeout=120 if purpose == "paper-alerts-recovery" else 3600,
             )
         )
         written = repository.save_research_data(
@@ -1159,7 +1282,7 @@ def _refresh_paper_alert_research(
         )
         context = repository.research_context_as_of(
             symbol=symbol,
-            as_of=research_end,
+            as_of=datetime.now(UTC),
             interval_seconds=interval_seconds,
             realized_window_seconds=realized_window_days * 24 * 60 * 60,
             optional_max_age_seconds=2 * interval_seconds,
@@ -1186,7 +1309,11 @@ def _refresh_paper_alert_research(
         repository.save_market_regime(series_ticker=series_ticker, regime=regime)
         repository.complete_research_sync(run_id, result=written)
     except Exception as exc:
-        repository.complete_research_sync(run_id, error=str(exc))
+        repository.complete_research_sync(run_id, error=redact_secrets(str(exc)))
+        if isinstance(exc, TimeoutError):
+            raise ResearchDataUnavailable(
+                "research refresh exceeded its bounded work deadline"
+            ) from None
         raise
     return _ResearchRefreshResult(run_id=run_id, regime=regime, written=written)
 
@@ -1248,7 +1375,7 @@ def paper_alert_research(
         ResearchDataUnavailable,
         ValueError,
     ) as exc:
-        console.print(f"[red]Paper-alert research sync failed: {exc}[/red]")
+        console.print(f"[red]Paper-alert research sync failed: {redact_secrets(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
     console.print(
         f"Research sync [bold]{refresh.run_id}[/bold] • {refresh.regime.label} • "
@@ -1310,23 +1437,26 @@ def paper_alerts(
     repository.initialize()
     decision_at = datetime.now(UTC)
 
-    def load_context(live_spot: SpotCandle) -> ResearchContext:
+    def load_context() -> ResearchContext:
         return repository.research_context_as_of(
             symbol=normalized_symbol,
             as_of=decision_at,
             interval_seconds=interval_seconds,
+            spot_interval_seconds=DECISION_SPOT_INTERVAL_SECONDS,
             realized_window_seconds=realized_window_days * 24 * 60 * 60,
+            spot_max_age_seconds=settings.maximum_live_spot_age_seconds,
             optional_max_age_seconds=2 * interval_seconds,
-        ).model_copy(update={"spot": live_spot})
+        )
 
     try:
         live_spot = asyncio.run(_fetch_live_spot(normalized_symbol, decision_at))
         repository.save_research_data(spot_candles=[live_spot])
+        decision_at = datetime.now(UTC)
         try:
-            context = load_context(live_spot)
+            context = load_context()
         except ResearchDataUnavailable as stale:
             console.print(
-                f"[yellow]Stored research unavailable ({stale}); "
+                f"[yellow]Stored research unavailable ({redact_secrets(str(stale))}); "
                 "refreshing before evaluation.[/yellow]"
             )
             _refresh_paper_alert_research(
@@ -1338,7 +1468,8 @@ def paper_alerts(
                 now=decision_at,
                 purpose="paper-alerts-recovery",
             )
-            context = load_context(live_spot)
+            decision_at = datetime.now(UTC)
+            context = load_context()
     except (
         CoinbaseDataError,
         DeribitDataError,
@@ -1346,7 +1477,9 @@ def paper_alerts(
         ResearchDataUnavailable,
         ValueError,
     ) as exc:
-        console.print(f"[red]Paper-alert evaluation data unavailable: {exc}[/red]")
+        console.print(
+            f"[red]Paper-alert evaluation data unavailable: {redact_secrets(str(exc))}[/red]"
+        )
         raise typer.Exit(code=1) from exc
     regime = repository.latest_market_regime(
         series_ticker=normalized_series,
@@ -1358,6 +1491,30 @@ def paper_alerts(
         raise typer.Exit(code=1)
 
     markets = _load_kalshi_markets(normalized_series, max_markets)
+    request_started_at = datetime.now(UTC)
+    candlesticks: dict[str, list[KalshiCandlestick]] = {}
+    try:
+        candlesticks = asyncio.run(
+            _fetch_prospective_candlesticks(
+                normalized_series,
+                markets,
+                as_of=request_started_at,
+            )
+        )
+        received_at = datetime.now(UTC)
+    except Exception as exc:
+        received_at = datetime.now(UTC)
+        console.print(
+            f"[yellow]Prospective candle archive skipped: {redact_secrets(str(exc))}[/yellow]"
+        )
+    save_prospective_kalshi_history(
+        repository,
+        series_ticker=normalized_series,
+        markets=markets,
+        candlesticks=candlesticks,
+        request_started_at=request_started_at,
+        received_at=received_at,
+    )
     cycle_id = str(uuid4())
     repository.save_paper_alert_cycle(
         cycle_id=cycle_id,
@@ -1396,7 +1553,7 @@ def paper_alerts(
         f"realized volatility {regime.realized_volatility:.2%}"
     )
     for error in result.failures:
-        console.print(f"[red]{error}[/red]")
+        console.print(f"[red]{redact_secrets(error)}[/red]")
     if result.failures or result.uncalibrated or result.unapproved:
         raise typer.Exit(code=1)
 
@@ -1463,9 +1620,7 @@ def paper_alert_status(
         series_ticker=series,
         symbol=symbol,
     )
-    activity_table = Table(
-        title=f"Paper-alert activity: {series.upper()} / {symbol.upper()}"
-    )
+    activity_table = Table(title=f"Paper-alert activity: {series.upper()} / {symbol.upper()}")
     activity_table.add_column("Metric")
     activity_table.add_column("Count", justify="right")
     activity_table.add_row("Cycles since last request", str(activity.cycles))
@@ -1555,15 +1710,17 @@ def _load_kalshi_market(ticker: str) -> tuple[KalshiMarket, MarketSnapshot]:
     try:
         return asyncio.run(_fetch_kalshi_market(ticker.upper()))
     except KalshiAPIError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{redact_secrets(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
+    except UnsupportedMarketError as exc:
+        raise typer.BadParameter(redact_secrets(str(exc)), param_hint="--ticker") from None
 
 
 def _load_kalshi_markets(series: str | None, limit: int) -> list[KalshiMarket]:
     try:
         return asyncio.run(_fetch_kalshi_markets(series, limit))
     except KalshiAPIError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{redact_secrets(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
 
 
@@ -1589,7 +1746,7 @@ def _load_kalshi_history(
             )
         )
     except KalshiAPIError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{redact_secrets(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
 
 
@@ -1633,6 +1790,64 @@ async def _fetch_kalshi_market(ticker: str) -> tuple[KalshiMarket, MarketSnapsho
         await client.close()
 
 
+async def _fetch_prospective_candlesticks(
+    series_ticker: str,
+    markets: list[KalshiMarket],
+    *,
+    as_of: datetime,
+    lookback_seconds: int = PROSPECTIVE_CANDLE_LOOKBACK_SECONDS,
+    period_interval: CandlestickPeriod = MANAGED_KALSHI_PERIOD_MINUTES,
+) -> dict[str, list[KalshiCandlestick]]:
+    """Fetch recently completed live candles for prospective archival.
+
+    ``as_of`` is the request-start / query-window bound, not system availability.
+    Replay availability is assigned by the caller at actual response receipt.
+    Older candles may be returned by the provider, but they must be stored with
+    the scan's receipt timestamp. Replay will not treat them as available earlier.
+    """
+    if not markets:
+        return {}
+    start_ts = int((as_of - timedelta(seconds=lookback_seconds)).timestamp())
+    end_ts = int(as_of.timestamp())
+    if start_ts > end_ts:
+        return {}
+    client = KalshiClient()
+    semaphore = asyncio.Semaphore(8)
+
+    async def fetch_one(market: KalshiMarket) -> tuple[str, list[KalshiCandlestick]]:
+        async with semaphore:
+            try:
+                candles = await client.get_candlesticks(
+                    series_ticker,
+                    market.ticker,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    period_interval=period_interval,
+                )
+            except (KalshiAPIError, ValueError, TimeoutError, httpx.HTTPError):
+                return market.ticker, []
+            return market.ticker, candles
+
+    try:
+        tasks = [asyncio.create_task(fetch_one(market)) for market in markets]
+        done, pending = await asyncio.wait(tasks, timeout=20)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        collected: dict[str, list[KalshiCandlestick]] = {}
+        for task in done:
+            try:
+                ticker, candles = task.result()
+            except (KalshiAPIError, ValueError, TimeoutError, httpx.HTTPError):
+                continue
+            if candles:
+                collected[ticker] = candles
+        return collected
+    finally:
+        await client.close()
+
+
 async def _fetch_kalshi_history(
     series_ticker: str,
     start_at: datetime,
@@ -1671,28 +1886,24 @@ async def _fetch_kalshi_history(
         selected_by_event: dict[str, list[KalshiMarket]] = {}
         for event in events:
             response = await client.get_event(event.event_ticker)
-            event_markets = [
-                market
-                for market in response.markets
-                if market.result in {"yes", "no"} and market.expiry <= end_at
-            ]
+            event_markets = [market for market in response.markets if market.close_time <= end_at]
             selected_markets = _select_history_markets(
                 event_markets,
                 range_contracts_per_event=range_contracts_per_event,
             )
-            markets.extend(selected_markets)
+            markets.extend(event_markets)
             selected_by_event[event.event_ticker] = selected_markets
 
         semaphore = asyncio.Semaphore(8)
 
         async def fetch_candles(market: KalshiMarket) -> tuple[str, list[KalshiCandlestick]]:
             async with semaphore:
-                candle_start = max(start_at, market.expiry - timedelta(hours=history_hours))
+                candle_start = max(start_at, market.close_time - timedelta(hours=history_hours))
                 candles = await client.get_candlesticks(
                     series_ticker,
                     market.ticker,
                     start_ts=int(candle_start.timestamp()),
-                    end_ts=int(min(end_at, market.expiry).timestamp()),
+                    end_ts=int(min(end_at, market.close_time).timestamp()),
                     period_interval=period_interval,
                 )
                 return market.ticker, candles
@@ -1722,11 +1933,12 @@ async def _fetch_kalshi_history(
                 event_cursor = fee_page.cursor
 
         return _KalshiHistoryBatch(
-            observed_at=end_at,
+            observed_at=datetime.now(UTC),
             markets=markets,
             candlesticks=candlesticks,
             series_fee_changes=series_fee_changes,
             event_fee_changes=event_fee_changes,
+            discovery_complete=len(events) < max_events,
         )
     finally:
         await client.close()
@@ -1796,7 +2008,10 @@ async def _fetch_live_spot(symbol: str, as_of: datetime) -> SpotCandle:
         await client.close()
     if not candles:
         raise ResearchDataUnavailable("Coinbase returned no completed one-minute spot candle")
-    return candles[-1]
+    latest = [candle for candle in candles if candle.end_at == candles[-1].end_at]
+    if len(latest) != 1:
+        raise ResearchDataUnavailable("latest spot has duplicate or conflicting provider revisions")
+    return latest[0]
 
 
 async def _fetch_research_data(
@@ -1866,7 +2081,11 @@ def _persist_and_maybe_alert(
 ) -> None:
     repository = SQLiteRepository(settings.database_path)
     repository.initialize()
-    repository.save_evaluation(opportunity.forecast, opportunity)
+    repository.save_evaluation(
+        opportunity.forecast,
+        opportunity,
+        ledger_kind=EVIDENCE_MANUAL_RESEARCH,
+    )
     _print_evaluation(opportunity)
 
     actionable = opportunity.state in {
@@ -1922,7 +2141,11 @@ async def _run_paper_alert_cycle(
         if settings.discord_webhook_url is None:
             raise ValueError("Discord webhook URL is required when delivery is enabled")
         discord = DiscordWebhookClient(settings.discord_webhook_url.get_secret_value())
-        alert_service = DiscordAlertService(repository, discord)
+        alert_service = DiscordAlertService(
+            repository,
+            discord,
+            allow_unapproved=allow_unapproved_discord,
+        )
     try:
         runner = PaperAlertRunner(
             repository=repository,
@@ -1979,6 +2202,7 @@ def _validation_report_payload(report: ValidationCampaignReport) -> dict[str, ob
         "coverage_days": report.coverage_days,
         "required_days": report.required_days,
         "run_id": report.run_id,
+        "campaign_id": report.campaign_id,
         "validations": [validation.model_dump(mode="json") for validation in report.validations],
     }
 

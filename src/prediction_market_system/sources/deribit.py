@@ -11,6 +11,7 @@ from prediction_market_system.research import (
     DerivativesSnapshot,
     FundingObservation,
     VolatilityObservation,
+    research_payload_hash,
 )
 from prediction_market_system.transport import (
     DEFAULT_TRANSIENT_RETRIES,
@@ -87,7 +88,7 @@ class DeribitClient:
 
         requested_start_ms = int(start_at.timestamp() * 1000)
         page_end_ms = int(end_at.timestamp() * 1000)
-        observations: dict[datetime, VolatilityObservation] = {}
+        observations: dict[tuple[datetime, str], VolatilityObservation] = {}
         while requested_start_ms < page_end_ms:
             result, retrieved_at = await self._get(
                 "/get_volatility_index_data",
@@ -95,7 +96,7 @@ class DeribitClient:
                     "currency": currency.upper(),
                     "start_timestamp": requested_start_ms,
                     "end_timestamp": page_end_ms,
-                    "resolution": resolution_seconds,
+                    "resolution": "1D" if resolution_seconds == 86400 else resolution_seconds,
                 },
             )
             if not isinstance(result, dict):
@@ -109,9 +110,9 @@ class DeribitClient:
                 timestamp_ms, open_value, high, low, close = row
                 source_start = datetime.fromtimestamp(float(timestamp_ms) / 1000, UTC)
                 observed_at = source_start + timedelta(seconds=resolution_seconds)
-                if observed_at > end_at:
+                if source_start < start_at or observed_at > end_at:
                     continue
-                observations[observed_at] = VolatilityObservation(
+                observation = VolatilityObservation(
                     provider="deribit",
                     symbol=currency.upper(),
                     kind="implied",
@@ -126,8 +127,11 @@ class DeribitClient:
                         "high": high,
                         "low": low,
                         "close": close,
+                        "resolution_seconds": resolution_seconds,
+                        "timestamp_semantics": "interval_start",
                     },
                 )
+                observations[(observed_at, research_payload_hash(observation))] = observation
 
             continuation = result.get("continuation")
             if continuation is None:
@@ -137,7 +141,7 @@ class DeribitClient:
                 raise DeribitDataError("Deribit repeated a DVOL continuation timestamp")
             page_end_ms = max(continuation_ms, requested_start_ms)
 
-        return [observations[observed_at] for observed_at in sorted(observations)]
+        return sorted(observations.values(), key=lambda value: value.observed_at)
 
     async def get_funding_history(
         self,
@@ -151,7 +155,7 @@ class DeribitClient:
         if end_at <= start_at:
             raise ValueError("funding end must be after start")
 
-        observations: dict[datetime, FundingObservation] = {}
+        observations: dict[tuple[datetime, str], FundingObservation] = {}
         page_start = start_at
         while page_start < end_at:
             page_end = min(end_at, page_start + _FUNDING_PAGE)
@@ -168,9 +172,9 @@ class DeribitClient:
             for payload in result:
                 row = _FundingRow.model_validate(payload)
                 observed_at = datetime.fromtimestamp(row.timestamp / 1000, UTC)
-                if observed_at > end_at:
+                if observed_at < start_at or observed_at > end_at:
                     continue
-                observations[observed_at] = FundingObservation(
+                observation = FundingObservation(
                     provider="deribit",
                     instrument_name=instrument_name.upper(),
                     observed_at=observed_at,
@@ -181,9 +185,10 @@ class DeribitClient:
                     retrieved_at=retrieved_at,
                     raw_payload=dict(payload),
                 )
+                observations[(observed_at, research_payload_hash(observation))] = observation
             page_start = page_end
 
-        return [observations[observed_at] for observed_at in sorted(observations)]
+        return sorted(observations.values(), key=lambda value: value.observed_at)
 
     async def get_derivatives_snapshot(self, instrument_name: str) -> DerivativesSnapshot:
         result, retrieved_at = await self._get(

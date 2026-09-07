@@ -172,6 +172,10 @@ def _agent_specs(
                 campaign_start,
                 "--period",
                 "1",
+                "--spot-interval",
+                "1",
+                "--research-interval",
+                "60",
                 "--train-days",
                 "90",
                 "--test-days",
@@ -194,9 +198,7 @@ def _agent_specs(
                 "5000",
                 "--send-discord",
             ),
-            schedule={
-                "StartCalendarInterval": {"Weekday": 1, "Hour": 2, "Minute": 15}
-            },
+            schedule={"StartCalendarInterval": {"Weekday": 1, "Hour": 2, "Minute": 15}},
             log_name="paper-alert-validation.log",
         ),
         AgentSpec(

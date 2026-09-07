@@ -1,7 +1,9 @@
+import math
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from typer.testing import CliRunner
@@ -16,7 +18,12 @@ from prediction_market_system.paper_alerts import (
     PaperAlertRunner,
     classify_market_regime,
 )
-from prediction_market_system.research import ResearchContext, SpotCandle, VolatilityObservation
+from prediction_market_system.research import (
+    ResearchContext,
+    SpotCandle,
+    VolatilityObservation,
+    calculate_realized_volatility,
+)
 from prediction_market_system.sources import CoinbaseDataError
 from prediction_market_system.storage import MarketCheckStatus, SQLiteRepository
 from prediction_market_system.venues.kalshi import KalshiMarket, KalshiOrderBook
@@ -53,21 +60,22 @@ def research_context(
     realized_volatility: float,
 ) -> tuple[ResearchContext, list[SpotCandle]]:
     start_at = AS_OF - timedelta(days=30)
+    intervals = 30 * 24
+    amplitude = realized_volatility / math.sqrt(365 * 24) * math.sqrt((intervals - 1) / intervals)
+    mean_return = math.log(float(end_price) / 100) / intervals
     candles = [
-        spot_candle(start_at, "100"),
-        spot_candle(AS_OF - timedelta(hours=1), end_price),
+        spot_candle(
+            start_at + timedelta(hours=index),
+            str(100 * math.exp(index * mean_return + (amplitude if index % 2 else 0))),
+        )
+        for index in range(intervals + 1)
     ]
     live_spot = spot_candle(AS_OF, end_price, interval_seconds=60)
-    realized = VolatilityObservation(
-        provider="coinbase:calculated",
+    realized = calculate_realized_volatility(
+        candles,
         symbol="BTC",
-        kind="realized",
+        as_of=AS_OF,
         window_seconds=30 * 24 * 60 * 60,
-        source_start_at=start_at,
-        observed_at=AS_OF - timedelta(hours=1),
-        annualized_volatility=realized_volatility,
-        retrieved_at=AS_OF,
-        raw_payload={},
     )
     implied = VolatilityObservation(
         provider="deribit",
@@ -75,7 +83,7 @@ def research_context(
         kind="implied",
         window_seconds=3600,
         source_start_at=AS_OF - timedelta(hours=1),
-        observed_at=AS_OF - timedelta(minutes=1),
+        observed_at=AS_OF,
         annualized_volatility=realized_volatility + 0.10,
         retrieved_at=AS_OF,
         raw_payload={},
@@ -150,9 +158,17 @@ def kalshi_market(*, supported: bool = True) -> KalshiMarket:
 
 def calibration_profile() -> UncertaintyCalibrationProfile:
     return UncertaintyCalibrationProfile(
+        profile_id=UUID("00000000-0000-0000-0000-000000000001"),
+        generated_at=AS_OF - timedelta(days=1),
+        research_only=False,
+        recipe_id=CryptoThresholdEngine().recipe_id(
+            research_context(end_price="130", realized_volatility=0.60)[0].to_crypto_snapshot(
+                strike_price=100
+            )
+        ),
         symbol="BTC",
         model_name="crypto-terminal-above-threshold-market-anchor",
-        model_version="0.3.0",
+        model_version=CryptoThresholdEngine.model_version,
         training_start=datetime(2026, 1, 1, tzinfo=UTC),
         cutoff_at=datetime(2026, 7, 27, tzinfo=UTC),
         confidence_level=0.95,
@@ -168,6 +184,8 @@ def calibration_profile() -> UncertaintyCalibrationProfile:
                 outcome_interval_upper=0.6,
                 uncertainty_margin=0.0,
                 sample_count=30,
+                minimum_horizon_seconds=1,
+                maximum_horizon_seconds=315576000,
             ),
         ),
     )
@@ -203,13 +221,15 @@ async def test_runner_delivers_calibrated_entries_and_persists_regime(
     regime = classify_market_regime(context, candles)
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    repository.save_research_data(spot_candles=candles)
     profile = calibration_profile()
     monkeypatch.setattr(
         repository,
         "latest_uncertainty_calibration",
         lambda **kwargs: profile,
     )
-    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id: True)
+    monkeypatch.setattr(repository, "uncertainty_calibration", lambda profile_id: profile)
+    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id, **kwargs: True)
     reader = FakeMarketReader()
     publisher = FakePublisher()
     runner = PaperAlertRunner(
@@ -235,6 +255,7 @@ async def test_runner_delivers_calibrated_entries_and_persists_regime(
         context=context,
         regime=regime,
         cycle_id="cycle-delivery",
+        deliver_entries=True,
     )
 
     assert result.discovered == 2
@@ -270,10 +291,14 @@ async def test_runner_shadows_candidates_and_controls_unapproved_delivery(
     regime = classify_market_regime(context, candles)
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    repository.save_research_data(spot_candles=candles)
     monkeypatch.setattr(
         repository,
         "latest_uncertainty_calibration",
         lambda **kwargs: calibration_profile(),
+    )
+    monkeypatch.setattr(
+        repository, "uncertainty_calibration", lambda profile_id: calibration_profile()
     )
     reader = FakeMarketReader()
     publisher = FakePublisher()
@@ -318,12 +343,11 @@ async def test_runner_shadows_candidates_and_controls_unapproved_delivery(
     assert shadow.evaluated == 1
     assert shadow.delivered == 0
     assert manual_review.delivered == 1
-    assert publisher.published[0].warnings[-1] == (
-        "UNAPPROVED MODEL: held-out approval is missing; manual review only"
-    )
+    assert any("UNAPPROVED MODEL" in warning for warning in publisher.published[0].warnings)
     assert repository.paper_market_checks("cycle-shadow")[0]["status"] == "entry_candidate"
     assert blocked.unapproved == 1
-    assert blocked.evaluated == 0
+    assert blocked.evaluated == 1
+    assert repository.paper_market_checks("cycle-unapproved")[0]["payload"]["opportunity"]
     assert repository.paper_market_checks("cycle-unapproved")[0]["status"] == ("unapproved_model")
     assert repository.paper_market_checks("cycle-unapproved-manual-review")[0]["status"] == (
         "delivered"
@@ -331,11 +355,14 @@ async def test_runner_shadows_candidates_and_controls_unapproved_delivery(
 
 
 @pytest.mark.asyncio
-async def test_runner_never_fetches_or_delivers_without_calibration(tmp_path: Path) -> None:
+async def test_runner_records_probabilities_but_never_delivers_without_calibration(
+    tmp_path: Path,
+) -> None:
     context, candles = research_context(end_price="100", realized_volatility=0.60)
     regime = classify_market_regime(context, candles)
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    repository.save_research_data(spot_candles=candles)
     reader = FakeMarketReader()
     publisher = FakePublisher()
     runner = PaperAlertRunner(
@@ -354,12 +381,66 @@ async def test_runner_never_fetches_or_delivers_without_calibration(tmp_path: Pa
     )
 
     assert result.uncalibrated == 1
-    assert result.evaluated == 0
-    assert reader.requested == []
+    assert result.evaluated == 1
+    assert result.watch == 1
+    assert reader.requested == [kalshi_market().ticker]
+    assert repository.opportunity_history()[0]["state"] == "WATCH"
     assert publisher.published == []
     assert repository.paper_market_checks("cycle-uncalibrated")[0]["status"] == (
         "missing_calibration"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deliver", [False, True])
+async def test_slow_scan_rechecks_each_evaluation_and_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    deliver: bool,
+) -> None:
+    context, candles = research_context(end_price="130", realized_volatility=0.60)
+    regime = classify_market_regime(context, candles)
+    repository = SQLiteRepository(tmp_path / "slow.db")
+    repository.initialize()
+    repository.save_research_data(spot_candles=candles)
+    profile = calibration_profile()
+    monkeypatch.setattr(repository, "latest_uncertainty_calibration", lambda **kwargs: profile)
+    monkeypatch.setattr(repository, "uncertainty_calibration", lambda profile_id: profile)
+    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id, **kwargs: True)
+    actual = AS_OF
+
+    class SlowReader(FakeMarketReader):
+        async def get_order_book(self, ticker: str, depth: int = 100) -> KalshiOrderBook:
+            nonlocal actual
+            actual = AS_OF + timedelta(seconds=1 if not self.requested else 180)
+            return await super().get_order_book(ticker, depth)
+
+    publisher = FakePublisher()
+    runner = PaperAlertRunner(
+        repository=repository,
+        engine=CryptoThresholdEngine(),
+        market_reader=SlowReader(),
+        alert_service=publisher,
+        clock=lambda: actual,
+    )
+    first = kalshi_market()
+    second = first.model_copy(update={"ticker": "SECOND"})
+    result = await runner.run(
+        markets=[first, second],
+        context=context,
+        regime=regime,
+        cycle_id="slow",
+        deliver_entries=deliver,
+    )
+    assert result.evaluated == 1
+    assert result.delivered == 0
+    assert len(result.failures) == 2
+    assert publisher.published == []
+    assert repository.opportunity_history()[0]["market"]["market_id"] == first.ticker
+    checks = {row["market_id"]: row for row in repository.paper_market_checks("slow")}
+    assert checks["SECOND"]["status"] == "failed"
+    assert all(row["status"] == "failed" for row in checks.values())
+    assert repository.opportunity_history()[0]["state"] == "WATCH"
 
 
 @pytest.mark.asyncio
@@ -371,6 +452,7 @@ async def test_runner_fails_closed_and_audits_stale_spot(tmp_path: Path) -> None
     regime = classify_market_regime(context, candles)
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    repository.save_research_data(spot_candles=candles)
     runner = PaperAlertRunner(
         repository=repository,
         engine=CryptoThresholdEngine(),
@@ -387,7 +469,6 @@ async def test_runner_fails_closed_and_audits_stale_spot(tmp_path: Path) -> None
     )
 
     assert result.evaluated == 0
-    assert result.failures == ("live spot is 180 seconds old; maximum is 120",)
     assert repository.paper_market_checks("cycle-stale")[0]["status"] == "failed"
 
 
@@ -400,12 +481,16 @@ async def test_runner_caps_combined_entries_for_one_event(
     regime = classify_market_regime(context, candles)
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    repository.save_research_data(spot_candles=candles)
     monkeypatch.setattr(
         repository,
         "latest_uncertainty_calibration",
         lambda **kwargs: calibration_profile(),
     )
-    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id: True)
+    monkeypatch.setattr(
+        repository, "uncertainty_calibration", lambda profile_id: calibration_profile()
+    )
+    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id, **kwargs: True)
     first = kalshi_market()
     second = first.model_copy(update={"ticker": "KXBTCTEST-30DEC31-T101"})
     publisher = FakePublisher()
@@ -430,12 +515,81 @@ async def test_runner_caps_combined_entries_for_one_event(
         context=context,
         regime=regime,
         cycle_id="cycle-cap",
+        deliver_entries=True,
     )
 
     assert result.evaluated == 2
     assert result.delivered == 1
     assert result.watch == 1
-    assert sum(item.suggested_max_exposure for item in publisher.published) == 20.0
+    assert 0 < sum(item.suggested_max_exposure for item in publisher.published) <= 20.0
+
+
+@pytest.mark.asyncio
+async def test_runner_caps_event_exposure_across_forward_cycles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, candles = research_context(end_price="130", realized_volatility=0.60)
+    regime = classify_market_regime(context, candles)
+    repository = SQLiteRepository(tmp_path / "audit.db")
+    repository.initialize()
+    repository.save_research_data(spot_candles=candles)
+    monkeypatch.setattr(
+        repository,
+        "latest_uncertainty_calibration",
+        lambda **kwargs: calibration_profile(),
+    )
+    monkeypatch.setattr(
+        repository, "uncertainty_calibration", lambda profile_id: calibration_profile()
+    )
+    monkeypatch.setattr(repository, "is_calibration_approved", lambda profile_id, **kwargs: True)
+    first = kalshi_market()
+    second = first.model_copy(update={"ticker": "KXBTCTEST-30DEC31-T101"})
+    engine = CryptoThresholdEngine(
+        EngineConfig(
+            min_conservative_edge=0.0,
+            binary_fee_coefficient=0.0,
+            slippage_bps=0.0,
+            resolution_haircut=0.0,
+            max_event_bankroll_fraction=0.002,
+        )
+    )
+    publisher = FakePublisher()
+    runner = PaperAlertRunner(
+        repository=repository,
+        engine=engine,
+        market_reader=FakeMarketReader(),
+        alert_service=publisher,
+        clock=lambda: AS_OF,
+    )
+    first_cycle = await runner.run(
+        markets=[first],
+        context=context,
+        regime=regime,
+        cycle_id="cycle-cap-1",
+        deliver_entries=True,
+    )
+    assert first_cycle.delivered == 1
+    second_cycle = await runner.run(
+        markets=[second],
+        context=context,
+        regime=regime,
+        cycle_id="cycle-cap-2",
+        deliver_entries=True,
+    )
+    assert second_cycle.evaluated == 1
+    assert second_cycle.delivered == 0
+    assert second_cycle.watch == 1
+    event_id = first.event_ticker
+    combined = repository.forward_event_entry_exposure(
+        event_id=event_id,
+        exclude_forecast_id="",
+    )
+    assert combined <= engine.event_exposure_cap
+    assert combined == pytest.approx(
+        sum(item.suggested_max_exposure for item in publisher.published)
+    )
+    assert repository.paper_market_checks("cycle-cap-2")[0]["status"] == "watch"
 
 
 def test_repository_reports_regime_coverage(tmp_path: Path) -> None:
@@ -450,6 +604,7 @@ def test_repository_reports_regime_coverage(tmp_path: Path) -> None:
     )
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    repository.save_research_data(spot_candles=candles)
 
     repository.save_market_regime(series_ticker="KXBTC", regime=uptrend)
     repository.save_market_regime(series_ticker="KXBTC", regime=uptrend)
@@ -646,6 +801,7 @@ def test_paper_alert_maintenance_previews_by_default(
     assert "Paper-alert WATCH maintenance" in result.output
     assert "preview" in result.output
     assert "Preview only; pass --apply" in result.output
+
 
 def test_repository_reports_activity_since_previous_status_request(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "audit.db")

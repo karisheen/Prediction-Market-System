@@ -16,6 +16,7 @@ from prediction_market_system.venues.kalshi import (
     KalshiOrderBook,
     UnsupportedMarketError,
     normalize_order_book,
+    to_market_snapshot,
 )
 
 
@@ -529,6 +530,7 @@ def test_fixed_time_rule_does_not_combine_cross_rule_markers_into_touch_barrier(
     contract = market.price_contract()
 
     assert contract.model_kind is ThresholdModelKind.TERMINAL
+    assert contract.settlement_window_seconds == 60
 
 
 def test_parses_fixed_time_between_market_as_terminal_range() -> None:
@@ -599,8 +601,115 @@ def test_classifies_explicit_upper_and_lower_touch_barriers() -> None:
     assert lower.strike_price == 80000
 
 
+def test_touch_barriers_are_classified_but_not_evaluable_without_path_history() -> None:
+    payload = market_payload(can_close_early=True)
+    payload["rules_primary"] = (
+        "Resolves YES if the benchmark reaches the threshold at any time before expiry."
+    )
+    market = KalshiMarket.model_validate(payload)
+    as_of = datetime(2030, 6, 1, tzinfo=UTC)
+
+    assert market.price_contract().model_kind is ThresholdModelKind.BARRIER
+    with pytest.raises(UnsupportedMarketError, match="benchmark path history"):
+        market.evaluation_contract(as_of)
+    with pytest.raises(UnsupportedMarketError, match="benchmark path history"):
+        to_market_snapshot(market, KalshiOrderBook(no_dollars=[("0.5", "100")]), observed_at=as_of)
+
+
 def test_decimal_contract_values_are_preserved_during_parsing() -> None:
     market = KalshiMarket.model_validate(market_payload())
 
     assert market.notional_value_dollars == Decimal("1.0000")
     assert market.expiry == datetime(2030, 12, 31, 23, 59, tzinfo=UTC)
+
+
+def test_expected_settlement_never_extends_trading_close() -> None:
+    payload = market_payload()
+    payload["expected_expiration_time"] = "2031-01-01T01:00:00Z"
+    market = KalshiMarket.model_validate(payload)
+    assert market.expiry == market.close_time
+
+
+def test_fixed_rule_clock_is_distinct_from_close_and_expected_settlement() -> None:
+    payload = market_payload()
+    payload.update(
+        {
+            "close_time": "2030-12-31T21:59:00Z",
+            "expected_expiration_time": "2031-01-01T01:00:00Z",
+            "rules_primary": "Resolves YES above the strike at 5 PM EST on Dec 31, 2030.",
+        }
+    )
+    market = KalshiMarket.model_validate(payload)
+    snapshot = to_market_snapshot(
+        market,
+        KalshiOrderBook(no_dollars=[("0.56", "17")]),
+        observed_at=datetime(2030, 12, 31, 20, tzinfo=UTC),
+    )
+    assert snapshot.expires_at == datetime(2030, 12, 31, 21, 59, tzinfo=UTC)
+    assert snapshot.observation_end_at == datetime(2030, 12, 31, 22, tzinfo=UTC)
+    assert snapshot.expected_settlement_at == datetime(2031, 1, 1, 1, tzinfo=UTC)
+    assert snapshot.outcome_available_at is None
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "Resolves YES above the strike at 5 PM on Dec 31, 2030.",
+        "Resolves YES above the strike at 5 PM EST.",
+        "Resolves YES above the strike at 5 PM ET on Dec 31, 2030.",
+        "Resolves YES at 5 PM EST on Dec 31, 2030 or at 6 PM EST on Dec 31, 2030.",
+    ],
+)
+def test_rejects_ambiguous_fixed_observation_clock(rule: str) -> None:
+    payload = market_payload()
+    payload["rules_primary"] = rule
+    with pytest.raises(UnsupportedMarketError, match="clock"):
+        KalshiMarket.model_validate(payload).price_contract()
+
+
+@pytest.mark.parametrize(
+    "average",
+    [
+        "weighted average of the sixty seconds before expiry",
+        "median of the sixty seconds before expiry",
+        "average of the last five minutes before expiry",
+        "average of sixty seconds and two minutes before expiry",
+    ],
+)
+def test_rejects_unsupported_averaging_definitions(average: str) -> None:
+    payload = market_payload()
+    payload["rules_primary"] = f"Resolves YES if the {average} is above the strike at expiry."
+    with pytest.raises(UnsupportedMarketError):
+        KalshiMarket.model_validate(payload).price_contract()
+
+
+def test_terminal_threshold_carries_same_averaging_as_range() -> None:
+    payload = market_payload()
+    payload["rules_primary"] = (
+        "Resolves YES if the simple average of the sixty seconds before expiry "
+        "is above the strike at expiry."
+    )
+    threshold = KalshiMarket.model_validate(payload).price_contract()
+    assert getattr(threshold, "settlement_window_seconds", 0) == 60
+
+
+def test_unambiguous_terminal_rules_are_required_without_early_close() -> None:
+    payload = market_payload()
+    payload["rules_primary"] = "Resolves YES when the benchmark is above the strike."
+    payload["rules_secondary"] = ""
+    with pytest.raises(UnsupportedMarketError, match="explicit terminal"):
+        KalshiMarket.model_validate(payload).price_contract()
+
+
+def test_metadata_preserves_unknown_revisions_and_rejects_future_update() -> None:
+    payload = market_payload()
+    payload["provider_rule_amendment"] = {"text": "unchanged threshold", "revision": "r2"}
+    payload["updated_time"] = "2030-12-31T23:00:00Z"
+    market = KalshiMarket.model_validate(payload)
+    assert market.model_dump()["provider_rule_amendment"] == payload["provider_rule_amendment"]
+    with pytest.raises(UnsupportedMarketError, match="future"):
+        to_market_snapshot(
+            market,
+            KalshiOrderBook(no_dollars=[("0.56", "17")]),
+            observed_at=datetime(2030, 12, 31, 22, tzinfo=UTC),
+        )

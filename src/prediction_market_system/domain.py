@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
@@ -53,6 +53,13 @@ class ThresholdContract(FrozenModel):
     model_kind: ThresholdModelKind
     direction: ThresholdDirection
     strike_price: PositiveFloat
+    settlement_window_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0
+
+    @model_validator(mode="after")
+    def validate_averaging(self) -> Self:
+        if self.model_kind is ThresholdModelKind.BARRIER and self.settlement_window_seconds:
+            raise ValueError("touch barriers cannot use terminal settlement averaging")
+        return self
 
 
 class TerminalRangeContract(FrozenModel):
@@ -117,6 +124,10 @@ class MarketSnapshot(FrozenModel):
     venue: Annotated[str, Field(min_length=1)]
     observed_at: datetime
     expires_at: datetime
+    observation_end_at: datetime | None = None
+    observation_start_at: datetime | None = None
+    expected_settlement_at: datetime | None = None
+    outcome_available_at: datetime | None = None
     yes_bid: Probability | None
     yes_ask: Probability | None
     no_bid: Probability | None
@@ -128,16 +139,37 @@ class MarketSnapshot(FrozenModel):
     event_id: str | None = None
     contract_label: str | None = None
     market_url: HttpUrl | None = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("observed_at", "expires_at")
     @classmethod
     def normalize_timestamp(cls, value: datetime) -> datetime:
         return _as_utc(value)
 
+    @field_validator(
+        "observation_end_at",
+        "observation_start_at",
+        "expected_settlement_at",
+        "outcome_available_at",
+    )
+    @classmethod
+    def normalize_optional_timestamp(cls, value: datetime | None) -> datetime | None:
+        return _as_utc(value) if value is not None else None
+
+    @property
+    def effective_observation_end_at(self) -> datetime:
+        """Manual legacy snapshots define their terminal observation at trading close."""
+        return self.observation_end_at or self.expires_at
+
     @model_validator(mode="after")
     def validate_market(self) -> Self:
         if self.expires_at <= self.observed_at:
             raise ValueError("expires_at must be later than observed_at")
+        if (
+            self.observation_start_at is not None
+            and self.observation_start_at >= self.effective_observation_end_at
+        ):
+            raise ValueError("observation_start_at must precede observation_end_at")
         if self.yes_bid is not None and self.yes_ask is not None and self.yes_bid > self.yes_ask:
             raise ValueError("yes_bid cannot exceed yes_ask")
         if self.no_bid is not None and self.no_ask is not None and self.no_bid > self.no_ask:
@@ -152,6 +184,14 @@ class CryptoSnapshot(FrozenModel):
     strike_price: PositiveFloat
     annualized_volatility: PositiveFloat
     expected_annual_return: float = 0.0
+    feature_recipe: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "source_selection": "manual-explicit",
+            "volatility_estimator": "manual-annualized-volatility",
+            "drift_estimator": "manual-expected-annual-return",
+        }
+    )
+    input_provenance: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("observed_at")
     @classmethod
@@ -173,6 +213,8 @@ class ProbabilityForecast(FrozenModel):
     uncertainty_margin: Probability
     uncertainty_source: Literal["fixed", "held_out"]
     calibration_profile_id: UUID | None = None
+    recipe_id: str | None = None
+    input_manifest: dict[str, Any] = Field(default_factory=dict)
     supporting_evidence: tuple[str, ...] = ()
     opposing_evidence: tuple[str, ...] = ()
 

@@ -3,12 +3,20 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal, Self
 
 import httpx
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
 from prediction_market_system.domain import (
     CryptoPriceContract,
@@ -43,6 +51,12 @@ class UnsupportedMarketError(ValueError):
 
 def _has_explicit_touch_semantics(rule: str) -> bool:
     normalized = " ".join(rule.casefold().split())
+    if ("average" in normalized or "averaging" in normalized) and not any(
+        marker in normalized for marker in ("at any time", "at any point", "touch", "reach")
+    ):
+        # "Sixty seconds before expiry" describes a terminal benchmark window,
+        # not the event that the underlying crosses a barrier before expiry.
+        return False
     path_markers = (
         "at any time",
         "at any point",
@@ -73,8 +87,14 @@ def _has_explicit_touch_semantics(rule: str) -> bool:
 
 
 _FIXED_OBSERVATION_TIME = re.compile(
-    r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)"
-    r"(?:\s+[a-z]{2,5})?(?:\s+on\b)?",
+    r"\bat\s+(?:\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)"
+    r"|\d{1,2}:\d{2}|noon|midnight)\b",
+    re.IGNORECASE,
+)
+_DATED_OBSERVATION_TIME = re.compile(
+    r"\bat\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?P<period>AM|PM)\s+(?P<zone>UTC|GMT|EST|EDT)\s+on\s+"
+    r"(?P<month>[A-Za-z]+)\s+(?P<day>\d{1,2}),?\s+(?P<year>\d{4})\b",
     re.IGNORECASE,
 )
 
@@ -86,9 +106,7 @@ def _has_explicit_terminal_semantics(rule: str) -> bool:
         "at expiry",
         "at the market close",
         "when the market closes",
-        "closing value",
-        "settlement value",
-        "final value",
+        "closing value at",
     )
     return any(marker in normalized for marker in terminal_markers) or bool(
         _FIXED_OBSERVATION_TIME.search(normalized)
@@ -97,17 +115,38 @@ def _has_explicit_terminal_semantics(rule: str) -> bool:
 
 def _settlement_averaging_window_seconds(rules: tuple[str, ...]) -> int:
     normalized = " ".join(" ".join(rule.casefold().split()) for rule in rules)
-    one_minute_markers = (
-        "average of the sixty seconds",
-        "average of sixty seconds",
-        "60 index prices",
-        "60 rti prices",
+    if not any(word in normalized for word in ("average", "averaging", "mean", "median")):
+        return 0
+    if any(word in normalized for word in ("weighted", "geometric", "median")):
+        raise UnsupportedMarketError("only explicit simple arithmetic averaging is supported")
+    one_minute = any(
+        marker in normalized
+        for marker in (
+            "average of the sixty seconds",
+            "average of sixty seconds",
+            "average of the 60 seconds",
+            "average of 60 seconds",
+        )
+    ) or (
+        any(marker in normalized for marker in ("60 index prices", "60 rti prices"))
+        and any(marker in normalized for marker in ("last minute", "sixty seconds", "60 seconds"))
     )
-    return 60 if any(marker in normalized for marker in one_minute_markers) else 0
+    durations = re.findall(
+        r"\b(\d+|one|two|three|four|five|ten|thirty|sixty|ninety)\s+(seconds?|minutes?)\b",
+        normalized,
+    )
+    conflicting_window = any(
+        (unit.startswith("second") and count not in {"60", "sixty"})
+        or (unit.startswith("minute") and count not in {"1", "one"})
+        for count, unit in durations
+    )
+    if not one_minute or conflicting_window or "before" not in normalized:
+        raise UnsupportedMarketError("ambiguous or unsupported settlement averaging window")
+    return 60
 
 
 class _KalshiModel(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="allow", frozen=True)
 
 
 class KalshiMarket(_KalshiModel):
@@ -144,9 +183,65 @@ class KalshiMarket(_KalshiModel):
     settlement_ts: datetime | None = None
     expiration_value: str = ""
 
+    @field_validator(
+        "close_time",
+        "expected_expiration_time",
+        "latest_expiration_time",
+        "created_time",
+        "updated_time",
+        "open_time",
+        "settlement_ts",
+    )
+    @classmethod
+    def normalize_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Kalshi timestamps must include a timezone")
+        return value.astimezone(UTC)
+
     @property
     def expiry(self) -> datetime:
-        return self.expected_expiration_time or self.close_time
+        return self.close_time
+
+    @property
+    def observation_end_at(self) -> datetime:
+        rule = self.resolution_rule
+        fixed = list(_FIXED_OBSERVATION_TIME.finditer(rule))
+        if not fixed:
+            if not (_has_explicit_terminal_semantics(rule) or _has_explicit_touch_semantics(rule)):
+                raise UnsupportedMarketError("explicit terminal observation or touch end required")
+            return self.close_time
+        matches = list(_DATED_OBSERVATION_TIME.finditer(rule))
+        if len(matches) != len(fixed):
+            raise UnsupportedMarketError(
+                "fixed observation clock requires explicit date and timezone"
+            )
+        instants: set[datetime] = set()
+        for match in matches:
+            hour = int(match["hour"])
+            if not 1 <= hour <= 12:
+                raise UnsupportedMarketError("invalid fixed observation hour")
+            hour = hour % 12 + (12 if match["period"].upper() == "PM" else 0)
+            offset = {"UTC": 0, "GMT": 0, "EST": -5, "EDT": -4}[match["zone"].upper()]
+            try:
+                month_text = match["month"]
+                month_format = "%b" if len(month_text) == 3 else "%B"
+                month = datetime.strptime(month_text, month_format).month
+                instant = datetime(
+                    int(match["year"]),
+                    month,
+                    int(match["day"]),
+                    hour,
+                    int(match["minute"] or 0),
+                    tzinfo=timezone(timedelta(hours=offset)),
+                ).astimezone(UTC)
+            except ValueError as error:
+                raise UnsupportedMarketError("invalid fixed observation date") from error
+            instants.add(instant)
+        if len(instants) != 1:
+            raise UnsupportedMarketError("conflicting fixed observation clocks")
+        return instants.pop()
 
     @property
     def question(self) -> str:
@@ -180,16 +275,49 @@ class KalshiMarket(_KalshiModel):
     def contract_label(self) -> str:
         return self.yes_sub_title.strip() or self.question
 
-    def price_contract(self, threshold_override: float | None = None) -> CryptoPriceContract:
+    def evaluation_contract(self, as_of: datetime) -> CryptoPriceContract:
+        """Identical point-in-time eligibility for live reads and historical replay."""
+        if self.market_type != "binary":
+            raise UnsupportedMarketError("only binary Kalshi markets are supported")
+        if self.notional_value_dollars != Decimal("1"):
+            raise UnsupportedMarketError("only $1 payout contracts are supported")
+        if self.status not in {"active", "initialized"} or self.result:
+            raise UnsupportedMarketError(f"Kalshi market is not active: {self.status}")
+        if any(
+            value is not None and value > as_of for value in (self.created_time, self.updated_time)
+        ):
+            raise UnsupportedMarketError("market metadata is from the future")
+        if self.open_time is not None and self.open_time > as_of:
+            raise UnsupportedMarketError("market has not opened")
+        if min(self.close_time, self.observation_end_at) <= as_of:
+            raise UnsupportedMarketError("market trading or observation period has ended")
+        contract = self.price_contract()
+        if (
+            isinstance(contract, ThresholdContract)
+            and contract.model_kind is ThresholdModelKind.BARRIER
+        ):
+            # A spot quote cannot show whether the barrier was already crossed since the
+            # contractual observation start. Kalshi exposes no benchmark path, so the
+            # classification is preserved but the market is not evaluable.
+            raise UnsupportedMarketError(
+                "touch barrier requires benchmark path history from the contractual "
+                "observation start; unavailable from Kalshi market data"
+            )
+        return contract
+
+    def _validate_observation_clock(self) -> None:
+        """Fail closed on missing, ambiguous, or conflicting fixed observation clocks."""
+        _ = self.observation_end_at
+
+    def price_contract(self) -> CryptoPriceContract:
         rules = tuple(rule for rule in (self.rules_primary, self.rules_secondary) if rule.strip())
         has_touch_semantics = any(_has_explicit_touch_semantics(rule) for rule in rules)
         has_terminal_semantics = any(_has_explicit_terminal_semantics(rule) for rule in rules)
+        if has_touch_semantics and has_terminal_semantics:
+            raise UnsupportedMarketError("conflicting terminal and touch resolution semantics")
+        window_seconds = _settlement_averaging_window_seconds(rules)
 
         if self.strike_type == "between":
-            if threshold_override is not None:
-                raise UnsupportedMarketError(
-                    "a threshold override cannot be used for a range market"
-                )
             if (
                 self.floor_strike is None
                 or self.cap_strike is None
@@ -203,10 +331,11 @@ class KalshiMarket(_KalshiModel):
                 raise UnsupportedMarketError(
                     "range markets require an explicit fixed-time terminal observation"
                 )
+            self._validate_observation_clock()
             return TerminalRangeContract(
                 lower_bound=self.floor_strike,
                 upper_bound=self.cap_strike,
-                settlement_window_seconds=_settlement_averaging_window_seconds(rules),
+                settlement_window_seconds=window_seconds,
             )
 
         if self.strike_type in {"greater", "greater_or_equal"}:
@@ -220,24 +349,28 @@ class KalshiMarket(_KalshiModel):
                 f"unsupported Kalshi strike type: {self.strike_type or 'missing'}"
             )
 
-        strike = threshold_override if threshold_override is not None else metadata_strike
+        strike = metadata_strike
         if strike is None or strike <= 0:
             raise UnsupportedMarketError("a positive threshold strike is required for this market")
 
         if has_touch_semantics:
+            if window_seconds:
+                raise UnsupportedMarketError("touch barriers cannot use terminal averaging")
             model_kind = ThresholdModelKind.BARRIER
-        elif self.can_close_early and not has_terminal_semantics:
+        elif not has_terminal_semantics:
             raise UnsupportedMarketError(
-                "early-close rules define neither an explicit terminal observation "
+                "rules define neither an explicit terminal observation "
                 "nor a supported touch barrier"
             )
         else:
             model_kind = ThresholdModelKind.TERMINAL
+        self._validate_observation_clock()
 
         return ThresholdContract(
             model_kind=model_kind,
             direction=direction,
             strike_price=strike,
+            settlement_window_seconds=window_seconds,
         )
 
 
@@ -410,20 +543,23 @@ def to_market_snapshot(
     *,
     observed_at: datetime,
 ) -> MarketSnapshot:
-    if market.market_type != "binary":
-        raise UnsupportedMarketError("only binary Kalshi markets are supported")
-    if market.notional_value_dollars != Decimal("1"):
-        raise UnsupportedMarketError("only $1 payout contracts are supported")
-    if market.status not in {"active", "initialized"}:
-        raise UnsupportedMarketError(f"Kalshi market is not active: {market.status}")
-
+    contract = market.evaluation_contract(observed_at)
+    observation_end = market.observation_end_at
     book = normalize_order_book(order_book)
     return MarketSnapshot(
         market_id=market.ticker,
         question=market.question,
         venue="Kalshi",
         observed_at=observed_at,
-        expires_at=market.expiry,
+        source_metadata=market.model_dump(mode="json"),
+        expires_at=market.close_time,
+        observation_end_at=observation_end,
+        observation_start_at=(
+            observation_end - timedelta(seconds=contract.settlement_window_seconds)
+            if contract.settlement_window_seconds
+            else None
+        ),
+        expected_settlement_at=market.expected_expiration_time,
         yes_bid=book.yes_bid,
         yes_ask=book.yes_ask,
         no_bid=book.no_bid,

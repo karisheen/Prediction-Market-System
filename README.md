@@ -112,8 +112,14 @@ require one.
 | `paper-alerts` | Scan all open contracts; shadow-only unless `--send-discord` is supplied |
 | `paper-alert-status` | Report cycles since the previous request, all-time resolved alert profitability, and regime coverage |
 | `paper-alert-maintain` | Preview or apply bounded detailed `WATCH` retention with daily rollups |
+| `paper-alert-archive` / `paper-alert-validate` | Archive completed UTC days with a work budget; run the frozen validation campaign |
 | `history` | Review persisted forecasts and recommendations |
 | `discord-test` | Send a non-trading webhook health check |
+| `doctor` | Read-only integrity, capacity, freshness, cycle-gap, and unresolved-delivery telemetry |
+| `explain-forecast` | Replay one forecast's manifest, contract snapshot, and research-input context |
+| `shadow-report` / `campaign-report` / `compare-runs` | Forward ledger scoring, frozen campaign and holdout audit, paired run comparison |
+| `db-backup` / `db-restore` | Online SQLite backup with a restore drill; restore to a new path only |
+| `alerts-unresolved` / `alerts-reconcile` | List uncertain Discord deliveries and record the operator-observed outcome |
 
 ## Recommended operating sequence
 
@@ -168,8 +174,8 @@ uv run pms kalshi-markets --series KALSHI_SERIES_TICKER
 uv run pms kalshi-inspect --ticker KALSHI_MARKET_TICKER
 ```
 
-For a supported fixed-time terminal range/threshold or explicit early-close touch
-barrier, fetch current Kalshi quotes and evaluate them against user-supplied crypto inputs:
+For a supported fixed-time terminal range or threshold, fetch current Kalshi
+quotes and evaluate them against user-supplied crypto inputs:
 
 ```bash
 uv run pms kalshi-evaluate \
@@ -180,27 +186,43 @@ uv run pms kalshi-evaluate \
 ```
 
 Live Kalshi evaluation requires a matching held-out calibration profile for the
-symbol, structural model, and model version. Profiles are produced and persisted
-by `pms backtest`. `--allow-uncalibrated` permits local research with the configured
-fixed margin, but uncalibrated Discord alerts are rejected.
+symbol, structural model, model version, and recipe identity. `pms backtest`
+persists research profiles and gate results; those runs are not deployable
+approval. Managed delivery additionally requires an active frozen validation
+campaign and a matching deployment-policy fingerprint. `--allow-uncalibrated`
+permits local research with the configured fixed margin, but uncalibrated
+Discord alerts are rejected.
 
 Terminal markets use the probability of finishing within a bounded range or beyond
-a threshold. Early-close markets use the continuous-time first-passage probability
-of touching a threshold before expiry. Upper and lower barriers, already-crossed
-barriers, physical drift, and numerically extreme tails are supported. A market
-with only one executable side remains evaluable on that side; missing liquidity is
-never synthesized for the other side.
+a threshold at the contract's benchmark observation time, which is parsed from
+the rules and kept separate from trading close, expected settlement, and the time
+the outcome becomes available. Contracts that settle on an average over a stated
+window use the discrete arithmetic-average moments of that window rather than the
+terminal spot distribution. Physical drift and numerically extreme tails are
+supported. A market with only one executable side remains evaluable on that side;
+missing liquidity is never synthesized for the other side.
 
 Classification fails closed. Range contracts require positive, increasing bounds
-and an explicit fixed-time terminal observation. An early-close threshold is
-accepted only when Kalshi's strike metadata identifies its direction and its
-resolution rules explicitly describe terminal or touch semantics. Ambiguous rules
-remain unsupported rather than being routed to a mathematically incorrect model.
+and an explicit fixed-time terminal observation. Averaging contracts require an
+unambiguous observation window. Touch/path-dependent contracts are classified as
+barriers but are not evaluable: deciding whether a barrier was crossed during the
+contractual observation period needs benchmark path history that Kalshi does not
+publish, so the current spot alone must never stand in for it. Ambiguous rules
+remain unsupported rather than being routed to a mathematically incorrect model,
+and unsupported contracts remain visible in archived market universes. Live
+evaluation and historical replay share one eligibility function.
 
-The first-passage model assumes continuous geometric Brownian motion with constant
-volatility and drift over the remaining contract life. It does not model jumps,
-discrete benchmark sampling, exchange outages, or intraperiod volatility changes.
-Those mismatches must remain part of the uncertainty and resolution-risk review.
+The structural model assumes geometric Brownian motion with constant volatility
+and drift over the remaining observation horizon. It does not model jumps,
+exchange outages, or intraperiod volatility changes. Those mismatches must remain
+part of the uncertainty and resolution-risk review. Every forecast carries a
+recipe identity: the structural model, model version, and a fingerprint of all
+forecast-affecting configuration and research-input provenance. Execution, fee,
+slippage, sizing, and freshness assumptions are a separate deployment-policy
+identity. Corrected model behavior changes the model version; a changed
+operational policy invalidates delivery approval without invalidating the
+recipe. Legacy calibration profiles and approval decisions remain preserved but
+cannot be reused when required identity or campaign metadata is missing.
 
 See [the venue decision](docs/venue-decision.md) for why Kalshi is first and
 Polymarket is planned as a second read-only signal source.
@@ -267,10 +289,14 @@ uv run pms research-context \
   --event-ticker KALSHI_EVENT_TICKER
 ```
 
-The assembler only selects source timestamps at or before `--as-of`. Required
-spot data fails closed when missing or stale, and realized volatility requires a
-complete trailing window. Optional DVOL, funding, derivatives, and event inputs
-are omitted with warnings when missing or stale. A current derivatives or event
+The assembler only selects source timestamps at or before `--as-of`, using the
+provider revision that had been retrieved by then. Required spot data fails closed
+when missing, stale, or future-dated, and realized volatility requires a complete,
+correctly spaced trailing window: missing, duplicate, irregular, or incomplete
+intervals fail closed rather than being interpolated. Changed provider payloads are
+stored as additional revisions instead of overwriting the earlier observation.
+Optional DVOL, funding, derivatives, and event inputs are omitted with warnings
+when missing or stale. A current derivatives or event
 snapshot fetched during a historical sync is therefore stored for forward use
 but cannot leak into the historical context.
 
@@ -291,6 +317,8 @@ uv run pms backtest \
   --start "2025-01-01T00:00:00Z" \
   --end "2026-01-01T00:00:00Z" \
   --period 60 \
+  --spot-interval 1 \
+  --research-interval 60 \
   --realized-window-days 30 \
   --train-days 90 \
   --test-days 30 \
@@ -305,6 +333,12 @@ uv run pms backtest \
   --minimum-validation-folds 2
 ```
 
+`--period` is the Kalshi quote/execution grid. `--spot-interval` (default 1
+minute) and `--research-interval` (default 60 minutes) are independent Coinbase
+series used for the live decision price and realized-volatility features. Those
+two research intervals must match live scanning for historical evidence to be
+recipe-compatible; changing either one is an intentional incompatibility.
+
 Run `kalshi-sync-history` and `sync-research-data` first. Research coverage must
 begin early enough to provide the complete realized-volatility window at every
 training and test timestamp. For each fold, only markets whose outcomes settled
@@ -315,13 +349,20 @@ outcome-weighted sample per structural model, so hundreds of mutually exclusive
 contracts from one range ladder cannot masquerade as independent evidence. The
 following non-overlapping test window remains untouched until evaluation.
 
-Calibration samples are isolated by symbol, structural model, and model version,
-then grouped by event before equal-frequency binning. Each bin compares its mean
-forecast with a Wilson confidence interval for the event-level observed outcome
-frequency; the larger distance to either interval bound becomes that bin's
-uncertainty margin. The default requires 30 independent resolved events per
-model at 95% confidence. Signals without a qualifying profile fail closed. Use
-`--allow-uncalibrated` only to inspect fixed-margin behavior.
+Calibration samples are isolated by symbol, structural model, model version, and
+recipe identity, then partitioned into fixed probability regions and horizon
+bands; regions are never merged to reach a sample threshold, because opposite
+conditional errors within a ladder would cancel. Each region clusters samples by
+event and compares its mean forecast with a Bonferroni-adjusted Hoeffding
+interval for the event-level outcome frequency; the larger distance to either
+interval bound becomes the uncertainty margin, and sparse regions receive a
+margin that makes them unusable. A forecast whose probability or horizon falls
+outside every supported region receives the maximal margin instead of borrowing
+the nearest bin. The default requires 30 independent resolved events per model
+at 95% confidence. Profiles fitted for a different recipe or model version, or
+with research-only inputs, cannot approve the live recipe. Signals without a
+qualifying profile fail closed. Use `--allow-uncalibrated` only to inspect
+fixed-margin behavior.
 
 Signals use the executable bid/ask at a completed market candle. Execution uses
 the first later candle satisfying the latency assumption and its adverse quote
@@ -336,9 +377,10 @@ discarding every signal. Explicit null event overrides restore the series fee.
 Taker fees are rounded upward to cents. Fold metrics, event-grouped calibration
 profiles, selected structural model, uncertainty source and margin, individual
 fills, cost, P&L, return on cost, and event-weighted Brier score are persisted.
-Deployment approval is denied unless the configured independent-event,
-held-out-fold, return-on-cost, and Brier thresholds all pass. Profiles and their
-approval decisions are indexed for subsequent live evaluation.
+Passing those research gates records `accepted_for_paper_alerts` on the run.
+That is not managed-delivery approval. Deployable approval also requires an
+active frozen `paper-alert-validate` campaign whose stored deployment-policy
+fingerprint matches the live engine, and a non-research-only profile.
 
 Candlestick volume is a participation constraint, not historical order-book
 depth. Adverse candle extremes provide a conservative latency/slippage bound but
@@ -366,10 +408,16 @@ uv run pms paper-alerts \
   --realized-window-days 30
 ```
 
-Each evaluation adds a completed one-minute Coinbase decision price, follows
-Kalshi cursors across up to 1,000 open markets, and evaluates every supported
-range or threshold contract. A stale decision price fails the cycle closed. Every
-evaluation and skipped-market reason is initially recorded in SQLite. The managed
+`--interval` is the research/realized-volatility cadence (hourly by default), not
+the decision price. Each evaluation adds a completed one-minute Coinbase decision
+price, archives recently completed one-minute Kalshi candles at actual receipt
+time, follows Kalshi cursors across up to 1,000 open markets, and evaluates every supported
+range or threshold contract with the same eligibility rules as historical replay.
+Freshness is enforced at each market's evaluation boundary, not just at scan
+start: a decision price that becomes stale during a slow scan, or any future-dated
+input, fails the remaining markets closed. Every evaluation and skipped-market
+reason is initially recorded in SQLite, and every forecast is appended to a
+compact forward-evidence ledger that exists independently of Discord delivery. The managed
 deployment retains detailed `WATCH` evaluations for 14 days, then preserves daily
 counts while keeping entry candidates, deliveries, failures, and model evidence
 indefinitely. The managed schedule is shadow-only and uses neither Discord delivery
@@ -420,10 +468,25 @@ uv run pms paper-alert-maintain \
   --watch-retention-days 14
 ```
 
-Archive completed UTC days daily. Validation can run weekly: before the configured
+Archive completed UTC days daily. The archive treats its catch-up size as a work
+budget: it repairs the oldest missing or incomplete windows first instead of
+permanently abandoning them, and a window is complete only when its market and
+spot series are contiguous. Validation can run weekly: before the configured
 chronological window is complete it updates one Discord readiness message; once
 ready, it runs the walk-forward backtest and replaces that message with the exact
 per-model approval gates and decisions.
+
+The first `paper-alert-validate` run preregisters the campaign: the start date,
+fold geometry, latency and participation assumptions, every approval gate, the
+engine configuration, model version, and deployment-policy fingerprint are
+hashed into a campaign identity that is stored and linked to each validation
+run. Ordinary `pms backtest` research runs cannot create deployable approval.
+Later campaign runs with different settings are refused so gates cannot be
+loosened after seeing results; `--replace-campaign` explicitly supersedes the
+registration while preserving the old one as evidence, and prior approvals under
+the superseded campaign fail closed. Held-out events consumed by a validation
+run are recorded, so a rerun over the same events is reported as a descriptive
+re-examination and cannot approve a profile.
 
 Run `pms backtest` first to produce held-out calibration profiles in the same
 database. Regime coverage is forward evidence gathered over time; adding the
@@ -442,6 +505,16 @@ alert includes the recommended side, maximum price, paper exposure cap, exact YE
 condition, event ticker, contract ticker, calibrated probability interval, edge,
 regime, costs, and resolution-risk context. Delivery is idempotent by market and
 updates an existing Discord message when the recommendation changes.
+
+Every delivery path passes one authorization check that requires a persisted
+approval for the exact calibration profile and a research context that the
+immutable store can reproduce. A delivery attempt is claimed in SQLite before any
+network call. If Discord's response is ambiguous (timeout, 5xx, connection loss),
+the attempt is recorded as `uncertain`, further alerts for that market are
+blocked, and `doctor` reports the count. The system never guesses the remote
+outcome: use `alerts-unresolved` to list attempts and `alerts-reconcile` to record
+what the channel actually shows. Webhook tokens and other credentials are redacted
+from logs, exceptions, and persisted failure records.
 
 For the initial one-way notifier:
 
@@ -465,6 +538,34 @@ Add `--send-discord` to `pms evaluate` for a manual evaluation, or to
 notifications. The paper-alert runner additionally requires a persisted approval
 for the exact calibration profile; missing or rejected approval is audited and
 fails delivery closed.
+
+## Evidence and audit
+
+Every backtest, validation, and forward evaluation writes an immutable run
+manifest containing the git revision and source hashes, model and recipe
+identities, engine and backtest configuration, dataset boundaries, and campaign
+identity. Forecasts reference their exact contract snapshot and a content-
+addressed research context, so a forecast can be replayed with the inputs it
+actually used:
+
+```bash
+uv run pms doctor
+uv run pms explain-forecast FORECAST_ID
+uv run pms shadow-report --series KXBTC
+uv run pms campaign-report --series KXBTC --symbol BTC
+uv run pms compare-runs FIRST_RUN_ID SECOND_RUN_ID
+uv run pms db-backup --destination backups/audit.sqlite3
+uv run pms db-restore --source backups/audit.sqlite3 --destination restored.sqlite3
+```
+
+`shadow-report` scores only forward-shadow ledger observations, including `WATCH`
+forecasts, against the same-population market price. It reports forward sample
+sizes, event-weighted Brier and log-loss, and how many non-forward ledger rows
+were excluded. Historical replay and manual research remain explainable but do
+not enter those counts. Notification activity lives in paper-alert status and
+Discord delivery records, not in `shadow-report`. Repeated scans of the
+same market do not inflate independent evidence counts. `db-restore` writes to a new path and never switches configuration.
+Initializing a legacy database takes a verified backup before migrating.
 
 ## Configuration
 

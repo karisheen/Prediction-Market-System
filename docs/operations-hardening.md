@@ -96,6 +96,10 @@ The existing daily archive and weekly validation schedules remain active. The ar
 completed UTC days; validation remains in `COLLECTING EVIDENCE` until the configured
 chronological window is complete. Deployment does not weaken the 90-day training, two 30-day
 held-out windows, minimum sample/event/fold, return-on-cost, or Brier-score gates.
+Ordinary research backtests may persist profiles and gate results, but only an
+active frozen campaign plus a matching deployment-policy fingerprint can make a
+profile eligible for managed delivery. Changing fees, slippage, sizing, or other
+operational policy after approval cannot reuse that approval.
 
 ### Self-healing research inputs after host downtime
 
@@ -140,13 +144,17 @@ calibrated evaluations, and zero delivery attempts.
    method, secret store, backup destination, and service manager. Once available, deploy the
    same committed revision and shared-data policy under a system service rather than a GUI
    LaunchAgent.
-2. **Add database capacity telemetry.** Alert on file size, free disk, cycle gaps, archive
-   failures, rate-limit responses, and the age of the latest research/regime observation.
+2. **Alert on database capacity telemetry.** `pms doctor` now reports file size, free disk,
+   WAL size, integrity, cycle gaps, archive failures, error categories, unresolved Discord
+   deliveries, and the age of the latest research/regime observation. Wiring those readings
+   into an external alerting channel remains future work.
 3. **Plan an offline SQLite rewrite.** The historical database already contains substantial
    append-only data. After WATCH compaction has created free pages, back it up, verify the
    backup, stop all agents, run `VACUUM`, and verify integrity before restart.
-4. **Add off-machine backups and restore drills.** Protect `.env` separately from SQLite.
-   Exercise point-in-time restoration before relying on the long validation campaign.
+4. **Add off-machine backups.** `pms db-backup` performs an online backup with an
+   integrity check, SHA256 fingerprint, and an exercised restore drill; `pms db-restore`
+   restores to a new path only. Copying verified backups off the machine and protecting
+   `.env` separately from SQLite remain future work.
 5. **Evaluate rollup granularity after one month.** Daily WATCH counts preserve operational
    volume but not every old forecast payload. Add model/regime dimensions only if a concrete
    analysis needs them; do not restore unbounded payload retention.

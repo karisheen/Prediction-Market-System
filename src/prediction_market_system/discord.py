@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 
+from prediction_market_system.authorization import authorize_delivery
 from prediction_market_system.domain import Opportunity, RecommendationState
+from prediction_market_system.redaction import protect_http_logs, redact_secrets
 from prediction_market_system.storage import AlertStatus, SQLiteRepository
 from prediction_market_system.validation import ValidationCampaignReport, ValidationCampaignState
 
@@ -42,6 +45,22 @@ def _display_contract_label(value: str) -> str:
     return f"${match.group(1)}–${match.group(2)}"
 
 
+def _format_clock(value: datetime | None) -> str:
+    if value is None:
+        return "unavailable"
+    local = value.astimezone(_DISPLAY_TIME_ZONE)
+    utc = value.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return f"{local.strftime('%A, %B %-d at %-I:%M %p %Z')}\n{utc}"
+
+
+def _format_clock_inline(value: datetime | None) -> str:
+    if value is None:
+        return "unavailable"
+    local = value.astimezone(_DISPLAY_TIME_ZONE).strftime("%A, %B %-d at %-I:%M %p %Z")
+    utc = value.astimezone(UTC).strftime("%H:%M UTC")
+    return f"{local} ({utc})"
+
+
 class DiscordWebhookClient:
     def __init__(
         self,
@@ -49,6 +68,7 @@ class DiscordWebhookClient:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        protect_http_logs()
         parsed_url = httpx.URL(webhook_url)
         if (
             parsed_url.scheme != "https"
@@ -62,48 +82,35 @@ class DiscordWebhookClient:
         self._owns_client = client is None
 
     async def send(self, opportunity: Opportunity) -> str:
-        response = await self._client.post(
-            self._webhook_url,
-            params={"wait": "true"},
-            json=self._payload(opportunity),
-        )
-        response.raise_for_status()
+        response = await self._request("POST", payload=self._payload(opportunity), wait=True)
         message_id = response.json().get("id")
         if not message_id:
             raise RuntimeError("Discord did not return a message ID")
         return str(message_id)
 
     async def update(self, message_id: str, opportunity: Opportunity) -> str:
-        response = await self._client.patch(
-            f"{self._webhook_url}/messages/{message_id}",
-            json=self._payload(opportunity),
+        response = await self._request(
+            "PATCH", message_id=message_id, payload=self._payload(opportunity)
         )
-        response.raise_for_status()
         returned_id = response.json().get("id", message_id)
         return str(returned_id)
 
     async def send_health_check(self) -> str:
-        response = await self._client.post(
-            self._webhook_url,
-            params={"wait": "true"},
-            json={
+        response = await self._request(
+            "POST",
+            wait=True,
+            payload={
                 "content": "Prediction Market System Discord delivery is configured.",
                 "allowed_mentions": {"parse": []},
             },
         )
-        response.raise_for_status()
         message_id = response.json().get("id")
         if not message_id:
             raise RuntimeError("Discord did not return a message ID")
         return str(message_id)
 
     async def send_validation_report(self, report: ValidationCampaignReport) -> str:
-        response = await self._client.post(
-            self._webhook_url,
-            params={"wait": "true"},
-            json=self._validation_payload(report),
-        )
-        response.raise_for_status()
+        response = await self._request("POST", payload=self._validation_payload(report), wait=True)
         message_id = response.json().get("id")
         if not message_id:
             raise RuntimeError("Discord did not return a validation-status message ID")
@@ -114,12 +121,36 @@ class DiscordWebhookClient:
         message_id: str,
         report: ValidationCampaignReport,
     ) -> str:
-        response = await self._client.patch(
-            f"{self._webhook_url}/messages/{message_id}",
-            json=self._validation_payload(report),
+        response = await self._request(
+            "PATCH", message_id=message_id, payload=self._validation_payload(report)
         )
-        response.raise_for_status()
         return str(response.json().get("id", message_id))
+
+    async def _request(
+        self,
+        method: str,
+        *,
+        payload: dict[str, Any],
+        message_id: str | None = None,
+        wait: bool = False,
+    ) -> httpx.Response:
+        url = self._webhook_url
+        if message_id is not None:
+            url += f"/messages/{message_id}"
+        try:
+            response = await self._client.request(
+                method, url, params={"wait": "true"} if wait else None, json=payload
+            )
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as exc:
+            safe_request = httpx.Request(method, redact_secrets(url))
+            safe_response = httpx.Response(exc.response.status_code, request=safe_request)
+            raise httpx.HTTPStatusError(
+                redact_secrets(str(exc)), request=safe_request, response=safe_response
+            ) from None
+        except Exception as exc:
+            raise RuntimeError(redact_secrets(str(exc))) from None
 
     async def close(self) -> None:
         if self._owns_client:
@@ -148,14 +179,13 @@ class DiscordWebhookClient:
         evidence = "\n".join(f"• {item}" for item in forecast.supporting_evidence) or "None"
         counter_evidence = "\n".join(f"• {item}" for item in forecast.opposing_evidence) or "None"
         warnings = "\n".join(f"• {item}" for item in opportunity.warnings) or "None"
-        local_expiry = market.expires_at.astimezone(_DISPLAY_TIME_ZONE)
-        local_expiry_text = local_expiry.strftime("%A, %B %-d at %-I:%M %p %Z")
-        utc_expiry_time = market.expires_at.astimezone(UTC).strftime("%H:%M UTC")
         market_url = None if market.market_url is None else str(market.market_url)
         market_identity = (
             f"{market_title}\n"
             f"YES: {contract_label}\n"
-            f"Settles: {local_expiry_text} ({utc_expiry_time})\n"
+            f"Trading close: {_format_clock_inline(market.expires_at)}\n"
+            f"Observation end: {_format_clock_inline(market.observation_end_at)}\n"
+            f"Expected settlement: {_format_clock_inline(market.expected_settlement_at)}\n"
             f"Event: `{market.event_id or 'N/A'}`\n"
             f"Contract: `{market.market_id}`"
         )
@@ -185,7 +215,9 @@ class DiscordWebhookClient:
                             f"BUY {side} • do not pay above {price} • "
                             f"paper cap ${opportunity.suggested_max_exposure:,.2f}\n"
                             f"YES condition: {contract_label}\n"
-                            f"Settlement: {local_expiry_text}"
+                            f"Trading close: {_format_clock_inline(market.expires_at)}\n"
+                            f"Expected settlement: "
+                            f"{_format_clock_inline(market.expected_settlement_at)}"
                         ),
                         1_024,
                     ),
@@ -208,11 +240,23 @@ class DiscordWebhookClient:
                     "inline": True,
                 },
                 {
+                    "name": "Trading close",
+                    "value": _format_clock(market.expires_at),
+                    "inline": True,
+                },
+                {
+                    "name": "Observation end",
+                    "value": _format_clock(market.observation_end_at),
+                    "inline": True,
+                },
+                {
                     "name": "Settlement time",
-                    "value": (
-                        f"{local_expiry_text}\n"
-                        f"{market.expires_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
-                    ),
+                    "value": _format_clock(market.expected_settlement_at),
+                    "inline": True,
+                },
+                {
+                    "name": "Outcome available",
+                    "value": _format_clock(market.outcome_available_at),
                     "inline": True,
                 },
                 {
@@ -343,16 +387,28 @@ class DiscordAlertService:
         self,
         repository: SQLiteRepository,
         discord: DiscordWebhookClient,
+        *,
+        allow_unapproved: bool = False,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.repository = repository
         self.discord = discord
+        self.allow_unapproved = allow_unapproved
+        self.clock = clock or (lambda: datetime.now(UTC))
 
     async def publish(self, opportunity: Opportunity) -> str:
+        authorize_delivery(
+            self.repository,
+            opportunity,
+            allow_unapproved=self.allow_unapproved,
+            as_of=self.clock(),
+        )
         alert = self.repository.queue_alert(opportunity)
         if alert.status is AlertStatus.DELIVERED and alert.discord_message_id:
             return alert.discord_message_id
 
         opportunity_id = str(opportunity.opportunity_id)
+        self.repository.claim_alert_attempt(opportunity)
         previous_message_id = self.repository.get_discord_delivery(opportunity.market.market_id)
         try:
             if previous_message_id:
@@ -368,8 +424,14 @@ class DiscordAlertService:
             else:
                 message_id = await self.discord.send(opportunity)
         except Exception as exc:
-            self.repository.mark_alert_failed(opportunity_id, str(exc))
-            raise
+            reason = redact_secrets(str(exc))
+            uncertain = not (
+                isinstance(exc, httpx.HTTPStatusError)
+                and 400 <= exc.response.status_code < 500
+                and exc.response.status_code != 408
+            )
+            self.repository.mark_alert_outcome(opportunity_id, reason, uncertain=uncertain)
+            raise RuntimeError(reason) from None
 
         self.repository.mark_alert_delivered(opportunity, message_id)
         return message_id

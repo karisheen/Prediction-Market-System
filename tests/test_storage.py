@@ -238,7 +238,10 @@ def test_tracks_validation_archive_and_campaign(tmp_path: Path) -> None:
 
     assert repository.validation_archive_succeeded(**archive) is False
     repository.begin_validation_archive(**archive)
-    repository.complete_validation_archive(**archive, counts={"candlesticks": 42})
+    repository.complete_validation_archive(
+        **archive,
+        counts={"candlesticks": 42, "coverage_complete": 1},
+    )
 
     assert repository.validation_archive_succeeded(**archive) is True
     assert repository.validation_archive_coverage(
@@ -263,7 +266,78 @@ def test_tracks_validation_archive_and_campaign(tmp_path: Path) -> None:
         discord_message_id=None,
     )
 
-    assert repository.validation_campaign_message_id(
-        series_ticker="KXBTC",
-        symbol="BTC",
-    ) == "status-message"
+    assert (
+        repository.validation_campaign_message_id(
+            series_ticker="KXBTC",
+            symbol="BTC",
+        )
+        == "status-message"
+    )
+
+
+def test_late_metadata_cannot_replace_historical_contract_semantics(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "history.db")
+    repository.initialize()
+    market = historical_market().model_copy(
+        update={
+            "rules_primary": "Original rule at expiry.",
+            "result": "",
+            "status": "active",
+            "settlement_ts": None,
+            "updated_time": None,
+        }
+    )
+    first_observed = datetime(2030, 12, 30, tzinfo=UTC)
+    for observed, version in (
+        (first_observed, market),
+        (
+            first_observed + timedelta(days=3),
+            historical_market().model_copy(
+                update={"rules_primary": "Later amended rule at expiry."}
+            ),
+        ),
+    ):
+        repository.save_kalshi_history(
+            series_ticker="KXBTCTEST",
+            observed_at=observed,
+            markets=[version],
+            candlesticks={},
+            period_interval=60,
+            series_fee_changes=[],
+            event_fee_changes=[],
+        )
+    (loaded,) = repository.load_kalshi_backtest_data(
+        series_ticker="KXBTCTEST",
+        start=first_observed,
+        end=first_observed + timedelta(days=2),
+        period_interval=60,
+        max_events=10,
+    )
+    assert loaded.market.rules_primary == "Original rule at expiry."
+
+
+def test_changed_venue_candles_are_preserved_instead_of_silently_ignored(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "history.db")
+    repository.initialize()
+    market = historical_market()
+    first = historical_candlestick()
+    revised = first.model_copy(update={"yes_ask": first.yes_ask.model_copy(update={"close": 0.5})})
+    observed = datetime(2031, 1, 1, 0, 5, tzinfo=UTC)
+    for index, candle in enumerate((first, revised)):
+        repository.save_kalshi_history(
+            series_ticker="KXBTCTEST",
+            observed_at=observed + timedelta(minutes=index),
+            markets=[market],
+            candlesticks={market.ticker: [candle]},
+            period_interval=60,
+            series_fee_changes=[],
+            event_fee_changes=[],
+        )
+    (loaded,) = repository.load_kalshi_backtest_data(
+        series_ticker="KXBTCTEST",
+        start=datetime(2030, 1, 1, tzinfo=UTC),
+        end=datetime(2031, 1, 1, tzinfo=UTC),
+        period_interval=60,
+        max_events=10,
+    )
+    assert float(loaded.candlesticks[0].yes_ask.close) == 0.5

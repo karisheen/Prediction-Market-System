@@ -44,12 +44,17 @@ sufficient for manual-review alerts and avoids requesting credentials early.
 
 ## Important model boundary
 
-The structural engine distinguishes terminal thresholds from touch barriers.
-Terminal contracts use the probability of finishing beyond the strike. An
-early-close contract is routed to a geometric-Brownian first-passage model only
-when its direction metadata and rules explicitly define touch semantics. Ambiguous
-early-close rules are rejected rather than silently assigned the wrong model.
-Both models preserve the stated benchmark and rule text for resolution-risk review.
+The structural engine distinguishes terminal thresholds and ranges from touch
+barriers. Terminal contracts use the probability of finishing beyond the strike or
+inside the range at the benchmark observation time stated in the rules, and
+averaging contracts use the moments of the discrete average over the stated
+window. Touch/path-dependent contracts are classified when direction metadata and
+rules explicitly define touch semantics, but they are not evaluable: whether the
+barrier was crossed during the contractual observation period requires benchmark
+path history that Kalshi does not publish, and the current spot must not stand in
+for it. Ambiguous rules are rejected rather than silently assigned the wrong model.
+Unsupported contracts remain visible in archived market universes, and the stated
+benchmark and rule text are preserved for resolution-risk review.
 
 ## References
 

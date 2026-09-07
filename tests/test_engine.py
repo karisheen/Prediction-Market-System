@@ -250,6 +250,7 @@ def test_uses_only_matching_past_calibration_profile() -> None:
         symbol="BTC",
         model_name=engine.model_name(TERMINAL_ABOVE),
         model_version=engine.model_version,
+        recipe_id=engine.recipe_id(crypto_snapshot()),
         training_start=NOW - timedelta(days=60),
         cutoff_at=NOW - timedelta(seconds=1),
         confidence_level=0.95,
@@ -265,6 +266,8 @@ def test_uses_only_matching_past_calibration_profile() -> None:
                 outcome_interval_upper=0.7,
                 uncertainty_margin=0.20,
                 sample_count=30,
+                minimum_horizon_seconds=1,
+                maximum_horizon_seconds=31557600,
             ),
         ),
     )
@@ -293,6 +296,17 @@ def test_uses_only_matching_past_calibration_profile() -> None:
             crypto_snapshot(),
             TERMINAL_ABOVE,
             profile.model_copy(update={"model_version": "old"}),
+        )
+    with pytest.raises(ValueError, match="recipe"):
+        CryptoThresholdEngine(EngineConfig(structural_weight=0.7)).evaluate(
+            market_snapshot(), crypto_snapshot(), TERMINAL_ABOVE, profile
+        )
+    with pytest.raises(ValueError, match="recipe"):
+        engine.evaluate(
+            market_snapshot(),
+            crypto_snapshot(),
+            TERMINAL_ABOVE,
+            profile.model_copy(update={"recipe_id": None}),
         )
 
 
@@ -375,7 +389,9 @@ def test_barrier_model_exceeds_terminal_probability_for_same_upper_strike() -> N
         terminal,
     )
     barrier_forecast, _ = engine.evaluate(
-        market_snapshot(expires_in=timedelta(days=180)),
+        market_snapshot(expires_in=timedelta(days=180)).model_copy(
+            update={"observation_start_at": NOW}
+        ),
         crypto,
         barrier,
     )
@@ -389,3 +405,211 @@ def test_barrier_model_exceeds_terminal_probability_for_same_upper_strike() -> N
 def test_rejects_crossed_order_book() -> None:
     with pytest.raises(ValueError, match="yes_bid cannot exceed yes_ask"):
         market_snapshot(yes_bid=0.50, yes_ask=0.49)
+
+
+def test_rejects_future_crypto_input_at_engine_boundary() -> None:
+    crypto = crypto_snapshot().model_copy(update={"observed_at": NOW + timedelta(seconds=1)})
+    with pytest.raises(ValueError, match="future"):
+        CryptoThresholdEngine().evaluate(market_snapshot(), crypto, TERMINAL_ABOVE)
+
+
+def test_rejects_stale_crypto_input_at_engine_boundary() -> None:
+    crypto = crypto_snapshot().model_copy(update={"observed_at": NOW - timedelta(seconds=121)})
+    with pytest.raises(ValueError, match="stale"):
+        CryptoThresholdEngine().evaluate(market_snapshot(), crypto, TERMINAL_ABOVE)
+
+
+def test_rejects_partially_elapsed_settlement_window() -> None:
+    contract = TerminalRangeContract(lower_bound=99, upper_bound=101, settlement_window_seconds=60)
+    with pytest.raises(ValueError, match="already started"):
+        CryptoThresholdEngine().evaluate(
+            market_snapshot(expires_in=timedelta(seconds=30)), crypto_snapshot(), contract
+        )
+
+
+def test_arithmetic_average_matches_independent_discrete_gbm_moments() -> None:
+    # All 60 samples share diffusion before the trailing minute. A double sum is
+    # an independent, intentionally slow oracle for the optimized moment formula.
+    seconds_per_year = 365.25 * 24 * 3600
+    horizon = 90 / seconds_per_year
+    crypto = crypto_snapshot(spot=100, volatility=200, expected_return=0.12)
+    times = [(90 - 60 + index) / seconds_per_year for index in range(60)]
+    means = [100 * math.exp(0.12 * time) for time in times]
+    mean = sum(means) / 60
+    covariance = (
+        sum(
+            means[i] * means[j] * math.expm1(200**2 * min(times[i], times[j]))
+            for i in range(60)
+            for j in range(60)
+        )
+        / 60**2
+    )
+    log_variance = math.log1p(covariance / mean**2)
+    expected = 0.5 * math.erfc(
+        -(math.log(mean / 101) - log_variance / 2) / math.sqrt(2 * log_variance)
+    )
+    actual = CryptoThresholdEngine._averaged_terminal_above_probability(crypto, 101, horizon, 60)
+    assert actual == pytest.approx(expected, abs=1e-12)
+
+
+def test_probability_uses_observation_not_trading_or_settlement_clock() -> None:
+    engine = CryptoThresholdEngine(EngineConfig(structural_weight=1))
+    market = market_snapshot(expires_in=timedelta(days=30)).model_copy(
+        update={
+            "observation_end_at": NOW + timedelta(hours=1),
+            "expected_settlement_at": NOW + timedelta(days=60),
+        }
+    )
+    forecast, _ = engine.evaluate(market, crypto_snapshot(), TERMINAL_ABOVE)
+    reference, _ = engine.evaluate(
+        market_snapshot(expires_in=timedelta(hours=1)), crypto_snapshot(), TERMINAL_ABOVE
+    )
+    assert forecast.probability_yes == pytest.approx(reference.probability_yes)
+
+
+def test_diffusion_starts_at_actual_spot_observation() -> None:
+    engine = CryptoThresholdEngine(EngineConfig(structural_weight=1))
+    crypto = crypto_snapshot(spot=100).model_copy(
+        update={"observed_at": NOW - timedelta(seconds=120)}
+    )
+    forecast, _ = engine.evaluate(
+        market_snapshot(expires_in=timedelta(seconds=60)), crypto, TERMINAL_ABOVE
+    )
+    reference, _ = engine.evaluate(
+        market_snapshot(expires_in=timedelta(seconds=180)),
+        crypto_snapshot(spot=100),
+        TERMINAL_ABOVE,
+    )
+    assert forecast.probability_yes == pytest.approx(reference.probability_yes)
+
+
+def test_thresholds_and_ranges_use_identical_arithmetic_averaging() -> None:
+    engine = CryptoThresholdEngine(EngineConfig(structural_weight=1))
+    market = market_snapshot(expires_in=timedelta(seconds=60))
+    lower = TERMINAL_ABOVE.model_copy(update={"settlement_window_seconds": 60})
+    upper = lower.model_copy(update={"strike_price": 101})
+    range_contract = TerminalRangeContract(
+        lower_bound=100, upper_bound=101, settlement_window_seconds=60
+    )
+    lower_forecast, _ = engine.evaluate(market, crypto_snapshot(spot=100), lower)
+    upper_forecast, _ = engine.evaluate(market, crypto_snapshot(spot=100, strike=101), upper)
+    range_forecast, _ = engine.evaluate(market, crypto_snapshot(spot=100), range_contract)
+    assert range_forecast.structural_probability_yes == pytest.approx(
+        lower_forecast.structural_probability_yes - upper_forecast.structural_probability_yes,
+        abs=1e-6,
+    )
+
+
+def test_recipe_identity_changes_only_with_probability_recipe() -> None:
+    crypto = crypto_snapshot()
+    engine = CryptoThresholdEngine()
+    base = engine.recipe_id(crypto)
+    assert engine.recipe_id(crypto.model_copy(update={"spot_price": 120})) == base
+    assert engine.recipe_id(crypto.model_copy(update={"expected_annual_return": 0.1})) != base
+    assert (
+        engine.recipe_id(
+            crypto.model_copy(update={"feature_recipe": {"source_selection": "different-provider"}})
+        )
+        != base
+    )
+    assert CryptoThresholdEngine(EngineConfig(structural_weight=0.7)).recipe_id(crypto) != base
+    assert CryptoThresholdEngine(EngineConfig(fee_rate=0.1)).recipe_id(crypto) == base
+
+
+def test_total_event_budget_and_rounding_never_expand_exposure() -> None:
+    engine = CryptoThresholdEngine(
+        EngineConfig(
+            structural_weight=1,
+            paper_bankroll=10,
+            max_bankroll_fraction=1,
+            max_event_bankroll_fraction=0.1004,
+            fractional_kelly=1,
+            uncertainty_margin=0,
+            slippage_bps=0,
+            resolution_haircut=0,
+        )
+    )
+    _, opportunity = engine.evaluate(market_snapshot(), crypto_snapshot(spot=200), TERMINAL_ABOVE)
+    assert opportunity.suggested_max_exposure <= 1.004
+    assert opportunity.suggested_max_exposure == 1.0
+
+
+def test_kalshi_budget_includes_rounded_fees_and_whole_contracts() -> None:
+    engine = CryptoThresholdEngine(
+        EngineConfig(
+            structural_weight=1,
+            paper_bankroll=10,
+            max_bankroll_fraction=1,
+            max_event_bankroll_fraction=0.1,
+            fractional_kelly=1,
+            uncertainty_margin=0,
+            binary_fee_coefficient=0.07,
+            fee_rate=0.02,
+            slippage_bps=100,
+            minimum_ask_size=0,
+            resolution_haircut=0,
+        )
+    )
+    market = market_snapshot().model_copy(
+        update={
+            "venue": "Kalshi",
+            "observation_end_at": NOW + timedelta(days=30),
+            "yes_ask_size": 2.9,
+        }
+    )
+    _, opportunity = engine.evaluate(market, crypto_snapshot(spot=200), TERMINAL_ABOVE)
+    # Two units: 2 * .42 * 1.03 + ceil_cent(2 * .07 * .42 * .58).
+    assert opportunity.suggested_max_exposure == pytest.approx(0.9052)
+    assert opportunity.suggested_max_exposure <= engine.event_exposure_cap
+    assert engine.exposure_for_budget(0.42, 2.9, 0.45, whole_contracts=True) == 0
+
+
+def test_forecast_manifest_reconstructs_exact_evaluation() -> None:
+    engine = CryptoThresholdEngine()
+    forecast, _ = engine.evaluate(market_snapshot(), crypto_snapshot(), TERMINAL_ABOVE)
+    manifest = forecast.input_manifest
+    replay, _ = CryptoThresholdEngine(
+        EngineConfig.model_validate(manifest["engine_config"])
+    ).evaluate(
+        MarketSnapshot.model_validate(manifest["market"]),
+        CryptoSnapshot.model_validate(manifest["crypto"]),
+        ThresholdContract.model_validate(manifest["contract"]),
+    )
+    assert replay.probability_yes == forecast.probability_yes
+    assert replay.recipe_id == forecast.recipe_id
+
+
+def test_rejects_profile_after_probability_configuration_change() -> None:
+    original = CryptoThresholdEngine(EngineConfig(structural_weight=0.5))
+    crypto = crypto_snapshot()
+    profile = UncertaintyCalibrationProfile(
+        symbol="BTC",
+        model_name=original.model_name(TERMINAL_ABOVE),
+        model_version=original.model_version,
+        training_start=NOW - timedelta(days=60),
+        cutoff_at=NOW - timedelta(seconds=1),
+        confidence_level=0.95,
+        sample_count=30,
+        brier_score=0.2,
+        bins=(
+            CalibrationBin(
+                lower_probability=0,
+                upper_probability=1,
+                mean_probability=0.5,
+                observed_frequency=0.5,
+                outcome_interval_lower=0.3,
+                outcome_interval_upper=0.7,
+                uncertainty_margin=0.2,
+                sample_count=30,
+                minimum_horizon_seconds=1,
+                maximum_horizon_seconds=31557600,
+            ),
+        ),
+    )
+    # model_copy also works on v1, letting the pristine-code reproduction reach
+    # the old compatibility gate rather than failing on an unavailable new API.
+    recipe = getattr(original, "recipe_id", lambda _: "v1-unfingerprinted")(crypto)
+    profile = profile.model_copy(update={"recipe_id": recipe})
+    changed = CryptoThresholdEngine(EngineConfig(structural_weight=0.9))
+    with pytest.raises(ValueError, match="recipe"):
+        changed.evaluate(market_snapshot(), crypto, TERMINAL_ABOVE, profile)

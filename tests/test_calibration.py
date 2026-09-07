@@ -33,7 +33,7 @@ def sample(
     )
 
 
-def test_fits_equal_frequency_wilson_uncertainty_profile() -> None:
+def test_fixed_probability_bins_preserve_original_contract_brier() -> None:
     samples = tuple(
         sample(index, probability, outcome)
         for index, (probability, outcome) in enumerate(
@@ -94,7 +94,6 @@ def test_event_clustered_calibration_counts_independent_events_not_contracts() -
     assert profile.independent_event_count == 2
     assert profile.sample_count == 2
     assert profile.bins[0].sample_count == 2
-    assert profile.method == "equal-frequency event-clustered calibration envelope"
 
 
 def test_profiles_are_isolated_by_model_version() -> None:
@@ -134,3 +133,76 @@ def test_rejects_forecasts_or_outcomes_unavailable_in_training_window() -> None:
             cutoff_at=CUTOFF,
             minimum_samples=1,
         )
+
+
+def test_offsetting_ladder_errors_cannot_cancel_conditional_uncertainty() -> None:
+    samples = tuple(
+        CalibrationSample(
+            market_id=f"{event}-{side}",
+            event_id=f"event-{event}",
+            symbol="BTC",
+            model_name=MODEL_NAME,
+            model_version=MODEL_VERSION,
+            probability_yes=probability,
+            outcome_yes=outcome,
+            observed_at=CUTOFF - timedelta(days=2),
+            resolved_at=CUTOFF - timedelta(days=1),
+        )
+        for event in range(100)
+        for side, probability, outcome in (("low", 0.1, True), ("high", 0.9, False))
+    )
+    (profile,) = fit_uncertainty_profiles(
+        samples,
+        training_start=CUTOFF - timedelta(days=3),
+        cutoff_at=CUTOFF,
+        minimum_samples=100,
+        maximum_bins=5,
+    )
+    assert profile.brier_score == pytest.approx(0.81)
+    assert profile.margin_for(0.1) >= 0.9
+    assert profile.margin_for(0.9) >= 0.9
+    assert profile.margin_for(0.5) == 1.0
+    assert profile.independent_event_count == 100
+
+
+def test_zero_variance_ladders_keep_nonzero_event_level_uncertainty() -> None:
+    samples = tuple(
+        CalibrationSample(
+            market_id=f"{event}-{contract}",
+            event_id=f"event-{event}",
+            symbol="BTC",
+            model_name=MODEL_NAME,
+            model_version=MODEL_VERSION,
+            probability_yes=0.5,
+            outcome_yes=contract == 0,
+            observed_at=CUTOFF - timedelta(days=2),
+            resolved_at=CUTOFF - timedelta(days=1),
+        )
+        for event in range(30)
+        for contract in range(2)
+    )
+    (profile,) = fit_uncertainty_profiles(
+        samples,
+        training_start=CUTOFF - timedelta(days=3),
+        cutoff_at=CUTOFF,
+        minimum_samples=30,
+        maximum_bins=5,
+    )
+    assert profile.margin_for(0.5) > 0.1
+    assert profile.bins[0].sample_count == 30
+    assert profile.brier_score == pytest.approx(0.25)
+
+
+def test_exact_recipe_groups_cannot_pool_event_counts() -> None:
+    samples = tuple(
+        sample(index, 0.2, False).model_copy(update={"recipe_id": recipe, "model_version": "2.0.0"})
+        for index, recipe in enumerate(("recipe-a", "recipe-a", "recipe-b", None))
+    )
+    profiles = fit_uncertainty_profiles(
+        samples,
+        training_start=CUTOFF - timedelta(days=60),
+        cutoff_at=CUTOFF,
+        minimum_samples=2,
+    )
+    assert {profile.recipe_id for profile in profiles} == {"recipe-a"}
+    assert profiles[0].independent_event_count == 2

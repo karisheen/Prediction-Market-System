@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable, Mapping
 
 import httpx
 
+from prediction_market_system.redaction import redact_secrets
+
 DEFAULT_TRANSIENT_RETRIES = 3
 _MAX_TRANSIENT_DELAY_SECONDS = 8.0
 
@@ -36,8 +38,8 @@ async def get_with_transient_retry(
     for attempt in range(max_retries + 1):
         try:
             return await client.get(path, params=params)
-        except httpx.TransportError:
+        except httpx.TransportError as exc:
             if attempt >= max_retries:
-                raise
+                raise httpx.TransportError(redact_secrets(str(exc))) from None
             await sleep(transient_retry_delay(attempt))
     raise RuntimeError("unreachable transient retry state")

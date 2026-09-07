@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict
 
-from prediction_market_system.research import SpotCandle
+from prediction_market_system.research import SpotCandle, research_payload_hash
 from prediction_market_system.transport import (
     DEFAULT_TRANSIENT_RETRIES,
     SleepFn,
@@ -46,7 +46,7 @@ class _CoinbaseCandle(_CoinbaseModel):
 
 
 class _CoinbaseCandlesResponse(_CoinbaseModel):
-    candles: list[_CoinbaseCandle]
+    candles: list[dict[str, Any]]
 
 
 class CoinbaseClient:
@@ -91,7 +91,7 @@ class CoinbaseClient:
         requested_end = int(end_at.timestamp())
         latest_start = requested_end - interval_seconds
         page_start = requested_start
-        candles_by_start: dict[int, SpotCandle] = {}
+        candles_by_revision: dict[tuple[int, str], SpotCandle] = {}
         while page_start <= latest_start:
             page_end = min(latest_start, page_start + (349 * interval_seconds))
             payload, retrieved_at = await self._get_candle_page(
@@ -100,12 +100,13 @@ class CoinbaseClient:
                 end=page_end,
                 granularity=granularity,
             )
-            for candle in payload.candles:
+            for raw_candle in payload.candles:
+                candle = _CoinbaseCandle.model_validate(raw_candle)
                 candle_end = candle.start + interval_seconds
                 if candle.start < requested_start or candle_end > requested_end:
                     continue
-                raw_payload: dict[str, Any] = candle.model_dump(mode="json")
-                candles_by_start[candle.start] = SpotCandle(
+                raw_payload = dict(raw_candle)
+                normalized = SpotCandle(
                     provider="coinbase",
                     product_id=product_id.upper(),
                     interval_seconds=interval_seconds,
@@ -119,9 +120,10 @@ class CoinbaseClient:
                     retrieved_at=retrieved_at,
                     raw_payload=raw_payload,
                 )
+                candles_by_revision[(candle.start, research_payload_hash(normalized))] = normalized
             page_start = page_end + interval_seconds
 
-        return [candles_by_start[start] for start in sorted(candles_by_start)]
+        return sorted(candles_by_revision.values(), key=lambda candle: candle.start_at)
 
     async def close(self) -> None:
         if self._owns_client:

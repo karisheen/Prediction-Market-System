@@ -331,3 +331,95 @@ async def test_deribit_retries_transient_transport_failures() -> None:
     assert attempts == 2
     assert delays == [1.0]
     await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_coinbase_preserves_conflicting_source_rows_and_raw_fields() -> None:
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+    original = {
+        "start": str(int(start_at.timestamp())),
+        "low": "99",
+        "high": "103",
+        "open": "100",
+        "close": "101",
+        "volume": "10",
+        "provider_revision": "first",
+    }
+    revised = {**original, "close": "102", "provider_revision": "second"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candles": [original, revised]})
+
+    async with httpx.AsyncClient(
+        base_url="https://example.invalid", transport=httpx.MockTransport(handler)
+    ) as http_client:
+        rows = await CoinbaseClient(client=http_client).get_candles(
+            "BTC-USD",
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            interval_seconds=3600,
+        )
+    assert [row.close for row in rows] == [Decimal("101"), Decimal("102")]
+    assert [row.raw_payload for row in rows] == [original, revised]
+
+
+@pytest.mark.asyncio
+async def test_dvol_daily_resolution_and_completed_candle_boundary() -> None:
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+    end_at = start_at + timedelta(days=1, hours=12)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["resolution"] == "1D"
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "data": [
+                        [int(start_at.timestamp() * 1000), 40, 50, 30, 45],
+                        [int((start_at + timedelta(days=1)).timestamp() * 1000), 45, 55, 35, 50],
+                    ],
+                    "continuation": None,
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://example.invalid", transport=httpx.MockTransport(handler)
+    ) as http_client:
+        rows = await DeribitClient(client=http_client).get_dvol_history(
+            "BTC", start_at=start_at, end_at=end_at, resolution_seconds=86400
+        )
+    assert [row.observed_at for row in rows] == [start_at + timedelta(days=1)]
+    assert rows[0].source_start_at == start_at
+    assert rows[0].annualized_volatility == pytest.approx(0.45)
+    assert rows[0].raw_payload["timestamp_ms"] == int(start_at.timestamp() * 1000)
+
+
+@pytest.mark.asyncio
+async def test_dvol_keeps_differing_payloads_at_same_provider_timestamp() -> None:
+    start_at = datetime(2030, 1, 1, tzinfo=UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "data": [
+                        [int(start_at.timestamp() * 1000), 40, 50, 30, 45],
+                        [int(start_at.timestamp() * 1000), 40, 55, 30, 50],
+                    ],
+                    "continuation": None,
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://example.invalid", transport=httpx.MockTransport(handler)
+    ) as http_client:
+        rows = await DeribitClient(client=http_client).get_dvol_history(
+            "BTC",
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            resolution_seconds=3600,
+        )
+    assert [row.annualized_volatility for row in rows] == [0.45, 0.5]

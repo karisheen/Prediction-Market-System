@@ -32,6 +32,10 @@ def test_launch_agents_use_shadow_mode_and_schedule_maintenance() -> None:
 
     assert "--send-discord" not in by_suffix["alerts"].arguments
     assert "--allow-unapproved-discord" not in by_suffix["alerts"].arguments
+    validation_args = by_suffix["validation"].arguments
+    assert validation_args[validation_args.index("--period") + 1] == "1"
+    assert validation_args[validation_args.index("--spot-interval") + 1] == "1"
+    assert validation_args[validation_args.index("--research-interval") + 1] == "60"
     assert by_suffix["maintenance"].arguments == (
         "paper-alert-maintain",
         "--series",
@@ -42,9 +46,7 @@ def test_launch_agents_use_shadow_mode_and_schedule_maintenance() -> None:
         "5000",
         "--apply",
     )
-    assert by_suffix["maintenance"].schedule == {
-        "StartCalendarInterval": {"Hour": 3, "Minute": 15}
-    }
+    assert by_suffix["maintenance"].schedule == {"StartCalendarInterval": {"Hour": 3, "Minute": 15}}
 
 
 def test_plist_uses_stable_application_pointer_and_shared_logs() -> None:

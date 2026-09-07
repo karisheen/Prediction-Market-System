@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -8,14 +9,18 @@ from uuid import uuid4
 
 import httpx
 
+from prediction_market_system.authorization import UnapprovedDeliveryError, authorize_delivery
 from prediction_market_system.domain import (
     MarketRegimeSnapshot,
+    MarketSide,
     Opportunity,
     PriceTrendRegime,
     RecommendationState,
     VolatilityRegime,
 )
-from prediction_market_system.engine import CryptoThresholdEngine
+from prediction_market_system.engine import CryptoThresholdEngine, deployment_policy_id
+from prediction_market_system.evidence import EVIDENCE_FORWARD_SHADOW
+from prediction_market_system.redaction import redact_secrets
 from prediction_market_system.research import ResearchContext, ResearchDataUnavailable, SpotCandle
 from prediction_market_system.storage import MarketCheckStatus, SQLiteRepository
 from prediction_market_system.venues.kalshi import (
@@ -78,7 +83,7 @@ class PaperAlertRunner:
         regime: MarketRegimeSnapshot,
         expected_annual_return: float = 0.0,
         cycle_id: str | None = None,
-        deliver_entries: bool = True,
+        deliver_entries: bool = False,
         allow_unapproved_delivery: bool = False,
     ) -> PaperAlertCycleResult:
         if context.symbol != regime.symbol:
@@ -86,12 +91,10 @@ class PaperAlertRunner:
 
         cycle = cycle_id or str(uuid4())
         cycle_observed_at = self.clock()
-        spot_age = cycle_observed_at - context.spot.end_at
-        if spot_age < timedelta(0) or spot_age > self.maximum_spot_age:
-            reason = (
-                f"live spot is {spot_age.total_seconds():.0f} seconds old; "
-                f"maximum is {self.maximum_spot_age.total_seconds():.0f}"
-            )
+        try:
+            self._validate_inputs(context, regime, cycle_observed_at)
+        except (ResearchDataUnavailable, ValueError) as exc:
+            reason = redact_secrets(str(exc))
             for market in markets:
                 self._record_check(
                     cycle,
@@ -110,6 +113,8 @@ class PaperAlertRunner:
                 failures=(reason,),
             )
 
+        # Every forecast in this cycle references this exact context by content identity.
+        self.repository.save_research_context(context)
         unsupported = 0
         uncalibrated = 0
         failures: list[str] = []
@@ -118,7 +123,7 @@ class PaperAlertRunner:
 
         for market in markets:
             try:
-                contract = market.price_contract()
+                contract = market.evaluation_contract(cycle_observed_at)
             except UnsupportedMarketError as exc:
                 unsupported += 1
                 self._record_check(
@@ -130,48 +135,53 @@ class PaperAlertRunner:
                 )
                 continue
 
+            crypto = context.to_crypto_snapshot(
+                strike_price=self.engine.reference_price(contract),
+                expected_annual_return=expected_annual_return,
+            )
             profile = self.repository.latest_uncertainty_calibration(
                 symbol=context.symbol,
                 model_name=self.engine.model_name(contract),
                 model_version=self.engine.model_version,
+                recipe_id=self.engine.recipe_id(crypto),
                 as_of=context.as_of,
             )
             if profile is None:
                 uncalibrated += 1
-                self._record_check(
-                    cycle,
-                    market,
-                    cycle_observed_at,
-                    MarketCheckStatus.MISSING_CALIBRATION,
-                    f"no held-out calibration for {self.engine.model_name(contract)}",
-                )
-                continue
-            profile_approved = self.repository.is_calibration_approved(profile.profile_id)
-            if deliver_entries and not profile_approved and not allow_unapproved_delivery:
-                unapproved += 1
-                self._record_check(
-                    cycle,
-                    market,
-                    cycle_observed_at,
-                    MarketCheckStatus.UNAPPROVED_MODEL,
-                    (
-                        "held-out backtest criteria have not approved calibration "
-                        f"{profile.profile_id}"
-                    ),
-                )
-                continue
+            profile_approved = profile is not None and self.repository.is_calibration_approved(
+                profile.profile_id,
+                as_of=cycle_observed_at,
+                deployment_policy_id=deployment_policy_id(self.engine.config),
+            )
 
             try:
-                order_book = await self.market_reader.get_order_book(market.ticker)
-                observed_at = self.clock()
-                snapshot = to_market_snapshot(market, order_book, observed_at=observed_at)
-                crypto = context.to_crypto_snapshot(
-                    strike_price=self.engine.reference_price(contract),
-                    expected_annual_return=expected_annual_return,
+                self._validate_inputs(context, regime, self.clock())
+                remaining = (
+                    self.maximum_spot_age.total_seconds()
+                    - (self.clock() - context.spot.end_at).total_seconds()
                 )
+                order_book = await asyncio.wait_for(
+                    self.market_reader.get_order_book(market.ticker),
+                    timeout=max(0.001, remaining),
+                )
+                observed_at = self.clock()
+                self._validate_inputs(context, regime, observed_at)
+                snapshot = to_market_snapshot(market, order_book, observed_at=observed_at)
                 _, opportunity = self.engine.evaluate(snapshot, crypto, contract, profile)
                 updates: dict[str, object] = {"market_regime": regime}
-                if deliver_entries and not profile_approved:
+                if profile is None:
+                    updates.update(
+                        {
+                            "state": RecommendationState.WATCH,
+                            "suggested_max_exposure": 0.0,
+                            "warnings": (
+                                *opportunity.warnings,
+                                "Missing qualifying calibration: probability observation "
+                                "only; no entry authorized.",
+                            ),
+                        }
+                    )
+                if deliver_entries and profile is not None and not profile_approved:
                     updates["warnings"] = (
                         *opportunity.warnings,
                         "UNAPPROVED MODEL: held-out approval is missing; manual review only",
@@ -180,11 +190,12 @@ class PaperAlertRunner:
             except (
                 IncompleteOrderBookError,
                 KalshiAPIError,
+                TimeoutError,
                 httpx.HTTPError,
                 RuntimeError,
                 ValueError,
             ) as exc:
-                reason = str(exc)
+                reason = redact_secrets(str(exc))
                 failures.append(f"{market.ticker}: {reason}")
                 self._record_check(
                     cycle,
@@ -198,7 +209,49 @@ class PaperAlertRunner:
         watch = 0
         delivered = 0
         for market, opportunity in opportunities:
-            self.repository.save_evaluation(opportunity.forecast, opportunity)
+            try:
+                self._validate_inputs(context, regime, self.clock())
+            except (ResearchDataUnavailable, ValueError) as exc:
+                reason = redact_secrets(str(exc))
+                failures.append(f"{market.ticker}: {reason}")
+                opportunity = opportunity.model_copy(
+                    update={
+                        "state": RecommendationState.WATCH,
+                        "suggested_max_exposure": 0.0,
+                        "warnings": (*opportunity.warnings, reason),
+                    }
+                )
+                self.repository.save_evaluation(
+                    opportunity.forecast,
+                    opportunity,
+                    ledger_kind=EVIDENCE_FORWARD_SHADOW,
+                )
+                self._record_check(
+                    cycle,
+                    market,
+                    self.clock(),
+                    MarketCheckStatus.FAILED,
+                    reason,
+                    opportunity=opportunity,
+                )
+                watch += 1
+                continue
+            self.repository.save_evaluation(
+                opportunity.forecast,
+                opportunity,
+                ledger_kind=EVIDENCE_FORWARD_SHADOW,
+            )
+            if opportunity.forecast.calibration_profile_id is None:
+                watch += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    opportunity.market.observed_at,
+                    MarketCheckStatus.MISSING_CALIBRATION,
+                    "Probability observation only; missing qualifying calibration.",
+                    opportunity=opportunity,
+                )
+                continue
             if opportunity.state is RecommendationState.WATCH:
                 watch += 1
                 self._record_check(
@@ -221,6 +274,14 @@ class PaperAlertRunner:
                 )
                 if not deliver_entries:
                     continue
+                delivery_at = self.clock()
+                self._validate_inputs(context, regime, delivery_at)
+                authorize_delivery(
+                    self.repository,
+                    opportunity,
+                    allow_unapproved=allow_unapproved_delivery,
+                    as_of=delivery_at,
+                )
                 if self.alert_service is None:
                     raise ValueError("alert publisher is required when delivery is enabled")
                 await self.alert_service.publish(opportunity)
@@ -233,8 +294,18 @@ class PaperAlertRunner:
                     None,
                     opportunity=opportunity,
                 )
+            except UnapprovedDeliveryError as exc:
+                unapproved += 1
+                self._record_check(
+                    cycle,
+                    market,
+                    opportunity.market.observed_at,
+                    MarketCheckStatus.UNAPPROVED_MODEL,
+                    redact_secrets(str(exc)),
+                    opportunity=opportunity,
+                )
             except (httpx.HTTPError, RuntimeError, ValueError) as exc:
-                reason = str(exc)
+                reason = redact_secrets(str(exc))
                 failures.append(f"{market.ticker}: {reason}")
                 self._record_check(
                     cycle,
@@ -255,6 +326,23 @@ class PaperAlertRunner:
             unapproved=unapproved,
             failures=tuple(failures),
         )
+
+    def _validate_inputs(
+        self,
+        context: ResearchContext,
+        regime: MarketRegimeSnapshot,
+        evaluated_at: datetime,
+    ) -> None:
+        context.validate_at(
+            evaluated_at,
+            maximum_spot_age_seconds=int(self.maximum_spot_age.total_seconds()),
+        )
+        if regime.observed_at > evaluated_at:
+            raise ResearchDataUnavailable("market regime is from the future")
+        if regime.observed_at < context.realized_volatility.observed_at:
+            raise ResearchDataUnavailable("market regime is stale at the evaluation boundary")
+        if regime.source_start_at != context.realized_volatility.source_start_at:
+            raise ResearchDataUnavailable("market regime has incompatible source-window provenance")
 
     def _apply_event_exposure_caps(
         self,
@@ -280,8 +368,26 @@ class PaperAlertRunner:
         for index in entry_indexes:
             market, opportunity = adjusted[index]
             event_id = opportunity.market.event_id or market.event_ticker
-            remaining = remaining_by_event.setdefault(event_id, self.engine.event_exposure_cap)
-            allowed = round(min(opportunity.suggested_max_exposure, remaining), 2)
+            if event_id not in remaining_by_event:
+                already_allocated = self.repository.forward_event_entry_exposure(
+                    event_id=event_id,
+                    exclude_forecast_id=str(opportunity.forecast.forecast_id),
+                )
+                remaining_by_event[event_id] = max(
+                    0.0, self.engine.event_exposure_cap - already_allocated
+                )
+            remaining = remaining_by_event[event_id]
+            ask_size = (
+                opportunity.market.yes_ask_size
+                if opportunity.side is MarketSide.YES
+                else opportunity.market.no_ask_size
+            )
+            allowed = self.engine.exposure_for_budget(
+                opportunity.executable_price or 0.0,
+                ask_size or 0.0,
+                min(opportunity.suggested_max_exposure, remaining),
+                whole_contracts=opportunity.market.venue.lower() == "kalshi",
+            )
             remaining_by_event[event_id] = max(remaining - allowed, 0.0)
             if allowed == opportunity.suggested_max_exposure:
                 continue
@@ -326,7 +432,7 @@ class PaperAlertRunner:
             event_ticker=market.event_ticker,
             observed_at=observed_at,
             status=status,
-            reason=reason,
+            reason=None if reason is None else redact_secrets(reason),
             payload=payload,
         )
 

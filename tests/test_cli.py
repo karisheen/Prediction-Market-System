@@ -15,6 +15,8 @@ from prediction_market_system.cli import (
     _select_history_markets,
     app,
 )
+from prediction_market_system.domain import CryptoSnapshot, ThresholdModelKind
+from prediction_market_system.engine import CryptoThresholdEngine
 from prediction_market_system.research import (
     DerivativesSnapshot,
     FundingObservation,
@@ -135,7 +137,10 @@ def test_history_sampling_is_event_grouped_and_outcome_independent() -> None:
                 "strike_type": "between",
                 "floor_strike": float(90_000 + index * 100),
                 "cap_strike": float(90_099.99 + index * 100),
-                "rules_primary": "Resolves YES if the average at expiry is inside the range.",
+                "rules_primary": (
+                    "Resolves YES if the average of the sixty seconds before expiry "
+                    "is inside the range at expiry."
+                ),
             }
         )
         for index in range(20)
@@ -279,7 +284,17 @@ def test_kalshi_evaluate_uses_persisted_calibration(
     profile = UncertaintyCalibrationProfile(
         symbol="BTC",
         model_name="crypto-terminal-above-threshold-market-anchor",
-        model_version="0.3.0",
+        model_version=CryptoThresholdEngine.model_version,
+        recipe_id=CryptoThresholdEngine().recipe_id(
+            CryptoSnapshot(
+                symbol="BTC",
+                observed_at=pair[1].observed_at,
+                spot_price=110000,
+                strike_price=100000,
+                annualized_volatility=0.55,
+            )
+        ),
+        research_only=False,
         training_start=datetime(2026, 1, 1, tzinfo=UTC),
         cutoff_at=datetime(2026, 7, 27, tzinfo=UTC),
         confidence_level=0.95,
@@ -295,6 +310,8 @@ def test_kalshi_evaluate_uses_persisted_calibration(
                 outcome_interval_upper=0.7,
                 uncertainty_margin=0.20,
                 sample_count=30,
+                minimum_horizon_seconds=1,
+                maximum_horizon_seconds=31557600,
             ),
         ),
     )
@@ -398,18 +415,25 @@ def test_kalshi_evaluate_accepts_fixed_expiry_market_with_early_close_flag(
     assert stored[0]["forecast"]["model_name"] == ("crypto-terminal-above-threshold-market-anchor")
 
 
-def test_kalshi_evaluate_accepts_explicit_touch_barrier(
+def test_kalshi_evaluate_fails_closed_on_touch_barrier_without_path_history(
     tmp_path: Path,
     monkeypatch: object,
 ) -> None:
     from pytest import MonkeyPatch
 
     assert isinstance(monkeypatch, MonkeyPatch)
-    pair = market_pair(can_close_early=True, touch_rule=True)
-    monkeypatch.setattr(
-        "prediction_market_system.cli._load_kalshi_market",
-        lambda ticker: pair,
+    market = kalshi_market(can_close_early=True, touch_rule=True)
+    order_book = KalshiOrderBook(
+        yes_dollars=[("0.4200", "13.00")],
+        no_dollars=[("0.5600", "17.00")],
     )
+
+    async def fetch(ticker: str) -> tuple[KalshiMarket, object]:
+        return market, to_market_snapshot(
+            market, order_book, observed_at=datetime(2026, 7, 28, tzinfo=UTC)
+        )
+
+    monkeypatch.setattr("prediction_market_system.cli._fetch_kalshi_market", fetch)
     database_path = tmp_path / "kalshi-barrier.db"
     monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
 
@@ -429,9 +453,12 @@ def test_kalshi_evaluate_accepts_explicit_touch_barrier(
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    assert "Structural YES" in result.output
-    assert database_path.exists()
+    # Classification still recognises the touch barrier, but a spot quote cannot
+    # establish whether the barrier was already crossed, so nothing is evaluated.
+    assert market.price_contract().model_kind is ThresholdModelKind.BARRIER
+    assert result.exit_code == 2, result.output
+    assert "touch barrier requires benchmark path history" in result.output
+    assert not database_path.exists()
 
 
 def test_research_sync_and_context_commands(

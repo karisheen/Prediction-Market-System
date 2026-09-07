@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from datetime import timedelta
-from typing import Literal
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from decimal import ROUND_CEILING, Decimal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +21,7 @@ from prediction_market_system.domain import (
     ThresholdDirection,
     ThresholdModelKind,
 )
+from prediction_market_system.recipe import MODEL_VERSION, recipe_fingerprint
 
 _SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60
 _EPSILON = 1e-6
@@ -44,6 +46,71 @@ class EngineConfig(BaseModel):
     max_bankroll_fraction: float = Field(default=0.02, ge=0.0, le=1.0)
     max_event_bankroll_fraction: float = Field(default=0.02, ge=0.0, le=1.0)
     minimum_seconds_to_expiry: int = Field(default=300, ge=0)
+    maximum_input_age_seconds: int = Field(default=120, ge=0)
+
+
+def deployment_policy(config: EngineConfig) -> dict[str, Any]:
+    """Execution, cost, freshness, and sizing assumptions used by a delivery decision.
+
+    Probability-recipe fields such as ``structural_weight`` are intentionally omitted.
+    Changing them invalidates forecast identity, not this operational fingerprint.
+    """
+    return {
+        "paper_bankroll": config.paper_bankroll,
+        "min_conservative_edge": config.min_conservative_edge,
+        "uncertainty_margin": config.uncertainty_margin,
+        "fee_rate": config.fee_rate,
+        "binary_fee_type": config.binary_fee_type,
+        "binary_fee_coefficient": config.binary_fee_coefficient,
+        "slippage_bps": config.slippage_bps,
+        "resolution_haircut": config.resolution_haircut,
+        "minimum_ask_size": config.minimum_ask_size,
+        "fractional_kelly": config.fractional_kelly,
+        "max_bankroll_fraction": config.max_bankroll_fraction,
+        "max_event_bankroll_fraction": config.max_event_bankroll_fraction,
+        "minimum_seconds_to_expiry": config.minimum_seconds_to_expiry,
+        "maximum_input_age_seconds": config.maximum_input_age_seconds,
+    }
+
+
+def deployment_policy_id(config: EngineConfig) -> str:
+    return recipe_fingerprint(deployment_policy(config))
+
+
+def entry_horizon_at(market: MarketSnapshot) -> datetime:
+    """Latest instant a new entry can still be about trading *and* the benchmark."""
+    return min(market.expires_at, market.effective_observation_end_at)
+
+
+def remaining_seconds_to_entry_horizon(market: MarketSnapshot, as_of: datetime) -> float:
+    return (entry_horizon_at(market) - as_of).total_seconds()
+
+
+def assert_time_sensitive_entry_controls(
+    config: EngineConfig,
+    market: MarketSnapshot,
+    contract: CryptoPriceContract,
+    *,
+    as_of: datetime,
+) -> None:
+    """Fail closed when time-sensitive entry conditions are invalid at ``as_of``.
+
+    Trading close, benchmark observation end, expected settlement, and outcome
+    availability are distinct. This revalidates only controls that gate a new
+    entry: trading still open, the observation window still open, averaging has
+    not begun, and remaining time still meets ``minimum_seconds_to_expiry``.
+    """
+    if market.expires_at <= as_of:
+        raise ValueError("trading has closed")
+    observation_end = market.effective_observation_end_at
+    if observation_end <= as_of:
+        raise ValueError("benchmark observation has already ended")
+    if remaining_seconds_to_entry_horizon(market, as_of) < config.minimum_seconds_to_expiry:
+        raise ValueError("contract is inside the minimum-time-to-expiry exclusion window")
+    if contract.settlement_window_seconds:
+        window_start = observation_end - timedelta(seconds=contract.settlement_window_seconds)
+        if as_of > window_start:
+            raise ValueError("averaging window has already started; observed prefix is required")
 
 
 @dataclass(frozen=True)
@@ -135,18 +202,42 @@ class CryptoThresholdEngine:
     before any recommendation is considered.
     """
 
-    model_version = "0.3.0"
+    model_version = MODEL_VERSION
 
     def __init__(self, config: EngineConfig | None = None) -> None:
         self.config = config or EngineConfig()
 
+    def recipe(self, crypto: CryptoSnapshot) -> dict[str, Any]:
+        return {
+            "model_version": self.model_version,
+            "structural_weight": self.config.structural_weight,
+            "expected_annual_return": crypto.expected_annual_return,
+            "features": crypto.feature_recipe,
+            "terminal_estimator": "gbm-lognormal",
+            "barrier_estimator": "gbm-reflection-first-passage",
+            "barrier_history": "explicit-observation-start-no-unobserved-prefix",
+            "averaging_estimator": "arithmetic-1hz-pre-end-exact-moments-lognormal",
+            "horizon": "spot-observation-to-explicit-benchmark-end",
+            "market_anchor": "available-bid-ask-midpoints-log-odds",
+            "seconds_per_year": _SECONDS_PER_YEAR,
+            "probability_clamp": _EPSILON,
+        }
+
+    def recipe_id(self, crypto: CryptoSnapshot) -> str:
+        return recipe_fingerprint(self.recipe(crypto))
+
     @staticmethod
     def model_name(contract: CryptoPriceContract) -> str:
         if isinstance(contract, TerminalRangeContract):
-            return "crypto-terminal-range-market-anchor"
-        return (
-            f"crypto-{contract.model_kind.value}-{contract.direction.value}-threshold-market-anchor"
-        )
+            name = "crypto-terminal-range-market-anchor"
+        else:
+            name = (
+                f"crypto-{contract.model_kind.value}-{contract.direction.value}"
+                "-threshold-market-anchor"
+            )
+        if contract.settlement_window_seconds:
+            name += f"-arithmetic-{contract.settlement_window_seconds}s"
+        return name
 
     @property
     def event_exposure_cap(self) -> float:
@@ -185,9 +276,16 @@ class CryptoThresholdEngine:
                 raise ValueError("calibration profile does not match model version")
             if calibration_profile.symbol != crypto.symbol.upper():
                 raise ValueError("calibration profile does not match crypto symbol")
+            if calibration_profile.recipe_id != self.recipe_id(crypto):
+                raise ValueError("calibration profile does not match forecast recipe")
             if calibration_profile.cutoff_at > market.observed_at:
                 raise ValueError("calibration profile contains outcomes unavailable at evaluation")
-            uncertainty_margin = calibration_profile.margin_for(final_probability)
+            uncertainty_margin = calibration_profile.margin_for(
+                final_probability,
+                horizon_seconds=(
+                    market.effective_observation_end_at - crypto.observed_at
+                ).total_seconds(),
+            )
             uncertainty_source = "held_out"
             calibration_profile_id = calibration_profile.profile_id
         lower_probability = max(0.0, final_probability - uncertainty_margin)
@@ -212,10 +310,23 @@ class CryptoThresholdEngine:
             uncertainty_margin=uncertainty_margin,
             uncertainty_source=uncertainty_source,
             calibration_profile_id=calibration_profile_id,
+            recipe_id=self.recipe_id(crypto),
+            input_manifest={
+                "market": market.model_dump(mode="json"),
+                "crypto": crypto.model_dump(mode="json"),
+                "contract": contract.model_dump(mode="json"),
+                "engine_config": self.config.model_dump(mode="json"),
+                "recipe": self.recipe(crypto),
+                "calibration_profile": (
+                    calibration_profile.model_dump(mode="json")
+                    if calibration_profile is not None
+                    else None
+                ),
+            },
             supporting_evidence=tuple(supporting),
             opposing_evidence=tuple(opposing),
         )
-        opportunity = self._recommend(market, forecast, crypto)
+        opportunity = self._recommend(market, forecast)
         return forecast, opportunity
 
     def _structural_probability(
@@ -224,35 +335,55 @@ class CryptoThresholdEngine:
         crypto: CryptoSnapshot,
         contract: CryptoPriceContract,
     ) -> float:
-        time_to_expiry = (market.expires_at - market.observed_at).total_seconds()
-        years = max(time_to_expiry / _SECONDS_PER_YEAR, _EPSILON)
-        sigma = crypto.annualized_volatility
-        if isinstance(contract, TerminalRangeContract):
-            probability_above = (
-                self._terminal_above_probability
-                if contract.settlement_window_seconds == 0
-                else lambda snapshot, strike, horizon: self._averaged_terminal_above_probability(
-                    snapshot,
-                    strike,
-                    horizon,
-                    contract.settlement_window_seconds,
+        age = (market.observed_at - crypto.observed_at).total_seconds()
+        if age < 0:
+            raise ValueError("crypto input is from the future")
+        if age > self.config.maximum_input_age_seconds:
+            raise ValueError("crypto input is stale at evaluation")
+        spot_end = crypto.input_provenance.get("spot_end_at")
+        if spot_end is not None and datetime.fromisoformat(spot_end) != crypto.observed_at:
+            # Research-derived snapshots must be observed at their spot candle boundary;
+            # the full context is re-validated by callers and at delivery authorization.
+            raise ValueError("crypto input does not match its research provenance")
+        if market.venue.casefold() == "kalshi" and market.observation_end_at is None:
+            raise ValueError("Kalshi evaluation requires explicit observation provenance")
+        observation_end = market.effective_observation_end_at
+        if observation_end <= market.observed_at:
+            raise ValueError("benchmark observation has already ended")
+        if contract.settlement_window_seconds:
+            window_start = observation_end - timedelta(seconds=contract.settlement_window_seconds)
+            if market.observed_at > window_start:
+                raise ValueError(
+                    "averaging window has already started; observed prefix is required"
                 )
-            )
-            lower_cdf = 1.0 - probability_above(
-                crypto,
-                contract.lower_bound,
-                years,
-            )
-            upper_cdf = 1.0 - probability_above(
-                crypto,
-                contract.upper_bound,
-                years,
-            )
+            if market.observation_start_at not in (None, window_start):
+                raise ValueError("observation start does not match averaging window")
+        time_to_observation = (observation_end - crypto.observed_at).total_seconds()
+        years = time_to_observation / _SECONDS_PER_YEAR
+        sigma = crypto.annualized_volatility
+
+        def probability_above(strike: float) -> float:
+            if contract.settlement_window_seconds:
+                return self._averaged_terminal_above_probability(
+                    crypto, strike, years, contract.settlement_window_seconds
+                )
+            return self._terminal_above_probability(crypto, strike, years)
+
+        if isinstance(contract, TerminalRangeContract):
+            lower_cdf = 1.0 - probability_above(contract.lower_bound)
+            upper_cdf = 1.0 - probability_above(contract.upper_bound)
             return _clamp_probability(max(upper_cdf - lower_cdf, 0.0))
 
         if not math.isclose(crypto.strike_price, contract.strike_price):
             raise ValueError("crypto snapshot strike does not match threshold contract")
         if contract.model_kind is ThresholdModelKind.BARRIER:
+            if contract.settlement_window_seconds:
+                raise ValueError("touch barriers cannot use terminal settlement averaging")
+            # A spot quote is not evidence that a barrier was never crossed earlier.
+            # Without a benchmark path source, only the exact contractual start is
+            # modelable. Unknown or elapsed prefixes remain unsupported.
+            if market.observation_start_at != crypto.observed_at:
+                raise ValueError("touch history unavailable for the contractual observation period")
             probability = barrier_hitting_probability(
                 spot_price=crypto.spot_price,
                 strike_price=contract.strike_price,
@@ -263,11 +394,7 @@ class CryptoThresholdEngine:
             )
             return _clamp_probability(probability)
 
-        above_probability = self._terminal_above_probability(
-            crypto,
-            contract.strike_price,
-            years,
-        )
+        above_probability = probability_above(contract.strike_price)
         probability = (
             above_probability
             if contract.direction is ThresholdDirection.ABOVE
@@ -295,27 +422,28 @@ class CryptoThresholdEngine:
         years: float,
         window_seconds: int,
     ) -> float:
-        sample_count = min(window_seconds, 60)
-        window_years = min(window_seconds / _SECONDS_PER_YEAR, years)
-        step = window_years / sample_count
-        sample_times = [
-            years - window_years + (index + 0.5) * step for index in range(sample_count)
-        ]
+        if window_seconds <= 0 or years < window_seconds / _SECONDS_PER_YEAR:
+            raise ValueError("full future averaging window is required")
+        # Exact first two moments of the arithmetic mean of one price per second
+        # in [end - window, end). GBM cov(S_t,S_u) = E[S_t]E[S_u]expm1(sigma²min(t,u)).
+        # The subsequent lognormal moment match approximates the distribution, not
+        # its moments. Prefix sums exploit ordered sample times for linear work.
         drift = crypto.expected_annual_return
         variance = crypto.annualized_volatility**2
-        first_moment = (
-            sum(crypto.spot_price * math.exp(drift * time) for time in sample_times) / sample_count
-        )
-        second_moment = (
-            sum(
-                crypto.spot_price**2
-                * math.exp(drift * (first + second) + variance * min(first, second))
-                for first in sample_times
-                for second in sample_times
-            )
-            / sample_count**2
-        )
-        log_variance = max(math.log(second_moment / first_moment**2), _EPSILON**2)
+        total_weight = 0.0
+        prefix_covariance = 0.0
+        covariance_sum = 0.0
+        for index in range(window_seconds):
+            time = years - (window_seconds - index) / _SECONDS_PER_YEAR
+            weight = math.exp(drift * time)
+            covariance_factor = math.expm1(variance * time)
+            covariance_sum += weight * weight * covariance_factor + 2 * weight * prefix_covariance
+            prefix_covariance += weight * covariance_factor
+            total_weight += weight
+        first_moment = crypto.spot_price * total_weight / window_seconds
+        log_variance = math.log1p(covariance_sum / total_weight**2)
+        if log_variance == 0.0:
+            return float(first_moment > strike_price)
         log_mean = math.log(first_moment) - 0.5 * log_variance
         z_score = (log_mean - math.log(strike_price)) / math.sqrt(log_variance)
         return _normal_cdf(z_score)
@@ -423,11 +551,42 @@ class CryptoThresholdEngine:
             conservative_net_edge=edge,
         )
 
+    def all_in_cost(self, ask: float, units: float, *, round_fee: bool) -> float:
+        """Maximum modeled spend, including configured slippage and rounded taker fees."""
+        price = Decimal(str(ask))
+        quantity = Decimal(str(units))
+        coefficient = Decimal(str(self.config.binary_fee_coefficient))
+        fee = quantity * coefficient
+        if self.config.binary_fee_type != "flat":
+            fee *= price * (1 - price)
+        if round_fee:
+            fee = fee.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        multiplier = (
+            1 + Decimal(str(self.config.fee_rate)) + Decimal(str(self.config.slippage_bps)) / 10_000
+        )
+        return float(quantity * price * multiplier + fee)
+
+    def exposure_for_budget(
+        self, ask: float, ask_size: float, budget: float, *, whole_contracts: bool
+    ) -> float:
+        if budget <= 0 or ask_size <= 0:
+            return 0.0
+        if not whole_contracts:
+            cap = min(budget, self.all_in_cost(ask, ask_size, round_fee=False))
+            return float(Decimal(str(cap)).quantize(Decimal("0.01"), rounding="ROUND_FLOOR"))
+        lower, upper = 0, math.floor(ask_size)
+        while lower < upper:
+            middle = (lower + upper + 1) // 2
+            if self.all_in_cost(ask, middle, round_fee=True) <= budget:
+                lower = middle
+            else:
+                upper = middle - 1
+        return self.all_in_cost(ask, lower, round_fee=True)
+
     def _recommend(
         self,
         market: MarketSnapshot,
         forecast: ProbabilityForecast,
-        crypto: CryptoSnapshot,
     ) -> Opportunity:
         candidates: list[_Candidate] = []
         if market.yes_ask is not None and market.yes_ask_size is not None:
@@ -448,6 +607,20 @@ class CryptoThresholdEngine:
                     1.0 - forecast.upper_probability_yes,
                 )
             )
+        whole_contracts = market.venue.casefold() == "kalshi"
+        if whole_contracts:
+            candidates = [
+                replace(
+                    candidate,
+                    effective_cost=self.all_in_cost(candidate.ask, 1, round_fee=True),
+                    conservative_net_edge=(
+                        candidate.conservative_probability
+                        - self.all_in_cost(candidate.ask, 1, round_fee=True)
+                        - self.config.resolution_haircut
+                    ),
+                )
+                for candidate in candidates
+            ]
         if not candidates:
             raise ValueError("no executable side is available")
         best = max(candidates, key=lambda candidate: candidate.conservative_net_edge)
@@ -460,8 +633,6 @@ class CryptoThresholdEngine:
             )
         ]
 
-        if abs(market.observed_at - crypto.observed_at) > timedelta(minutes=1):
-            warnings.append("Market and crypto observations are more than one minute apart.")
         if (
             market.yes_ask is not None
             and market.no_ask is not None
@@ -475,9 +646,13 @@ class CryptoThresholdEngine:
         ):
             warnings.append("Complementary bids appear incoherent; verify quote freshness.")
 
-        seconds_to_expiry = (market.expires_at - market.observed_at).total_seconds()
-        enough_time = seconds_to_expiry >= self.config.minimum_seconds_to_expiry
-        enough_liquidity = best.ask_size >= self.config.minimum_ask_size
+        enough_time = (
+            remaining_seconds_to_entry_horizon(market, market.observed_at)
+            >= self.config.minimum_seconds_to_expiry
+        )
+        enough_liquidity = best.ask_size >= max(
+            self.config.minimum_ask_size, 1.0 if whole_contracts else 0.0
+        )
         cost_is_valid = best.effective_cost < 1.0
         edge_is_large_enough = best.conservative_net_edge >= self.config.min_conservative_edge
 
@@ -501,7 +676,10 @@ class CryptoThresholdEngine:
                 if best.side is MarketSide.YES
                 else RecommendationState.ENTER_NO
             )
-            exposure = self._suggested_exposure(best)
+            exposure = self._suggested_exposure(best, whole_contracts=whole_contracts)
+            if exposure <= 0:
+                state = RecommendationState.WATCH
+                warnings.append("Risk budget cannot fund an executable contract.")
         else:
             state = RecommendationState.WATCH
             exposure = 0.0
@@ -519,16 +697,18 @@ class CryptoThresholdEngine:
             warnings=tuple(warnings),
         )
 
-    def _suggested_exposure(self, candidate: _Candidate) -> float:
+    def _suggested_exposure(self, candidate: _Candidate, *, whole_contracts: bool) -> float:
         denominator = max(1.0 - candidate.effective_cost, _EPSILON)
         full_kelly_fraction = max(
             0.0,
-            (candidate.conservative_probability - candidate.effective_cost) / denominator,
+            candidate.conservative_net_edge / denominator,
         )
         bankroll_fraction = min(
             self.config.fractional_kelly * full_kelly_fraction,
             self.config.max_bankroll_fraction,
+            self.config.max_event_bankroll_fraction,
         )
         bankroll_cap = self.config.paper_bankroll * bankroll_fraction
-        displayed_liquidity_cap = candidate.ask_size * candidate.ask
-        return round(min(bankroll_cap, displayed_liquidity_cap), 2)
+        return self.exposure_for_budget(
+            candidate.ask, candidate.ask_size, bankroll_cap, whole_contracts=whole_contracts
+        )

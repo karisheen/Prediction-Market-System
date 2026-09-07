@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,29 @@ from uuid import UUID
 from prediction_market_system.backtest import BacktestResult, HistoricalMarketData
 from prediction_market_system.calibration import UncertaintyCalibrationProfile
 from prediction_market_system.domain import MarketRegimeSnapshot, Opportunity, ProbabilityForecast
+from prediction_market_system.engine import deployment_policy_id
+from prediction_market_system.evidence import (
+    EVIDENCE_SCHEMA,
+    EvidenceRepositoryMixin,
+    canonical_json,
+    content_id,
+    load_input_object,
+    save_ledger_evaluation,
+    save_manifest,
+    save_research_context,
+    save_venue_revision,
+)
+from prediction_market_system.operations import backup_database
+from prediction_market_system.recipe import MODEL_VERSION
+from prediction_market_system.redaction import redact_payload, redact_secrets
+from prediction_market_system.research import (
+    ResearchContext,
+    ResearchDataUnavailable,
+    calculate_realized_volatility,
+    research_payload_hash,
+)
 from prediction_market_system.research_storage import RESEARCH_SCHEMA, ResearchRepositoryMixin
+from prediction_market_system.validation import campaign_matches_backtest
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
     KalshiCandlestick,
@@ -26,6 +48,9 @@ class AlertStatus(StrEnum):
     QUEUED = "queued"
     DELIVERED = "delivered"
     FAILED = "failed"
+    SENDING = "sending"
+    UNCERTAIN = "uncertain"
+    REJECTED = "rejected"
 
 
 class MarketCheckStatus(StrEnum):
@@ -43,6 +68,18 @@ class AlertRecord:
     opportunity_id: str
     status: AlertStatus
     discord_message_id: str | None
+
+
+@dataclass(frozen=True)
+class UnresolvedAlertAttempt:
+    """A remote delivery whose outcome is not known; blocks further sends for the market."""
+
+    opportunity_id: str
+    market_id: str
+    status: AlertStatus
+    attempts: int
+    error: str | None
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -86,7 +123,7 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-class SQLiteRepository(ResearchRepositoryMixin):
+class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
     """Append-oriented forecast, alert, and venue-history audit storage."""
 
     def __init__(self, database_path: Path | str) -> None:
@@ -94,6 +131,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._backup_before_v2_migration()
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -359,7 +397,36 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 """
             )
             connection.executescript(RESEARCH_SCHEMA)
+            connection.executescript(EVIDENCE_SCHEMA)
             self._apply_migrations(connection)
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
+                ("v2_evidence_foundation", _utc_now()),
+            )
+
+    def _backup_before_v2_migration(self) -> None:
+        if not self.database_path.exists() or self.database_path.stat().st_size == 0:
+            return
+        uri = self.database_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            has_schema = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='schema_migrations'"
+            ).fetchone()
+            if (
+                has_schema is not None
+                and connection.execute(
+                    "SELECT 1 FROM schema_migrations WHERE migration_name='v2_evidence_foundation'"
+                ).fetchone()
+                is not None
+            ):
+                return
+        destination = (
+            self.database_path.parent
+            / "backups"
+            / (f"{self.database_path.stem}-pre-v2-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}.sqlite3")
+        )
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        backup_database(self.database_path, destination)
 
     @staticmethod
     def _apply_migrations(connection: sqlite3.Connection) -> None:
@@ -400,13 +467,54 @@ class SQLiteRepository(ResearchRepositoryMixin):
             connection.rollback()
             raise
 
+    def save_research_context(self, context: ResearchContext) -> str:
+        """Persist the exact research context once; forecasts reference it by content ID."""
+        with self._connect() as connection:
+            return save_research_context(connection, context)
+
+    def research_context_by_id(self, research_context_id: str) -> ResearchContext | None:
+        """Rehydrate a persisted context and re-derive its realized volatility from the store.
+
+        The realized observation carries only a digest of its source candle revisions, so
+        the immutable point-in-time spot history must reproduce it exactly. Missing or
+        revised history fails closed instead of trusting the recorded number.
+        """
+        with self._connect() as connection:
+            payload = load_input_object(connection, research_context_id)
+        if payload is None:
+            return None
+        context = ResearchContext.model_validate(payload)
+        if context.content_id() != research_context_id:
+            raise ValueError("persisted research context does not match its identity")
+        realized = context.realized_volatility
+        candles = self.spot_candles_as_of(
+            symbol=context.symbol,
+            as_of=context.as_of,
+            interval_seconds=int(realized.raw_payload["interval_seconds"]),
+            window_seconds=realized.window_seconds,
+        )
+        reproduced = calculate_realized_volatility(
+            candles,
+            symbol=context.symbol,
+            as_of=context.as_of,
+            window_seconds=realized.window_seconds,
+        )
+        if research_payload_hash(reproduced) != research_payload_hash(realized):
+            raise ResearchDataUnavailable(
+                "stored spot history does not reproduce the recorded realized volatility"
+            )
+        return context
+
     def save_evaluation(
         self,
         forecast: ProbabilityForecast,
         opportunity: Opportunity,
+        *,
+        ledger_kind: str | None = None,
     ) -> None:
         created_at = forecast.generated_at.isoformat()
         with self._connect() as connection:
+            save_ledger_evaluation(connection, forecast, opportunity, ledger_kind=ledger_kind)
             connection.execute(
                 """
                 INSERT OR IGNORE INTO forecasts (
@@ -498,8 +606,8 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     event_ticker,
                     observed_at.isoformat(),
                     status.value,
-                    None if reason is None else reason[:1_000],
-                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    None if reason is None else redact_secrets(reason)[:1_000],
+                    canonical_json(redact_payload(payload)),
                 ),
             )
 
@@ -904,6 +1012,14 @@ class SQLiteRepository(ResearchRepositoryMixin):
         }
         with self._connect() as connection:
             for market in markets:
+                save_venue_revision(
+                    connection,
+                    kind="market",
+                    source_key=market.ticker,
+                    series_ticker=series_ticker,
+                    available_at=observed_at,
+                    payload=market.model_dump(mode="json"),
+                )
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO kalshi_market_snapshots (
@@ -964,6 +1080,14 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     inserted["resolutions"] += cursor.rowcount
 
                 for candle in candlesticks.get(market.ticker, []):
+                    save_venue_revision(
+                        connection,
+                        kind="candle",
+                        source_key=f"{market.ticker}:{period_interval}:{candle.end_period_ts}",
+                        series_ticker=series_ticker,
+                        available_at=observed_at,
+                        payload=candle.model_dump(mode="json"),
+                    )
                     cursor = connection.execute(
                         """
                         INSERT OR IGNORE INTO kalshi_candlesticks (
@@ -983,6 +1107,14 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     inserted["candlesticks"] += cursor.rowcount
 
             for change in series_fee_changes:
+                save_venue_revision(
+                    connection,
+                    kind="series_fee",
+                    source_key=change.id,
+                    series_ticker=series_ticker,
+                    available_at=observed_at,
+                    payload=change.model_dump(mode="json"),
+                )
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO kalshi_series_fee_changes (
@@ -1003,6 +1135,14 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 inserted["series_fee_changes"] += cursor.rowcount
 
             for event_change in event_fee_changes:
+                save_venue_revision(
+                    connection,
+                    kind="event_fee",
+                    source_key=event_change.id,
+                    series_ticker=series_ticker,
+                    available_at=observed_at,
+                    payload=event_change.model_dump(mode="json"),
+                )
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO kalshi_event_fee_changes (
@@ -1040,7 +1180,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 WITH ranked_snapshots AS (
                     SELECT series_ticker, event_ticker, ticker, close_time, payload_json,
                            ROW_NUMBER() OVER (
-                               PARTITION BY ticker ORDER BY observed_at DESC
+                               PARTITION BY ticker ORDER BY observed_at ASC
                            ) AS snapshot_rank
                     FROM kalshi_market_snapshots
                     WHERE series_ticker = ? AND close_time >= ? AND close_time <= ?
@@ -1072,7 +1212,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
             ).fetchall()
             series_fee_rows = connection.execute(
                 """
-                SELECT payload_json
+                SELECT retrieved_at AS available_at, payload_json
                 FROM kalshi_series_fee_changes
                 WHERE series_ticker = ?
                 ORDER BY scheduled_at ASC
@@ -1081,21 +1221,47 @@ class SQLiteRepository(ResearchRepositoryMixin):
             ).fetchall()
             event_fee_rows = connection.execute(
                 """
-                SELECT payload_json
+                SELECT retrieved_at AS available_at, payload_json
                 FROM kalshi_event_fee_changes
                 WHERE series_ticker = ?
                 ORDER BY scheduled_at ASC
                 """,
                 (series_ticker.upper(),),
             ).fetchall()
+            series_fee_rows = [
+                *series_fee_rows,
+                *connection.execute(
+                    "SELECT available_at,payload_json FROM venue_revision_history "
+                    "WHERE series_ticker=? AND kind='series_fee' ORDER BY available_at",
+                    (series_ticker.upper(),),
+                ).fetchall(),
+            ]
+            event_fee_rows = [
+                *event_fee_rows,
+                *connection.execute(
+                    "SELECT available_at,payload_json FROM venue_revision_history "
+                    "WHERE series_ticker=? AND kind='event_fee' ORDER BY available_at",
+                    (series_ticker.upper(),),
+                ).fetchall(),
+            ]
 
             series_fees = tuple(
-                KalshiSeriesFeeChange.model_validate_json(str(row["payload_json"]))
-                for row in series_fee_rows
+                {
+                    change.id: change
+                    for change in (
+                        KalshiSeriesFeeChange.model_validate_json(str(item["payload_json"]))
+                        for item in sorted(series_fee_rows, key=lambda value: value["available_at"])
+                    )
+                }.values()
             )
             event_fees = tuple(
-                KalshiEventFeeChange.model_validate_json(str(row["payload_json"]))
-                for row in event_fee_rows
+                {
+                    change.id: change
+                    for change in (
+                        KalshiEventFeeChange.model_validate_json(str(item["payload_json"]))
+                        for item in sorted(event_fee_rows, key=lambda value: value["available_at"])
+                    )
+                }.values()
             )
             markets: list[HistoricalMarketData] = []
             for row in market_rows:
@@ -1105,7 +1271,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 resolution = connection.execute(
                     """
                     SELECT result, settlement_value_dollars, settlement_ts,
-                           expiration_value
+                           expiration_value, observed_at
                     FROM kalshi_resolutions
                     WHERE ticker = ?
                     ORDER BY observed_at DESC
@@ -1113,7 +1279,14 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     """,
                     (market.ticker,),
                 ).fetchone()
+                outcome_available_at = None
                 if resolution is not None:
+                    outcome_available_at = datetime.fromisoformat(str(resolution["observed_at"]))
+                    if resolution["settlement_ts"] is not None:
+                        outcome_available_at = max(
+                            outcome_available_at,
+                            datetime.fromisoformat(str(resolution["settlement_ts"])),
+                        )
                     payload = market.model_dump()
                     payload.update(
                         {
@@ -1127,7 +1300,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
 
                 candle_rows = connection.execute(
                     """
-                    SELECT payload_json
+                    SELECT retrieved_at AS available_at, payload_json
                     FROM kalshi_candlesticks
                     WHERE ticker = ? AND period_interval_minutes = ?
                       AND end_period_ts >= ? AND end_period_ts <= ?
@@ -1137,16 +1310,69 @@ class SQLiteRepository(ResearchRepositoryMixin):
                         market.ticker,
                         period_interval,
                         int(start.timestamp()),
-                        int(market.expiry.timestamp()),
+                        int(market.close_time.timestamp()),
                     ),
                 ).fetchall()
+                candle_prefix = f"{market.ticker}:{period_interval}:"
+                candle_rows = [
+                    *candle_rows,
+                    *connection.execute(
+                        "SELECT available_at,payload_json FROM venue_revision_history "
+                        "WHERE kind='candle' AND substr(source_key,1,?)=? ORDER BY available_at",
+                        (len(candle_prefix), candle_prefix),
+                    ).fetchall(),
+                ]
+                metadata_rows = connection.execute(
+                    "SELECT observed_at AS available_at,payload_json "
+                    "FROM kalshi_market_snapshots WHERE ticker=? "
+                    "UNION SELECT available_at,payload_json FROM venue_revision_history "
+                    "WHERE kind='market' AND source_key=? ORDER BY available_at",
+                    (market.ticker, market.ticker),
+                ).fetchall()
+                metadata = tuple(
+                    (
+                        datetime.fromisoformat(str(item["available_at"])),
+                        KalshiMarket.model_validate_json(str(item["payload_json"])),
+                    )
+                    for item in metadata_rows
+                )
+                candle_revisions = tuple(
+                    (
+                        datetime.fromisoformat(str(item["available_at"])),
+                        KalshiCandlestick.model_validate_json(str(item["payload_json"])),
+                    )
+                    for item in candle_rows
+                )
+                latest_candles = {
+                    item.end_period_ts: item
+                    for _, item in sorted(candle_revisions, key=lambda revision: revision[0])
+                }
                 markets.append(
                     HistoricalMarketData(
                         series_ticker=str(row["series_ticker"]),
                         market=market,
-                        candlesticks=tuple(
-                            KalshiCandlestick.model_validate_json(str(candle["payload_json"]))
-                            for candle in candle_rows
+                        metadata_observed_at=metadata[0][0] if metadata else None,
+                        metadata_snapshots=metadata,
+                        outcome_available_at=outcome_available_at,
+                        candlesticks=tuple(latest_candles[key] for key in sorted(latest_candles)),
+                        candlestick_revisions=candle_revisions,
+                        series_fee_revisions=tuple(
+                            (
+                                datetime.fromisoformat(str(item["available_at"])),
+                                KalshiSeriesFeeChange.model_validate_json(
+                                    str(item["payload_json"])
+                                ),
+                            )
+                            for item in series_fee_rows
+                        ),
+                        event_fee_revisions=tuple(
+                            (
+                                datetime.fromisoformat(str(item["available_at"])),
+                                KalshiEventFeeChange.model_validate_json(str(item["payload_json"])),
+                            )
+                            for item in event_fee_rows
+                            if json.loads(str(item["payload_json"]))["event_ticker"]
+                            == market.event_ticker
                         ),
                         series_fee_changes=series_fees,
                         event_fee_changes=tuple(
@@ -1158,8 +1384,110 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 )
         return tuple(markets)
 
-    def save_backtest_result(self, result: BacktestResult) -> None:
+    def save_backtest_result(
+        self, result: BacktestResult, *, campaign_id: str | None = None
+    ) -> BacktestResult:
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                "SELECT result_json FROM backtest_runs WHERE run_id=?", (str(result.run_id),)
+            ).fetchone()
+            if previous is not None:
+                if str(previous[0]) != result.model_dump_json():
+                    raise ValueError("backtest result is immutable; use a new run ID")
+                return result
+            population = tuple(item for fold in result.folds for item in fold.forecasts)
+            consumed = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT DISTINCT event_id FROM holdout_usage WHERE series_ticker=?",
+                    (result.config.series_ticker,),
+                ).fetchall()
+            }
+            reused = {item.event_ticker for item in population} & consumed
+            if reused:
+                result = result.model_copy(
+                    update={
+                        "model_validations": tuple(
+                            item.model_copy(
+                                update={
+                                    "accepted_for_paper_alerts": False,
+                                    "rejection_reasons": (
+                                        *item.rejection_reasons,
+                                        f"holdout already consumed: {len(reused)} events; "
+                                        "descriptive rerun only",
+                                    ),
+                                }
+                            )
+                            for item in result.model_validations
+                        ),
+                    }
+                )
+            policy_id = (
+                None if result.engine_config is None else deployment_policy_id(result.engine_config)
+            )
+            if campaign_id is not None:
+                if result.engine_config is None:
+                    raise ValueError("campaign backtests require the engine configuration")
+                registration = connection.execute(
+                    """SELECT series_ticker, symbol, superseded_at, configuration_json
+                       FROM validation_campaign_registrations WHERE campaign_id=?""",
+                    (campaign_id,),
+                ).fetchone()
+                if registration is None:
+                    raise ValueError("validation campaign is not registered")
+                if registration["superseded_at"] is not None:
+                    raise ValueError("validation campaign is no longer active")
+                if (
+                    str(registration["series_ticker"]) != result.config.series_ticker
+                    or str(registration["symbol"]) != result.config.symbol
+                ):
+                    raise ValueError("validation campaign does not match this backtest series")
+                if not campaign_matches_backtest(
+                    json.loads(str(registration["configuration_json"])),
+                    config=result.config,
+                    engine=result.engine_config,
+                ):
+                    raise ValueError("backtest does not match the frozen validation campaign")
+                result = result.model_copy(
+                    update={
+                        "model_validations": tuple(
+                            item.model_copy(
+                                update={
+                                    "campaign_id": campaign_id,
+                                    "deployment_policy_id": policy_id,
+                                }
+                            )
+                            for item in result.model_validations
+                        )
+                    }
+                )
+            save_manifest(
+                connection,
+                run_id=str(result.run_id),
+                kind="walk-forward",
+                recorded_at=result.generated_at,
+                configuration={
+                    "backtest": result.config.model_dump(mode="json"),
+                    "engine": None
+                    if result.engine_config is None
+                    else result.engine_config.model_dump(mode="json"),
+                    "campaign_id": campaign_id,
+                    "deployment_policy_id": policy_id,
+                },
+                inputs=result.input_manifest,
+            )
+            for item in population:
+                connection.execute(
+                    "INSERT OR IGNORE INTO holdout_usage VALUES (?, ?, ?, ?, ?)",
+                    (
+                        str(result.run_id),
+                        result.config.series_ticker,
+                        item.event_ticker,
+                        item.recipe_id or "legacy",
+                        item.observed_at.isoformat(),
+                    ),
+                )
             connection.execute(
                 """
                 INSERT INTO backtest_runs (
@@ -1182,6 +1510,15 @@ class SQLiteRepository(ResearchRepositoryMixin):
                 *result.deployment_profiles,
             )
             for profile in profiles:
+                previous_profile = connection.execute(
+                    "SELECT payload_json FROM uncertainty_calibrations WHERE profile_id=?",
+                    (str(profile.profile_id),),
+                ).fetchone()
+                if (
+                    previous_profile is not None
+                    and str(previous_profile[0]) != profile.model_dump_json()
+                ):
+                    raise ValueError("calibration profile ID cannot overwrite existing evidence")
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO uncertainty_calibrations (
@@ -1202,15 +1539,16 @@ class SQLiteRepository(ResearchRepositoryMixin):
             for validation in result.model_validations:
                 connection.execute(
                     """
-                    INSERT INTO paper_model_validations (
-                        run_id, model_name, model_version, calibration_profile_id,
+                    INSERT INTO paper_model_validations_v2 (
+                        run_id, model_name, model_version, recipe_id, calibration_profile_id,
                         accepted, generated_at, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(result.run_id),
                         validation.model_name,
                         validation.model_version,
+                        validation.recipe_id or "legacy",
                         (
                             None
                             if validation.calibration_profile_id is None
@@ -1221,6 +1559,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                         validation.model_dump_json(),
                     ),
                 )
+        return result
 
     def latest_uncertainty_calibration(
         self,
@@ -1229,36 +1568,94 @@ class SQLiteRepository(ResearchRepositoryMixin):
         model_name: str,
         model_version: str,
         as_of: datetime,
+        recipe_id: str | None = None,
     ) -> UncertaintyCalibrationProfile | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT payload_json
-                FROM uncertainty_calibrations
-                WHERE symbol = ? AND model_name = ? AND model_version = ?
-                  AND cutoff_at <= ?
-                ORDER BY cutoff_at DESC, generated_at DESC
-                LIMIT 1
-                """,
-                (symbol.upper(), model_name, model_version, as_of.isoformat()),
-            ).fetchone()
-        if row is None:
+        if recipe_id is None:
             return None
-        return UncertaintyCalibrationProfile.model_validate_json(str(row["payload_json"]))
-
-    def is_calibration_approved(self, profile_id: UUID) -> bool:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT accepted
-                FROM paper_model_validations
-                WHERE calibration_profile_id = ?
-                ORDER BY generated_at DESC
-                LIMIT 1
+                SELECT payload_json FROM uncertainty_calibrations
+                WHERE symbol=? AND model_name=? AND model_version=?
+                  AND cutoff_at<=? AND generated_at<=?
+                  AND json_extract(payload_json,'$.recipe_id')=?
+                  AND json_extract(payload_json,'$.research_only')=0
+                ORDER BY cutoff_at DESC, generated_at DESC LIMIT 1
                 """,
+                (
+                    symbol.upper(),
+                    model_name,
+                    model_version,
+                    as_of.isoformat(),
+                    as_of.isoformat(),
+                    recipe_id,
+                ),
+            ).fetchone()
+        return (
+            None
+            if row is None
+            else UncertaintyCalibrationProfile.model_validate_json(str(row["payload_json"]))
+        )
+
+    def uncertainty_calibration(self, profile_id: UUID) -> UncertaintyCalibrationProfile | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM uncertainty_calibrations WHERE profile_id=?",
                 (str(profile_id),),
             ).fetchone()
-        return row is not None and bool(row["accepted"])
+        return (
+            None
+            if row is None
+            else UncertaintyCalibrationProfile.model_validate_json(str(row["payload_json"]))
+        )
+
+    def is_calibration_approved(
+        self,
+        profile_id: UUID,
+        *,
+        as_of: datetime | None = None,
+        deployment_policy_id: str | None = None,
+    ) -> bool:
+        """True only for currently active frozen-campaign evidence under this policy.
+
+        ``accepted_for_paper_alerts`` remains the research-gate result. Deployability
+        additionally requires an active campaign identity and a matching operational
+        policy fingerprint. Missing campaign or policy metadata fails closed.
+        """
+        if not deployment_policy_id:
+            return False
+        boundary = as_of or datetime.now(UTC)
+        profile = self.uncertainty_calibration(profile_id)
+        if profile is None or profile.recipe_id is None or profile.research_only:
+            return False
+        if (
+            profile.model_version != MODEL_VERSION
+            or max(profile.generated_at, profile.cutoff_at) > boundary
+        ):
+            return False
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT v.accepted, v.payload_json, b.config_json
+                   FROM paper_model_validations_v2 v
+                   JOIN backtest_runs b USING(run_id)
+                   WHERE v.calibration_profile_id=? AND v.generated_at<=?
+                   ORDER BY v.generated_at DESC LIMIT 1""",
+                (str(profile_id), boundary.isoformat()),
+            ).fetchone()
+        if (
+            row is None
+            or not bool(row["accepted"])
+            or json.loads(str(row["config_json"])).get("require_calibration") is not True
+        ):
+            return False
+        payload = json.loads(str(row["payload_json"]))
+        campaign_id = payload.get("campaign_id")
+        stored_policy = payload.get("deployment_policy_id")
+        if not isinstance(campaign_id, str) or not campaign_id:
+            return False
+        if not isinstance(stored_policy, str) or stored_policy != deployment_policy_id:
+            return False
+        return self.campaign_is_active(campaign_id)
 
     def validation_archive_succeeded(
         self,
@@ -1272,7 +1669,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT status
+                SELECT status, json_extract(counts_json,'$.coverage_complete') AS complete
                 FROM paper_validation_archive_runs
                 WHERE series_ticker = ? AND symbol = ?
                   AND start_at = ? AND end_at = ?
@@ -1286,7 +1683,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     period_interval,
                 ),
             ).fetchone()
-        return row is not None and str(row["status"]) == "succeeded"
+        return row is not None and str(row["status"]) == "succeeded" and row["complete"] == 1
 
     def begin_validation_archive(
         self,
@@ -1350,7 +1747,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     "failed" if error is not None else "succeeded",
                     _utc_now(),
                     None if counts is None else json.dumps(counts, sort_keys=True),
-                    error,
+                    None if error is None else redact_secrets(error),
                     series_ticker.upper(),
                     symbol.upper(),
                     start_at.isoformat(),
@@ -1368,27 +1765,29 @@ class SQLiteRepository(ResearchRepositoryMixin):
         campaign_start: datetime,
     ) -> tuple[int, datetime]:
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS archived_days, MAX(end_at) AS coverage_end
-                FROM paper_validation_archive_runs
-                WHERE series_ticker = ? AND symbol = ?
-                  AND period_interval_minutes = ?
-                  AND start_at >= ? AND status = 'succeeded'
-                  AND CAST(json_extract(counts_json, '$.candlesticks') AS INTEGER) > 0
-                """,
+            rows = connection.execute(
+                """SELECT start_at,end_at FROM paper_validation_archive_runs
+                   WHERE series_ticker=? AND symbol=? AND period_interval_minutes=?
+                     AND start_at>=? AND status='succeeded'
+                     AND json_extract(counts_json,'$.coverage_complete')=1
+                   ORDER BY start_at""",
                 (
                     series_ticker.upper(),
                     symbol.upper(),
                     period_interval,
                     campaign_start.isoformat(),
                 ),
-            ).fetchone()
-        archived_days = 0 if row is None else int(row["archived_days"])
+            ).fetchall()
         coverage_end = campaign_start
-        if row is not None and row["coverage_end"] is not None:
-            coverage_end = datetime.fromisoformat(str(row["coverage_end"]))
-        return archived_days, coverage_end
+        count = 0
+        for row in rows:
+            start_at = datetime.fromisoformat(str(row["start_at"]))
+            end_at = datetime.fromisoformat(str(row["end_at"]))
+            if start_at != coverage_end or end_at - start_at != timedelta(days=1):
+                break
+            count += 1
+            coverage_end = end_at
+        return count, coverage_end
 
     def validation_campaign_message_id(
         self,
@@ -1419,6 +1818,18 @@ class SQLiteRepository(ResearchRepositoryMixin):
         discord_message_id: str | None,
     ) -> None:
         with self._connect() as connection:
+            report_payload = canonical_json(redact_payload(payload))
+            report_id = content_id(
+                {
+                    "series": series_ticker.upper(),
+                    "symbol": symbol.upper(),
+                    "payload": payload,
+                }
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO campaign_history VALUES (?, ?, ?, ?, ?)",
+                (report_id, series_ticker.upper(), symbol.upper(), _utc_now(), report_payload),
+            )
             connection.execute(
                 """
                 INSERT INTO paper_validation_campaigns (
@@ -1440,7 +1851,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     discord_message_id,
                     state,
                     _utc_now(),
-                    json.dumps(payload, sort_keys=True),
+                    report_payload,
                 ),
             )
 
@@ -1551,6 +1962,123 @@ class SQLiteRepository(ResearchRepositoryMixin):
             discord_message_id=row["discord_message_id"],
         )
 
+    def claim_alert_attempt(self, opportunity: Opportunity) -> None:
+        """Persist a per-market claim before network I/O; crashes remain unresolved."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            blocked = connection.execute(
+                "SELECT 1 FROM alert_events WHERE market_id=? "
+                "AND status IN ('sending','uncertain','failed') LIMIT 1",
+                (opportunity.market.market_id,),
+            ).fetchone()
+            if blocked is not None:
+                raise RuntimeError(
+                    "remote delivery outcome unresolved; manual reconciliation required"
+                )
+            cursor = connection.execute(
+                "UPDATE alert_events SET status='sending', attempts=attempts+1, updated_at=? "
+                "WHERE opportunity_id=? AND status IN ('queued','rejected')",
+                (_utc_now(), str(opportunity.opportunity_id)),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("delivery attempt already claimed or completed")
+
+    def unresolved_alert_attempts(self) -> tuple[UnresolvedAlertAttempt, ...]:
+        """Deliveries that were claimed but never confirmed sent or rejected by Discord."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT opportunity_id, market_id, status, attempts, error, updated_at "
+                "FROM alert_events WHERE status IN ('sending','uncertain','failed') "
+                "ORDER BY updated_at, opportunity_id"
+            ).fetchall()
+        return tuple(
+            UnresolvedAlertAttempt(
+                opportunity_id=str(row["opportunity_id"]),
+                market_id=str(row["market_id"]),
+                status=AlertStatus(str(row["status"])),
+                attempts=int(row["attempts"]),
+                error=None if row["error"] is None else str(row["error"]),
+                updated_at=datetime.fromisoformat(str(row["updated_at"])).astimezone(UTC),
+            )
+            for row in rows
+        )
+
+    def resolve_alert_attempt(
+        self,
+        opportunity_id: str,
+        *,
+        delivered: bool,
+        discord_message_id: str | None,
+        note: str,
+    ) -> AlertRecord:
+        """Record the operator-observed outcome of an unresolved remote delivery.
+
+        The system cannot learn the truth on its own, so the operator must state
+        what Discord shows. A delivered outcome requires the observed message ID and
+        becomes the market's update target; a not-delivered outcome returns the
+        attempt to ``rejected`` so a later cycle may claim it again. Nothing here
+        sends, edits, or deletes remote messages.
+        """
+        note = redact_secrets(note.strip())
+        if not note:
+            raise ValueError("reconciliation requires a non-empty operator note")
+        if delivered and not (discord_message_id and discord_message_id.strip()):
+            raise ValueError("a delivered reconciliation requires the observed Discord message ID")
+        if not delivered and discord_message_id:
+            raise ValueError("a not-delivered reconciliation cannot carry a message ID")
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT market_id, status FROM alert_events WHERE opportunity_id=?",
+                (opportunity_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("unknown alert opportunity")
+            if str(row["status"]) not in {"sending", "uncertain", "failed"}:
+                raise ValueError(f"alert is {row['status']}, not awaiting reconciliation")
+            status = AlertStatus.DELIVERED if delivered else AlertStatus.REJECTED
+            connection.execute(
+                "UPDATE alert_events SET status=?, discord_message_id=?, error=?, updated_at=? "
+                "WHERE opportunity_id=?",
+                (
+                    status.value,
+                    discord_message_id.strip() if discord_message_id else None,
+                    f"manual reconciliation ({now}): {note}"[:1000],
+                    now,
+                    opportunity_id,
+                ),
+            )
+            if delivered and discord_message_id:
+                connection.execute(
+                    """
+                    INSERT INTO discord_deliveries (market_id, discord_message_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(market_id) DO UPDATE SET
+                        discord_message_id = excluded.discord_message_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (str(row["market_id"]), discord_message_id.strip(), now),
+                )
+        return AlertRecord(
+            opportunity_id=opportunity_id,
+            status=status,
+            discord_message_id=discord_message_id.strip() if discord_message_id else None,
+        )
+
+    def mark_alert_outcome(self, opportunity_id: str, error: str, *, uncertain: bool) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE alert_events SET status=?, error=?, updated_at=? "
+                "WHERE opportunity_id=? AND status='sending'",
+                (
+                    AlertStatus.UNCERTAIN.value if uncertain else AlertStatus.REJECTED.value,
+                    redact_secrets(error)[:1000],
+                    _utc_now(),
+                    opportunity_id,
+                ),
+            )
+
     def get_discord_delivery(self, market_id: str) -> str | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -1573,7 +2101,7 @@ class SQLiteRepository(ResearchRepositoryMixin):
             connection.execute(
                 """
                 UPDATE alert_events
-                SET status = ?, attempts = attempts + 1,
+                SET status = ?,
                     discord_message_id = ?, error = NULL, updated_at = ?
                 WHERE opportunity_id = ?
                 """,
@@ -1594,23 +2122,6 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     updated_at = excluded.updated_at
                 """,
                 (opportunity.market.market_id, discord_message_id, now),
-            )
-
-    def mark_alert_failed(self, opportunity_id: str, error: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE alert_events
-                SET status = ?, attempts = attempts + 1,
-                    error = ?, updated_at = ?
-                WHERE opportunity_id = ?
-                """,
-                (
-                    AlertStatus.FAILED.value,
-                    error[:1_000],
-                    _utc_now(),
-                    opportunity_id,
-                ),
             )
 
     def opportunity_history(self, limit: int = 20) -> list[dict[str, Any]]:
