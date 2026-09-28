@@ -1,0 +1,690 @@
+{
+  "as_of": "2026-09-26T00:00:00+00:00",
+  "calibration": {
+    "arms": {
+      "blend": [
+        {
+          "bin": 0,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.0,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.1,
+          "weight": 0.0
+        },
+        {
+          "bin": 1,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.1,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.2,
+          "weight": 0.0
+        },
+        {
+          "bin": 2,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.2,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.3,
+          "weight": 0.0
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.4,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.5,
+          "weight": 0.0
+        },
+        {
+          "bin": 5,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.5,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.6,
+          "weight": 0.0
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ],
+      "market_yes_ask": [
+        {
+          "bin": 0,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.0,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.1,
+          "weight": 0.0
+        },
+        {
+          "bin": 1,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.1,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.2,
+          "weight": 0.0
+        },
+        {
+          "bin": 2,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.2,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.3,
+          "weight": 0.0
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.4,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.5,
+          "weight": 0.0
+        },
+        {
+          "bin": 5,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.5,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.6,
+          "weight": 0.0
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ],
+      "recorded_midpoint_anchor": [
+        {
+          "bin": 0,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.0,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.1,
+          "weight": 0.0
+        },
+        {
+          "bin": 1,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.1,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.2,
+          "weight": 0.0
+        },
+        {
+          "bin": 2,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.2,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.3,
+          "weight": 0.0
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.4,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.5,
+          "weight": 0.0
+        },
+        {
+          "bin": 5,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.5,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.6,
+          "weight": 0.0
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ],
+      "structural": [
+        {
+          "bin": 0,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.0,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.1,
+          "weight": 0.0
+        },
+        {
+          "bin": 1,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.1,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.2,
+          "weight": 0.0
+        },
+        {
+          "bin": 2,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.2,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.3,
+          "weight": 0.0
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.4,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.5,
+          "weight": 0.0
+        },
+        {
+          "bin": 5,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.5,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.6,
+          "weight": 0.0
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ]
+    },
+    "bins": 10,
+    "resolved_events": 0,
+    "resolved_forecasts": 0,
+    "weighting": "each resolved forecast weighted 1 / resolved forecasts in its event"
+  },
+  "conclusion": {
+    "basis": "retrospective-local evidence cannot test unseen-event performance; this holds regardless of point estimates or interval signs",
+    "claim": "structural or blended forecasts outperform the executable YES ask on unseen events",
+    "status": "inconclusive"
+  },
+  "counts": {
+    "eligible": 0,
+    "eligible_dates": 0,
+    "eligible_events": 0,
+    "entry": 0,
+    "excluded": 0,
+    "excluded_by_reason": {},
+    "excluded_by_reason_code": {},
+    "input_observations": 0,
+    "qualifying_holdout_folds": 0,
+    "qualifying_validation_folds": 0,
+    "resolved": 0,
+    "resolved_dates": 0,
+    "resolved_events": 0,
+    "source_selection_branches": 0,
+    "unresolved": 0,
+    "unresolved_missing_resolution": 0,
+    "unresolved_outcome_after_cutoff": 0,
+    "watch": 0
+  },
+  "coverage": {
+    "archive_end": "2026-09-26T00:00:00+00:00",
+    "archive_start": "2026-07-01T00:00:00+00:00",
+    "eligible_fraction": null,
+    "first_observed_at": null,
+    "folds": [
+      {
+        "end": "2026-09-11T00:00:00+00:00",
+        "kind": "validation",
+        "name": "validation-1",
+        "qualifies": false,
+        "resolved_events": 0,
+        "start": "2026-08-27T00:00:00+00:00"
+      },
+      {
+        "end": "2026-09-26T00:00:00+00:00",
+        "kind": "validation",
+        "name": "validation-2",
+        "qualifies": false,
+        "resolved_events": 0,
+        "start": "2026-09-11T00:00:00+00:00"
+      },
+      {
+        "end": "2026-10-27T00:00:00+00:00",
+        "kind": "holdout",
+        "name": "holdout-1",
+        "qualifies": false,
+        "resolved_events": 0,
+        "start": "2026-09-27T00:00:00+00:00"
+      },
+      {
+        "end": "2026-11-26T00:00:00+00:00",
+        "kind": "holdout",
+        "name": "holdout-2",
+        "qualifies": false,
+        "resolved_events": 0,
+        "start": "2026-10-27T00:00:00+00:00"
+      }
+    ],
+    "last_observed_at": null,
+    "resolved_event_fraction": null,
+    "resolved_fraction": null
+  },
+  "events": [],
+  "excluded": [],
+  "identities": {
+    "as_of": "2026-09-26T00:00:00+00:00",
+    "eligible_observations_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "excluded_observations_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "expected_annual_return": 0.0,
+    "input_ids": [],
+    "model_name": "crypto-terminal-range-market-anchor-arithmetic-60s",
+    "model_version": "2.1.0",
+    "production_features": {
+      "realized_interval_seconds": 3600,
+      "realized_window_seconds": 2592000,
+      "semantics": "point-in-time-complete-windows-v2",
+      "spot_interval_seconds": 60,
+      "volatility_selection": "matching-interval-dvol-else-realized"
+    },
+    "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+    "protocol_report_as_of": "2026-09-26T00:00:00+00:00",
+    "protocol_version": "pms-phase1-v2",
+    "recipe_ids": [],
+    "research_context_ids": [],
+    "run_ids": [],
+    "run_manifest_sha256": [],
+    "source_kind": "retrospective-local",
+    "structural_weight": 0.5
+  },
+  "limitations": [
+    "Retrospective local evidence was available during development and is not untouched held-out evidence.",
+    "No holdout-window forecasts are scored; the population is limited to the archive window 2026-07-01T00:00:00+00:00 to 2026-09-26T00:00:00+00:00.",
+    "0 qualifying validation folds and 0 qualifying holdout folds; the protocol requires at least 2, each with 10 resolved events.",
+    "The recorded midpoint anchor is a secondary descriptive baseline, not an executable price.",
+    "Regime results are descriptive; no regime-level uncertainty is reported.",
+    "Only 0 resolved independent events; the protocol minimum is 20.",
+    "Only 0 resolved event dates; the protocol minimum is 20.",
+    "Calibration uses 0 resolved events, below the protocol minimum of 30; bins are descriptive only.",
+    "Fewer than two resolved events: no event bootstrap interval.",
+    "Fewer than two resolved event dates: no date-block bootstrap interval."
+  ],
+  "metrics": {
+    "arms": {
+      "blend": {
+        "brier": null,
+        "log_loss": null
+      },
+      "market_yes_ask": {
+        "brier": null,
+        "log_loss": null
+      },
+      "recorded_midpoint_anchor": {
+        "brier": null,
+        "log_loss": null
+      },
+      "structural": {
+        "brier": null,
+        "log_loss": null
+      }
+    },
+    "population": "common resolved population: every eligible forecast with valid structural, blend and displayed YES ask arms, including WATCH recommendations",
+    "resolved_dates": 0,
+    "resolved_events": 0,
+    "resolved_forecasts": 0,
+    "weighting": "mean within event, then equal weight per independent event"
+  },
+  "observations": [],
+  "paired_differences": [
+    {
+      "baseline_role": "primary",
+      "comparison": "structural_minus_market_yes_ask",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "brier",
+      "minuend": "structural",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "structural_minus_market_yes_ask",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "log_loss",
+      "minuend": "structural",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_market_yes_ask",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "brier",
+      "minuend": "blend",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_market_yes_ask",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "log_loss",
+      "minuend": "blend",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_structural",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "brier",
+      "minuend": "blend",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "structural"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_structural",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "log_loss",
+      "minuend": "blend",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "structural"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "structural_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "brier",
+      "minuend": "structural",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "recorded_midpoint_anchor"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "structural_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "log_loss",
+      "minuend": "structural",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "recorded_midpoint_anchor"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "blend_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "brier",
+      "minuend": "blend",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "recorded_midpoint_anchor"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "blend_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": null,
+      "dates": 0,
+      "event_bootstrap": null,
+      "events": 0,
+      "metric": "log_loss",
+      "minuend": "blend",
+      "point_estimate": null,
+      "resolved_forecasts": 0,
+      "subtrahend": "recorded_midpoint_anchor"
+    }
+  ],
+  "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+  "protocol_version": "pms-phase1-v2",
+  "regimes": [],
+  "report_schema": "pms-phase1-comparison-v1",
+  "source_kind": "retrospective-local",
+  "source_selection_branches": []
+}

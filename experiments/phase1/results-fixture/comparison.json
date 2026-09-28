@@ -1,0 +1,2084 @@
+{
+  "as_of": "2026-09-26T00:00:00+00:00",
+  "calibration": {
+    "arms": {
+      "blend": [
+        {
+          "bin": 0,
+          "events": 1,
+          "forecasts": 2,
+          "lower": 0.0,
+          "mean_outcome": 0.0,
+          "mean_probability": 0.06302716774508776,
+          "upper": 0.1,
+          "weight": 1.0
+        },
+        {
+          "bin": 1,
+          "events": 2,
+          "forecasts": 2,
+          "lower": 0.1,
+          "mean_outcome": 0.75,
+          "mean_probability": 0.14376215494694386,
+          "upper": 0.2,
+          "weight": 1.3333333333333333
+        },
+        {
+          "bin": 2,
+          "events": 2,
+          "forecasts": 3,
+          "lower": 0.2,
+          "mean_outcome": 0.75,
+          "mean_probability": 0.24407184439796303,
+          "upper": 0.3,
+          "weight": 2.0
+        },
+        {
+          "bin": 3,
+          "events": 3,
+          "forecasts": 3,
+          "lower": 0.3,
+          "mean_outcome": 0.14285714285714285,
+          "mean_probability": 0.34615493940148445,
+          "upper": 0.4,
+          "weight": 2.3333333333333335
+        },
+        {
+          "bin": 4,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.4,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.5,
+          "weight": 0.0
+        },
+        {
+          "bin": 5,
+          "events": 1,
+          "forecasts": 1,
+          "lower": 0.5,
+          "mean_outcome": 1.0,
+          "mean_probability": 0.5936563525873374,
+          "upper": 0.6,
+          "weight": 0.3333333333333333
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ],
+      "market_yes_ask": [
+        {
+          "bin": 0,
+          "events": 1,
+          "forecasts": 2,
+          "lower": 0.0,
+          "mean_outcome": 0.0,
+          "mean_probability": 0.07,
+          "upper": 0.1,
+          "weight": 1.0
+        },
+        {
+          "bin": 1,
+          "events": 3,
+          "forecasts": 3,
+          "lower": 0.1,
+          "mean_outcome": 0.8181818181818182,
+          "mean_probability": 0.14000000000000004,
+          "upper": 0.2,
+          "weight": 1.8333333333333333
+        },
+        {
+          "bin": 2,
+          "events": 3,
+          "forecasts": 3,
+          "lower": 0.2,
+          "mean_outcome": 0.18181818181818182,
+          "mean_probability": 0.20363636363636364,
+          "upper": 0.3,
+          "weight": 1.8333333333333333
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 3,
+          "forecasts": 3,
+          "lower": 0.4,
+          "mean_outcome": 0.5714285714285714,
+          "mean_probability": 0.44714285714285706,
+          "upper": 0.5,
+          "weight": 2.3333333333333335
+        },
+        {
+          "bin": 5,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.5,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.6,
+          "weight": 0.0
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ],
+      "recorded_midpoint_anchor": [
+        {
+          "bin": 0,
+          "events": 1,
+          "forecasts": 2,
+          "lower": 0.0,
+          "mean_outcome": 0.0,
+          "mean_probability": 0.060000000000000026,
+          "upper": 0.1,
+          "weight": 1.0
+        },
+        {
+          "bin": 1,
+          "events": 4,
+          "forecasts": 5,
+          "lower": 0.1,
+          "mean_outcome": 0.44999999999999996,
+          "mean_probability": 0.157,
+          "upper": 0.2,
+          "weight": 3.3333333333333335
+        },
+        {
+          "bin": 2,
+          "events": 1,
+          "forecasts": 1,
+          "lower": 0.2,
+          "mean_outcome": 1.0,
+          "mean_probability": 0.21,
+          "upper": 0.3,
+          "weight": 0.3333333333333333
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 3,
+          "forecasts": 3,
+          "lower": 0.4,
+          "mean_outcome": 0.5714285714285714,
+          "mean_probability": 0.4371428571428571,
+          "upper": 0.5,
+          "weight": 2.3333333333333335
+        },
+        {
+          "bin": 5,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.5,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.6,
+          "weight": 0.0
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.7,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.8,
+          "weight": 0.0
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ],
+      "structural": [
+        {
+          "bin": 0,
+          "events": 2,
+          "forecasts": 3,
+          "lower": 0.0,
+          "mean_outcome": 0.5,
+          "mean_probability": 0.05108401920166572,
+          "upper": 0.1,
+          "weight": 2.0
+        },
+        {
+          "bin": 1,
+          "events": 1,
+          "forecasts": 1,
+          "lower": 0.1,
+          "mean_outcome": 0.0,
+          "mean_probability": 0.19325207203872138,
+          "upper": 0.2,
+          "weight": 0.3333333333333333
+        },
+        {
+          "bin": 2,
+          "events": 2,
+          "forecasts": 2,
+          "lower": 0.2,
+          "mean_outcome": 0.0,
+          "mean_probability": 0.22720440775101416,
+          "upper": 0.3,
+          "weight": 1.5
+        },
+        {
+          "bin": 3,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.3,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.4,
+          "weight": 0.0
+        },
+        {
+          "bin": 4,
+          "events": 2,
+          "forecasts": 2,
+          "lower": 0.4,
+          "mean_outcome": 1.0,
+          "mean_probability": 0.4359510567926532,
+          "upper": 0.5,
+          "weight": 1.5
+        },
+        {
+          "bin": 5,
+          "events": 2,
+          "forecasts": 2,
+          "lower": 0.5,
+          "mean_outcome": 0.25,
+          "mean_probability": 0.5652791237929435,
+          "upper": 0.6,
+          "weight": 1.3333333333333333
+        },
+        {
+          "bin": 6,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.6,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.7,
+          "weight": 0.0
+        },
+        {
+          "bin": 7,
+          "events": 1,
+          "forecasts": 1,
+          "lower": 0.7,
+          "mean_outcome": 1.0,
+          "mean_probability": 0.7228962023315019,
+          "upper": 0.8,
+          "weight": 0.3333333333333333
+        },
+        {
+          "bin": 8,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.8,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 0.9,
+          "weight": 0.0
+        },
+        {
+          "bin": 9,
+          "events": 0,
+          "forecasts": 0,
+          "lower": 0.9,
+          "mean_outcome": null,
+          "mean_probability": null,
+          "upper": 1.0,
+          "weight": 0.0
+        }
+      ]
+    },
+    "bins": 10,
+    "resolved_events": 7,
+    "resolved_forecasts": 11,
+    "weighting": "each resolved forecast weighted 1 / resolved forecasts in its event"
+  },
+  "conclusion": {
+    "basis": "synthetic-fixture evidence cannot test unseen-event performance; this holds regardless of point estimates or interval signs",
+    "claim": "structural or blended forecasts outperform the executable YES ask on unseen events",
+    "status": "inconclusive"
+  },
+  "counts": {
+    "eligible": 13,
+    "eligible_dates": 8,
+    "eligible_events": 9,
+    "entry": 7,
+    "excluded": 7,
+    "excluded_by_reason": {
+      "displayed YES ask size below protocol minimum": 1,
+      "engine rejected synthetic input: crypto input is stale at evaluation": 1,
+      "inside minimum time to expiry": 1,
+      "invalid event_id": 1,
+      "malformed synthetic input: Value error, yes_bid cannot exceed yes_ask": 1,
+      "missing displayed YES ask": 1,
+      "unsupported contract structure: settlement averaging window": 1
+    },
+    "excluded_by_reason_code": {
+      "missing_event_id": 1,
+      "no_displayed_ask": 2,
+      "source_exclusion": 2,
+      "timing_ineligible": 1,
+      "unsupported_contract": 1
+    },
+    "input_observations": 20,
+    "qualifying_holdout_folds": 0,
+    "qualifying_validation_folds": 0,
+    "resolved": 11,
+    "resolved_dates": 6,
+    "resolved_events": 7,
+    "source_selection_branches": 1,
+    "unresolved": 2,
+    "unresolved_missing_resolution": 1,
+    "unresolved_outcome_after_cutoff": 1,
+    "watch": 6
+  },
+  "coverage": {
+    "archive_end": "2026-09-26T00:00:00+00:00",
+    "archive_start": "2026-07-01T00:00:00+00:00",
+    "eligible_fraction": 0.65,
+    "first_observed_at": "2026-07-14T16:40:00+00:00",
+    "folds": [
+      {
+        "end": "2026-09-11T00:00:00+00:00",
+        "kind": "validation",
+        "name": "validation-1",
+        "qualifies": false,
+        "resolved_events": 2,
+        "start": "2026-08-27T00:00:00+00:00"
+      },
+      {
+        "end": "2026-09-26T00:00:00+00:00",
+        "kind": "validation",
+        "name": "validation-2",
+        "qualifies": false,
+        "resolved_events": 1,
+        "start": "2026-09-11T00:00:00+00:00"
+      },
+      {
+        "end": "2026-10-27T00:00:00+00:00",
+        "kind": "holdout",
+        "name": "holdout-1",
+        "qualifies": false,
+        "resolved_events": 0,
+        "start": "2026-09-27T00:00:00+00:00"
+      },
+      {
+        "end": "2026-11-26T00:00:00+00:00",
+        "kind": "holdout",
+        "name": "holdout-2",
+        "qualifies": false,
+        "resolved_events": 0,
+        "start": "2026-10-27T00:00:00+00:00"
+      }
+    ],
+    "last_observed_at": "2026-09-25T23:40:00+00:00",
+    "resolved_event_fraction": 0.7777777777777778,
+    "resolved_fraction": 0.8461538461538461
+  },
+  "events": [
+    {
+      "blend_brier": 0.2955578795103121,
+      "blend_log_loss": 0.7910841761668672,
+      "eligible_forecasts": 2,
+      "event_date": "2026-08-11",
+      "event_id": "SYNTH-KXBTC-26AUG1117",
+      "market_yes_ask_brier": 0.3898,
+      "market_yes_ask_log_loss": 1.0946282038435213,
+      "recorded_midpoint_anchor_brier": 0.3965,
+      "recorded_midpoint_anchor_log_loss": 1.1254709299211036,
+      "regimes": [
+        "downtrend / high-volatility"
+      ],
+      "resolved_forecasts": 2,
+      "structural_brier": 0.17675508778453436,
+      "structural_log_loss": 0.5303329186701761
+    },
+    {
+      "blend_brier": 0.12729636063365626,
+      "blend_log_loss": 0.44127803667224286,
+      "eligible_forecasts": 1,
+      "event_date": "2026-08-25",
+      "event_id": "SYNTH-KXBTC-26AUG2517",
+      "market_yes_ask_brier": 0.04000000000000001,
+      "market_yes_ask_log_loss": 0.2231435513142098,
+      "recorded_midpoint_anchor_brier": 0.03609999999999999,
+      "recorded_midpoint_anchor_log_loss": 0.21072103131565256,
+      "regimes": [
+        "range / typical-volatility"
+      ],
+      "resolved_forecasts": 1,
+      "structural_brier": 0.3219644525666429,
+      "structural_log_loss": 0.8379859537717355
+    },
+    {
+      "blend_brier": 0.19694886342892395,
+      "blend_log_loss": 0.5655151840099125,
+      "eligible_forecasts": 3,
+      "event_date": "2026-07-14",
+      "event_id": "SYNTH-KXBTC-26JUL1417",
+      "market_yes_ask_brier": 0.3065333333333334,
+      "market_yes_ask_log_loss": 0.8138264706211186,
+      "recorded_midpoint_anchor_brier": 0.31450000000000006,
+      "recorded_midpoint_anchor_log_loss": 0.8328058372719825,
+      "regimes": [
+        "uptrend / typical-volatility"
+      ],
+      "resolved_forecasts": 3,
+      "structural_brier": 0.10291270952706104,
+      "structural_log_loss": 0.37369715207701937
+    },
+    {
+      "blend_brier": 0.004111921763265446,
+      "blend_log_loss": 0.06518044599193451,
+      "eligible_forecasts": 2,
+      "event_date": "2026-07-28",
+      "event_id": "SYNTH-KXBTC-26JUL2817",
+      "market_yes_ask_brier": 0.005,
+      "market_yes_ask_log_loss": 0.07262850632856926,
+      "recorded_midpoint_anchor_brier": 0.0037000000000000036,
+      "recorded_midpoint_anchor_log_loss": 0.06193199361119301,
+      "regimes": [
+        "range / low-volatility"
+      ],
+      "resolved_forecasts": 2,
+      "structural_brier": 0.004574593933188075,
+      "structural_log_loss": 0.06862421506066813
+    },
+    {
+      "blend_brier": 0.5631966784717937,
+      "blend_log_loss": 1.3881533222895543,
+      "eligible_forecasts": 1,
+      "event_date": "2026-09-08",
+      "event_id": "SYNTH-KXBTC-26SEP0817",
+      "market_yes_ask_brier": 0.7395999999999999,
+      "market_yes_ask_log_loss": 1.9661128563728327,
+      "recorded_midpoint_anchor_brier": 0.7569,
+      "recorded_midpoint_anchor_log_loss": 2.0402208285265546,
+      "regimes": [
+        "uptrend / high-volatility"
+      ],
+      "resolved_forecasts": 1,
+      "structural_brier": 0.3303273300690229,
+      "structural_log_loss": 0.8550571150498214
+    },
+    {
+      "blend_brier": 0.741920966270086,
+      "blend_log_loss": 1.975790548840282,
+      "eligible_forecasts": 1,
+      "event_date": "2026-09-08",
+      "event_id": "SYNTH-KXBTC-26SEP0821",
+      "market_yes_ask_brier": 0.3364000000000001,
+      "market_yes_ask_log_loss": 0.8675005677047231,
+      "recorded_midpoint_anchor_brier": 0.34809999999999997,
+      "recorded_midpoint_anchor_log_loss": 0.8915981192837835,
+      "regimes": [
+        "unknown"
+      ],
+      "resolved_forecasts": 1,
+      "structural_brier": 0.9293983554329792,
+      "structural_log_loss": 3.325712080443561
+    },
+    {
+      "blend_brier": null,
+      "blend_log_loss": null,
+      "eligible_forecasts": 1,
+      "event_date": "2026-09-15",
+      "event_id": "SYNTH-KXBTC-26SEP1517",
+      "market_yes_ask_brier": null,
+      "market_yes_ask_log_loss": null,
+      "recorded_midpoint_anchor_brier": null,
+      "recorded_midpoint_anchor_log_loss": null,
+      "regimes": [
+        "range / typical-volatility"
+      ],
+      "resolved_forecasts": 0,
+      "structural_brier": null,
+      "structural_log_loss": null
+    },
+    {
+      "blend_brier": 0.1079153382429845,
+      "blend_log_loss": 0.3982482630260952,
+      "eligible_forecasts": 1,
+      "event_date": "2026-09-22",
+      "event_id": "SYNTH-KXBTC-26SEP2217",
+      "market_yes_ask_brier": 0.22089999999999999,
+      "market_yes_ask_log_loss": 0.6348782724359695,
+      "recorded_midpoint_anchor_brier": 0.21159999999999995,
+      "recorded_midpoint_anchor_log_loss": 0.616186139423817,
+      "regimes": [
+        "downtrend / low-volatility"
+      ],
+      "resolved_forecasts": 1,
+      "structural_brier": 0.04810609896104863,
+      "structural_log_loss": 0.2476040678883623
+    },
+    {
+      "blend_brier": null,
+      "blend_log_loss": null,
+      "eligible_forecasts": 1,
+      "event_date": "2026-09-26",
+      "event_id": "SYNTH-KXBTC-26SEP2601",
+      "market_yes_ask_brier": null,
+      "market_yes_ask_log_loss": null,
+      "recorded_midpoint_anchor_brier": null,
+      "recorded_midpoint_anchor_log_loss": null,
+      "regimes": [
+        "uptrend / typical-volatility"
+      ],
+      "resolved_forecasts": 0,
+      "structural_brier": null,
+      "structural_log_loss": null
+    }
+  ],
+  "excluded": [
+    {
+      "event_id": "SYNTH-KXBTC-26JUL2817",
+      "market_id": "SYNTH-KXBTC-26JUL2817-B119250",
+      "observation_id": "4e932c4c-513e-57e2-b0d6-95ba6e625d6c",
+      "observed_at": "2026-07-28T16:55:00+00:00",
+      "reason": "engine rejected synthetic input: crypto input is stale at evaluation",
+      "reason_code": "source_exclusion"
+    },
+    {
+      "event_id": "SYNTH-KXBTC-26SEP0117",
+      "market_id": "SYNTH-KXBTC-26SEP0117-B120250",
+      "observation_id": "74eba43f-4749-56df-9c5f-eff1e6a4e8b6",
+      "observed_at": "2026-09-01T16:40:00+00:00",
+      "reason": "displayed YES ask size below protocol minimum",
+      "reason_code": "no_displayed_ask"
+    },
+    {
+      "event_id": "SYNTH-KXBTC-26AUG1117",
+      "market_id": "SYNTH-KXBTC-26AUG1117-B112250",
+      "observation_id": "78dedac6-783a-5d44-8206-6b3def1e478d",
+      "observed_at": "2026-08-11T16:55:00+00:00",
+      "reason": "malformed synthetic input: Value error, yes_bid cannot exceed yes_ask",
+      "reason_code": "source_exclusion"
+    },
+    {
+      "event_id": "SYNTH-KXBTC-26SEP2217",
+      "market_id": "SYNTH-KXBTC-26SEP2217-B118250",
+      "observation_id": "a60d406e-c4d7-57d2-b4d5-2f988ccf0198",
+      "observed_at": "2026-09-22T16:56:00+00:00",
+      "reason": "inside minimum time to expiry",
+      "reason_code": "timing_ineligible"
+    },
+    {
+      "event_id": "SYNTH-KXBTC-26AUG0417",
+      "market_id": "SYNTH-KXBTC-26AUG0417-B114250",
+      "observation_id": "acefa136-7445-5374-b4f4-cca22089ec93",
+      "observed_at": "2026-08-04T16:40:00+00:00",
+      "reason": "missing displayed YES ask",
+      "reason_code": "no_displayed_ask"
+    },
+    {
+      "event_id": null,
+      "market_id": "SYNTH-KXBTC-26JUL2117-B118750",
+      "observation_id": "d0bdd8d3-ea72-5191-8b5e-2daa3f6410cb",
+      "observed_at": "2026-07-21T16:40:00+00:00",
+      "reason": "invalid event_id",
+      "reason_code": "missing_event_id"
+    },
+    {
+      "event_id": "SYNTH-KXBTC-26AUG1817",
+      "market_id": "SYNTH-KXBTC-26AUG1817-B116250",
+      "observation_id": "fff1edb6-1246-5ff8-ba68-44719caa6944",
+      "observed_at": "2026-08-18T16:40:00+00:00",
+      "reason": "unsupported contract structure: settlement averaging window",
+      "reason_code": "unsupported_contract"
+    }
+  ],
+  "identities": {
+    "as_of": "2026-09-26T00:00:00+00:00",
+    "eligible_observations_sha256": "b957d8a1369b00217b4e97c74a9b8f30ee20f353c40adea70c6e2321f0af8ec8",
+    "excluded_observations_sha256": "fb20a1476bdf44866ee21bb72a3d1c6f716f53d89ee36105c8fdc6437ef20a85",
+    "expected_annual_return": 0.0,
+    "input_ids": [
+      "2e8134aadbd6b50ae30862472e19156fa8266e8bb3f4744ed8d3867b0df458ec",
+      "609a26b2153bf62b9e6d6760d5cd21f9059f409293a8b77ef93a01a842030fe7",
+      "63cb71fbd0c7abc027aa0623ad1aeba98595d32c8c080021da87f2284ade1dca",
+      "6a5bda70ce25d1b0762bbeb43c5e6651b8225945fa306e61c0d101da3c72afb9",
+      "914265057289c8a710c86983eaac618966bd583356dccadead7d958c4d33ee90",
+      "9911d53555c872267ac5e6e9006ec5cd4818264e2b6fa7ad0712e7a7c2d01f86",
+      "ae9f162e196278030057b23fdbba2808f6a611f8ab31368280c436ed99289786",
+      "b355877c915f037e34e4e5b71a3d11839a890751f153ac8caeb6cc46a958d274",
+      "bf17e325e17061d82ffe754ea39af52e1d7a522517b5f7b37a111db1532ea987",
+      "cf225f90c17e0bd2e2f540048f940c42073491278f0bbea9cd42888bcab93de1",
+      "f34474e70bd9bafcb7add8c807b62fc5e0f59cf6e2990039ee2bc168f27d2bb0",
+      "fbf55e61e212ec0317f435ddbb811b63cb3a0e86191a6183f5afbe1bc994cd3a",
+      "ffad79e75552cc1dccc5d7b021f73c1dbe72260a23840e13666c011bcd0096d4"
+    ],
+    "model_name": "crypto-terminal-range-market-anchor-arithmetic-60s",
+    "model_version": "2.1.0",
+    "production_features": {
+      "realized_interval_seconds": 3600,
+      "realized_window_seconds": 2592000,
+      "semantics": "point-in-time-complete-windows-v2",
+      "spot_interval_seconds": 60,
+      "volatility_selection": "matching-interval-dvol-else-realized"
+    },
+    "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+    "protocol_report_as_of": "2026-09-26T00:00:00+00:00",
+    "protocol_version": "pms-phase1-v2",
+    "recipe_ids": [
+      "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd"
+    ],
+    "research_context_ids": [],
+    "run_ids": [
+      "0b3b62fe-cfc1-5449-859e-4a35e13d4b59",
+      "15a86eac-3fdc-5d69-a551-b1a0b7c0a3f4",
+      "2624dc57-ede2-5b5e-b54e-37ef49f913ad",
+      "3d8f2c75-9413-5b74-a0d0-a207cf50e0eb",
+      "488fa6e7-0700-5a11-9471-8ef248a8366f",
+      "49821926-7a5a-5920-8c41-e1b1e4c4354c",
+      "58d63be4-867f-5744-afe2-abc4519894cd",
+      "927a3aca-6340-5865-92ab-324dab000e6e",
+      "a9ca42e2-95ed-5354-a6cc-0bbd8cb56bf0",
+      "b2d9a5fc-ce2e-5be8-a8c5-9a22f3c65d66",
+      "b454b8ea-52cc-5d94-8303-11e592fbc9de",
+      "caba6d05-cced-5bad-827f-0f90c915612b",
+      "f815b846-c75e-5c27-bf78-912b2200ba7a"
+    ],
+    "run_manifest_sha256": [
+      "1db148a15af468d32c39aa0c9d69d107e3c9fadd4418496ea8a453ca535b1132",
+      "1f0f26ffe4dc8a1e0729d84ad5b3b7388c87c37741f9165cee85a7ede02271ae",
+      "2886847c8fa94ce5d1d17f662d4cfba665339e4f534ba2db444b7579e1c4377d",
+      "4f35965e6d00e0ab1ad56a0854b6b52be46b1191fee4e70fd8445050ab0f7f10",
+      "7ee5bc915fbb17eb37769a05362b70b8b99bfeee65cdb7c0299989046c2b1035",
+      "9b7282d258d6f26fd3455aefa0c111296a09db47e8f653169b89c26b31df2d62",
+      "a8a332aa1777a56544c5ff702f8a4c0324533d4d80f6a05801ed8464014966af",
+      "c7f9dcfa5788411421d2fa1f36ff4cb3bbaf512b264eb9eda60ee73e37f45eaf",
+      "cd86cfb19222833443b7d6111e4ba191dcafc1074db09907f2d3a9a3b5eab1f1",
+      "de5d7c2c06dfdca18dab1803261b2d5ab353d1ff71da3b0681d6299506b844ea",
+      "e14c938709a09e3169627a563dcc42184ccd796e2bec415bd36bbcdf268f9d0f",
+      "ebb23aeb0b3bded60ba107777a76e7fbf72d9131cc6b2ba139136cc0bb7f5617",
+      "ebc2877f37eb0eec812ac47f44d6aa06fe9b2ccfced5ee6692fda8642643b758"
+    ],
+    "source_kind": "synthetic-fixture",
+    "structural_weight": 0.5
+  },
+  "limitations": [
+    "Synthetic fixture values are deliberate constructions, not empirical market evidence; manual synthetic features are exempt from production feature pinning.",
+    "No holdout-window forecasts are scored; the population is limited to the archive window 2026-07-01T00:00:00+00:00 to 2026-09-26T00:00:00+00:00.",
+    "0 qualifying validation folds and 0 qualifying holdout folds; the protocol requires at least 2, each with 10 resolved events.",
+    "The recorded midpoint anchor is a secondary descriptive baseline, not an executable price.",
+    "Regime results are descriptive; no regime-level uncertainty is reported.",
+    "Only 7 resolved independent events; the protocol minimum is 20.",
+    "Only 6 resolved event dates; the protocol minimum is 20.",
+    "Calibration uses 7 resolved events, below the protocol minimum of 30; bins are descriptive only.",
+    "2 eligible forecasts are unresolved at the report cutoff and are not scored.",
+    "7 observations were excluded; see the excluded reasons."
+  ],
+  "metrics": {
+    "arms": {
+      "blend": {
+        "brier": 0.29099257261728884,
+        "log_loss": 0.8036071395709842
+      },
+      "market_yes_ask": {
+        "brier": 0.2911761904761905,
+        "log_loss": 0.8103883469458493
+      },
+      "recorded_midpoint_anchor": {
+        "brier": 0.2953428571428572,
+        "log_loss": 0.8255621256220124
+      },
+      "structural": {
+        "brier": 0.2734340897534967,
+        "log_loss": 0.8912876432801919
+      }
+    },
+    "population": "common resolved population: every eligible forecast with valid structural, blend and displayed YES ask arms, including WATCH recommendations",
+    "resolved_dates": 6,
+    "resolved_events": 7,
+    "resolved_forecasts": 11,
+    "weighting": "mean within event, then equal weight per independent event"
+  },
+  "observations": [
+    {
+      "blend_brier": 0.741920966270086,
+      "blend_log_loss": 1.975790548840282,
+      "blend_probability_yes": 0.13865165799771464,
+      "calibration_profile_id": null,
+      "event_date": "2026-09-08",
+      "event_id": "SYNTH-KXBTC-26SEP0821",
+      "event_weight": 1.0,
+      "execution": [
+        {
+          "label": "unchanged",
+          "market_id": "SYNTH-KXBTC-26SEP0821-B121750",
+          "no_ask": 0.6,
+          "no_ask_size": 100.0,
+          "no_bid": 0.58,
+          "observed_at": "2026-09-08T20:40:30+00:00",
+          "snapshot_id": "c00296b0-3e8e-5e80-bbd1-5e021112e7f5",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.42,
+          "yes_ask_size": 100.0,
+          "yes_bid": 0.4
+        },
+        {
+          "label": "unchanged",
+          "market_id": "SYNTH-KXBTC-26SEP0821-B121750",
+          "no_ask": 0.6,
+          "no_ask_size": 100.0,
+          "no_bid": 0.58,
+          "observed_at": "2026-09-08T20:41:00+00:00",
+          "snapshot_id": "3203944f-0039-5fab-8fb4-7b754fc316d9",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.42,
+          "yes_ask_size": 100.0,
+          "yes_bid": 0.4
+        },
+        {
+          "label": "unchanged",
+          "market_id": "SYNTH-KXBTC-26SEP0821-B121750",
+          "no_ask": 0.6,
+          "no_ask_size": 100.0,
+          "no_bid": 0.58,
+          "observed_at": "2026-09-08T20:42:00+00:00",
+          "snapshot_id": "d6b34bf4-7b4e-52c7-bc61-d73325c15755",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.42,
+          "yes_ask_size": 100.0,
+          "yes_bid": 0.4
+        }
+      ],
+      "expires_at": "2026-09-08T21:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "cf225f90c17e0bd2e2f540048f940c42073491278f0bbea9cd42888bcab93de1",
+      "market_id": "SYNTH-KXBTC-26SEP0821-B121750",
+      "market_yes_ask": 0.42,
+      "market_yes_ask_brier": 0.3364000000000001,
+      "market_yes_ask_log_loss": 0.8675005677047231,
+      "market_yes_ask_size": 100.0,
+      "observation_end_at": "2026-09-08T21:00:00+00:00",
+      "observation_id": "0b3b62fe-cfc1-5449-859e-4a35e13d4b59",
+      "observed_at": "2026-09-08T20:40:00+00:00",
+      "outcome_yes": 1,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.34809999999999997,
+      "recorded_midpoint_anchor_log_loss": 0.8915981192837835,
+      "recorded_midpoint_anchor_probability_yes": 0.41000000000000003,
+      "regime": "unknown",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-09-08T21:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "0b3b62fe-cfc1-5449-859e-4a35e13d4b59",
+      "run_manifest_sha256": "a8a332aa1777a56544c5ff702f8a4c0324533d4d80f6a05801ed8464014966af",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-09-08T21:02:00+00:00",
+      "state": "ENTER NO",
+      "structural_brier": 0.9293983554329792,
+      "structural_log_loss": 3.325712080443561,
+      "structural_probability_yes": 0.03594691254424209,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.12729636063365626,
+      "blend_log_loss": 0.44127803667224286,
+      "blend_probability_yes": 0.3567861553278886,
+      "calibration_profile_id": null,
+      "event_date": "2026-08-25",
+      "event_id": "SYNTH-KXBTC-26AUG2517",
+      "event_weight": 1.0,
+      "execution": [
+        {
+          "label": "unchanged",
+          "market_id": "SYNTH-KXBTC-26AUG2517-B115250",
+          "no_ask": 0.82,
+          "no_ask_size": 50.0,
+          "no_bid": 0.8,
+          "observed_at": "2026-08-25T16:40:30+00:00",
+          "snapshot_id": "f32bd7da-8bbc-57f6-8839-989cff633e38",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.2,
+          "yes_ask_size": 35.0,
+          "yes_bid": 0.18
+        },
+        {
+          "label": "unchanged",
+          "market_id": "SYNTH-KXBTC-26AUG2517-B115250",
+          "no_ask": 0.82,
+          "no_ask_size": 50.0,
+          "no_bid": 0.8,
+          "observed_at": "2026-08-25T16:41:00+00:00",
+          "snapshot_id": "b73814fb-c4d6-5a8f-b93a-7623fd5ce54c",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.2,
+          "yes_ask_size": 35.0,
+          "yes_bid": 0.18
+        },
+        {
+          "label": "unchanged",
+          "market_id": "SYNTH-KXBTC-26AUG2517-B115250",
+          "no_ask": 0.82,
+          "no_ask_size": 50.0,
+          "no_bid": 0.8,
+          "observed_at": "2026-08-25T16:42:00+00:00",
+          "snapshot_id": "901ad532-8798-5fbd-b216-8deb75ee4d30",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.2,
+          "yes_ask_size": 35.0,
+          "yes_bid": 0.18
+        }
+      ],
+      "expires_at": "2026-08-25T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "f34474e70bd9bafcb7add8c807b62fc5e0f59cf6e2990039ee2bc168f27d2bb0",
+      "market_id": "SYNTH-KXBTC-26AUG2517-B115250",
+      "market_yes_ask": 0.2,
+      "market_yes_ask_brier": 0.04000000000000001,
+      "market_yes_ask_log_loss": 0.2231435513142098,
+      "market_yes_ask_size": 35.0,
+      "observation_end_at": "2026-08-25T17:00:00+00:00",
+      "observation_id": "15a86eac-3fdc-5d69-a551-b1a0b7c0a3f4",
+      "observed_at": "2026-08-25T16:40:00+00:00",
+      "outcome_yes": 0,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.03609999999999999,
+      "recorded_midpoint_anchor_log_loss": 0.21072103131565256,
+      "recorded_midpoint_anchor_probability_yes": 0.18999999999999997,
+      "regime": "range / typical-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-08-25T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "15a86eac-3fdc-5d69-a551-b1a0b7c0a3f4",
+      "run_manifest_sha256": "1db148a15af468d32c39aa0c9d69d107e3c9fadd4418496ea8a453ca535b1132",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-08-25T17:02:00+00:00",
+      "state": "ENTER YES",
+      "structural_brier": 0.3219644525666429,
+      "structural_log_loss": 0.8379859537717355,
+      "structural_probability_yes": 0.5674191154399391,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.1079153382429845,
+      "blend_log_loss": 0.3982482630260952,
+      "blend_probability_yes": 0.3285047004884169,
+      "calibration_profile_id": null,
+      "event_date": "2026-09-22",
+      "event_id": "SYNTH-KXBTC-26SEP2217",
+      "event_weight": 1.0,
+      "execution": [],
+      "expires_at": "2026-09-22T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "bf17e325e17061d82ffe754ea39af52e1d7a522517b5f7b37a111db1532ea987",
+      "market_id": "SYNTH-KXBTC-26SEP2217-B118250",
+      "market_yes_ask": 0.47,
+      "market_yes_ask_brier": 0.22089999999999999,
+      "market_yes_ask_log_loss": 0.6348782724359695,
+      "market_yes_ask_size": 50.0,
+      "observation_end_at": "2026-09-22T17:00:00+00:00",
+      "observation_id": "2624dc57-ede2-5b5e-b54e-37ef49f913ad",
+      "observed_at": "2026-09-22T16:40:00+00:00",
+      "outcome_yes": 0,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.21159999999999995,
+      "recorded_midpoint_anchor_log_loss": 0.616186139423817,
+      "recorded_midpoint_anchor_probability_yes": 0.45999999999999996,
+      "regime": "downtrend / low-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-09-22T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "2624dc57-ede2-5b5e-b54e-37ef49f913ad",
+      "run_manifest_sha256": "7ee5bc915fbb17eb37769a05362b70b8b99bfeee65cdb7c0299989046c2b1035",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-09-22T17:02:00+00:00",
+      "state": "ENTER NO",
+      "structural_brier": 0.04810609896104863,
+      "structural_log_loss": 0.2476040678883623,
+      "structural_probability_yes": 0.21933102598822773,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.046352660577836324,
+      "blend_log_loss": 0.24244956941140547,
+      "blend_probability_yes": 0.21529668036882577,
+      "calibration_profile_id": null,
+      "event_date": "2026-08-11",
+      "event_id": "SYNTH-KXBTC-26AUG1117",
+      "event_weight": 0.5,
+      "execution": [],
+      "expires_at": "2026-08-11T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "ffad79e75552cc1dccc5d7b021f73c1dbe72260a23840e13666c011bcd0096d4",
+      "market_id": "SYNTH-KXBTC-26AUG1117-B112250",
+      "market_yes_ask": 0.2,
+      "market_yes_ask_brier": 0.04000000000000001,
+      "market_yes_ask_log_loss": 0.2231435513142098,
+      "market_yes_ask_size": 45.0,
+      "observation_end_at": "2026-08-11T17:00:00+00:00",
+      "observation_id": "3d8f2c75-9413-5b74-a0d0-a207cf50e0eb",
+      "observed_at": "2026-08-11T16:50:00+00:00",
+      "outcome_yes": 0,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.03609999999999999,
+      "recorded_midpoint_anchor_log_loss": 0.21072103131565256,
+      "recorded_midpoint_anchor_probability_yes": 0.18999999999999997,
+      "regime": "downtrend / high-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-08-11T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "3d8f2c75-9413-5b74-a0d0-a207cf50e0eb",
+      "run_manifest_sha256": "e14c938709a09e3169627a563dcc42184ccd796e2bec415bd36bbcdf268f9d0f",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-08-11T17:02:00+00:00",
+      "state": "WATCH",
+      "structural_brier": 0.05902527162466554,
+      "structural_log_loss": 0.27832752468777594,
+      "structural_probability_yes": 0.24295117127658705,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.40042064236191804,
+      "blend_log_loss": 1.0018159182610538,
+      "blend_probability_yes": 0.36721200836147494,
+      "calibration_profile_id": null,
+      "event_date": "2026-07-14",
+      "event_id": "SYNTH-KXBTC-26JUL1417",
+      "event_weight": 0.3333333333333333,
+      "execution": [
+        {
+          "label": "ask-moved-up",
+          "market_id": "SYNTH-KXBTC-26JUL1417-B117250",
+          "no_ask": 0.79,
+          "no_ask_size": 55.0,
+          "no_bid": 0.77,
+          "observed_at": "2026-07-14T16:40:30+00:00",
+          "snapshot_id": "43f3fc9e-8e3b-5b04-b1a6-8d11e99d32e2",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.23,
+          "yes_ask_size": 40.0,
+          "yes_bid": 0.21
+        },
+        {
+          "label": "ask-moved-up",
+          "market_id": "SYNTH-KXBTC-26JUL1417-B117250",
+          "no_ask": 0.77,
+          "no_ask_size": 50.0,
+          "no_bid": 0.75,
+          "observed_at": "2026-07-14T16:41:00+00:00",
+          "snapshot_id": "1c9f6874-6bb3-5f86-85a7-3da288352512",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.25,
+          "yes_ask_size": 35.0,
+          "yes_bid": 0.23
+        },
+        {
+          "label": "ask-moved-up",
+          "market_id": "SYNTH-KXBTC-26JUL1417-B117250",
+          "no_ask": 0.67,
+          "no_ask_size": 45.0,
+          "no_bid": 0.65,
+          "observed_at": "2026-07-14T16:42:00+00:00",
+          "snapshot_id": "85499a41-5eaf-57fe-81dd-7c8535467601",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.35,
+          "yes_ask_size": 20.0,
+          "yes_bid": 0.33
+        }
+      ],
+      "expires_at": "2026-07-14T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "6a5bda70ce25d1b0762bbeb43c5e6651b8225945fa306e61c0d101da3c72afb9",
+      "market_id": "SYNTH-KXBTC-26JUL1417-B117250",
+      "market_yes_ask": 0.22,
+      "market_yes_ask_brier": 0.6084,
+      "market_yes_ask_log_loss": 1.5141277326297755,
+      "market_yes_ask_size": 40.0,
+      "observation_end_at": "2026-07-14T17:00:00+00:00",
+      "observation_id": "488fa6e7-0700-5a11-9471-8ef248a8366f",
+      "observed_at": "2026-07-14T16:40:00+00:00",
+      "outcome_yes": 1,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.6241000000000001,
+      "recorded_midpoint_anchor_log_loss": 1.5606477482646683,
+      "recorded_midpoint_anchor_probability_yes": 0.21,
+      "regime": "uptrend / typical-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-07-14T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "488fa6e7-0700-5a11-9471-8ef248a8366f",
+      "run_manifest_sha256": "de5d7c2c06dfdca18dab1803261b2d5ab353d1ff71da3b0681d6299506b844ea",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-07-14T17:02:00+00:00",
+      "state": "ENTER YES",
+      "structural_brier": 0.19460525055161995,
+      "structural_log_loss": 0.5818578074301615,
+      "structural_probability_yes": 0.5588591488519569,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.025310788132227643,
+      "blend_log_loss": 0.1732749757378131,
+      "blend_probability_yes": 0.15909364579463142,
+      "calibration_profile_id": null,
+      "event_date": "2026-07-14",
+      "event_id": "SYNTH-KXBTC-26JUL1417",
+      "event_weight": 0.3333333333333333,
+      "execution": [],
+      "expires_at": "2026-07-14T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "fbf55e61e212ec0317f435ddbb811b63cb3a0e86191a6183f5afbe1bc994cd3a",
+      "market_id": "SYNTH-KXBTC-26JUL1417-B117750",
+      "market_yes_ask": 0.14,
+      "market_yes_ask_brier": 0.019600000000000003,
+      "market_yes_ask_log_loss": 0.15082288973458363,
+      "market_yes_ask_size": 60.0,
+      "observation_end_at": "2026-07-14T17:00:00+00:00",
+      "observation_id": "49821926-7a5a-5920-8c41-e1b1e4c4354c",
+      "observed_at": "2026-07-14T16:40:00+00:00",
+      "outcome_yes": 0,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.016900000000000002,
+      "recorded_midpoint_anchor_log_loss": 0.13926206733350766,
+      "recorded_midpoint_anchor_probability_yes": 0.13,
+      "regime": "uptrend / typical-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-07-14T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "49821926-7a5a-5920-8c41-e1b1e4c4354c",
+      "run_manifest_sha256": "2886847c8fa94ce5d1d17f662d4cfba665339e4f534ba2db444b7579e1c4377d",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-07-14T17:02:00+00:00",
+      "state": "WATCH",
+      "structural_brier": 0.03734636334725917,
+      "structural_log_loss": 0.21474401643107893,
+      "structural_probability_yes": 0.1932520720387214,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.16511515979262625,
+      "blend_log_loss": 0.5214546580308708,
+      "blend_probability_yes": 0.5936563525873374,
+      "calibration_profile_id": null,
+      "event_date": "2026-07-14",
+      "event_id": "SYNTH-KXBTC-26JUL1417",
+      "event_weight": 0.3333333333333333,
+      "execution": [],
+      "expires_at": "2026-07-14T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "ae9f162e196278030057b23fdbba2808f6a611f8ab31368280c436ed99289786",
+      "market_id": "SYNTH-KXBTC-26JUL1417-B117250",
+      "market_yes_ask": 0.46,
+      "market_yes_ask_brier": 0.2916,
+      "market_yes_ask_log_loss": 0.7765287894989963,
+      "market_yes_ask_size": 30.0,
+      "observation_end_at": "2026-07-14T17:00:00+00:00",
+      "observation_id": "58d63be4-867f-5744-afe2-abc4519894cd",
+      "observed_at": "2026-07-14T16:50:00+00:00",
+      "outcome_yes": 1,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.30250000000000005,
+      "recorded_midpoint_anchor_log_loss": 0.7985076962177717,
+      "recorded_midpoint_anchor_probability_yes": 0.44999999999999996,
+      "regime": "uptrend / typical-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-07-14T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "58d63be4-867f-5744-afe2-abc4519894cd",
+      "run_manifest_sha256": "4f35965e6d00e0ab1ad56a0854b6b52be46b1191fee4e70fd8445050ab0f7f10",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-07-14T17:02:00+00:00",
+      "state": "ENTER YES",
+      "structural_brier": 0.07678651468230395,
+      "structural_log_loss": 0.32448963236981765,
+      "structural_probability_yes": 0.7228962023315019,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.005600739745176597,
+      "blend_log_loss": 0.07778651916822729,
+      "blend_probability_yes": 0.07483809020262741,
+      "calibration_profile_id": null,
+      "event_date": "2026-07-28",
+      "event_id": "SYNTH-KXBTC-26JUL2817",
+      "event_weight": 0.5,
+      "execution": [],
+      "expires_at": "2026-07-28T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "609a26b2153bf62b9e6d6760d5cd21f9059f409293a8b77ef93a01a842030fe7",
+      "market_id": "SYNTH-KXBTC-26JUL2817-B119250",
+      "market_yes_ask": 0.08,
+      "market_yes_ask_brier": 0.0064,
+      "market_yes_ask_log_loss": 0.08338160893905106,
+      "market_yes_ask_size": 70.0,
+      "observation_end_at": "2026-07-28T17:00:00+00:00",
+      "observation_id": "927a3aca-6340-5865-92ab-324dab000e6e",
+      "observed_at": "2026-07-28T16:40:00+00:00",
+      "outcome_yes": 0,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.004900000000000005,
+      "recorded_midpoint_anchor_log_loss": 0.07257069283483546,
+      "recorded_midpoint_anchor_probability_yes": 0.07000000000000003,
+      "regime": "range / low-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-07-28T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "927a3aca-6340-5865-92ab-324dab000e6e",
+      "run_manifest_sha256": "ebc2877f37eb0eec812ac47f44d6aa06fe9b2ccfced5ee6692fda8642643b758",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-07-28T17:02:00+00:00",
+      "state": "WATCH",
+      "structural_brier": 0.006397089902493342,
+      "structural_log_loss": 0.08336183720252119,
+      "structural_probability_yes": 0.07998180982256742,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": null,
+      "blend_log_loss": null,
+      "blend_probability_yes": 0.28681486156859465,
+      "calibration_profile_id": null,
+      "event_date": "2026-09-26",
+      "event_id": "SYNTH-KXBTC-26SEP2601",
+      "event_weight": null,
+      "execution": [],
+      "expires_at": "2026-09-26T01:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "914265057289c8a710c86983eaac618966bd583356dccadead7d958c4d33ee90",
+      "market_id": "SYNTH-KXBTC-26SEP2601-B119750",
+      "market_yes_ask": 0.32,
+      "market_yes_ask_brier": null,
+      "market_yes_ask_log_loss": null,
+      "market_yes_ask_size": 25.0,
+      "observation_end_at": "2026-09-26T01:00:00+00:00",
+      "observation_id": "a9ca42e2-95ed-5354-a6cc-0bbd8cb56bf0",
+      "observed_at": "2026-09-25T23:40:00+00:00",
+      "outcome_yes": null,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": null,
+      "recorded_midpoint_anchor_log_loss": null,
+      "recorded_midpoint_anchor_probability_yes": 0.31000000000000005,
+      "regime": "uptrend / typical-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": null,
+      "resolution_status": "unresolved",
+      "run_id": "a9ca42e2-95ed-5354-a6cc-0bbd8cb56bf0",
+      "run_manifest_sha256": "c7f9dcfa5788411421d2fa1f36ff4cb3bbaf512b264eb9eda60ee73e37f45eaf",
+      "series_id": "KXBTC",
+      "settlement_ts": null,
+      "state": "WATCH",
+      "structural_brier": null,
+      "structural_log_loss": null,
+      "structural_probability_yes": 0.2646985453479318,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": "outcome-after-cutoff"
+    },
+    {
+      "blend_brier": 0.5631966784717937,
+      "blend_log_loss": 1.3881533222895543,
+      "blend_probability_yes": 0.2495356914071172,
+      "calibration_profile_id": null,
+      "event_date": "2026-09-08",
+      "event_id": "SYNTH-KXBTC-26SEP0817",
+      "event_weight": 1.0,
+      "execution": [
+        {
+          "label": "ask-withdrawn",
+          "market_id": "SYNTH-KXBTC-26SEP0817-B121250",
+          "no_ask": 0.89,
+          "no_ask_size": 30.0,
+          "no_bid": null,
+          "observed_at": "2026-09-08T16:50:30+00:00",
+          "snapshot_id": "c36dedb2-bff3-502c-bfa3-afa98cf4c4ee",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": null,
+          "yes_ask_size": null,
+          "yes_bid": 0.11
+        },
+        {
+          "label": "ask-withdrawn",
+          "market_id": "SYNTH-KXBTC-26SEP0817-B121250",
+          "no_ask": 0.89,
+          "no_ask_size": 30.0,
+          "no_bid": null,
+          "observed_at": "2026-09-08T16:51:00+00:00",
+          "snapshot_id": "eb892bba-f16c-5e51-bb85-b6385eb91b30",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": null,
+          "yes_ask_size": null,
+          "yes_bid": 0.11
+        },
+        {
+          "label": "ask-withdrawn",
+          "market_id": "SYNTH-KXBTC-26SEP0817-B121250",
+          "no_ask": 0.9,
+          "no_ask_size": 30.0,
+          "no_bid": null,
+          "observed_at": "2026-09-08T16:52:00+00:00",
+          "snapshot_id": "a64f2d18-f7c7-598f-a55f-a06f05d74512",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": null,
+          "yes_ask_size": null,
+          "yes_bid": 0.1
+        }
+      ],
+      "expires_at": "2026-09-08T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "2e8134aadbd6b50ae30862472e19156fa8266e8bb3f4744ed8d3867b0df458ec",
+      "market_id": "SYNTH-KXBTC-26SEP0817-B121250",
+      "market_yes_ask": 0.14,
+      "market_yes_ask_brier": 0.7395999999999999,
+      "market_yes_ask_log_loss": 1.9661128563728327,
+      "market_yes_ask_size": 30.0,
+      "observation_end_at": "2026-09-08T17:00:00+00:00",
+      "observation_id": "b2d9a5fc-ce2e-5be8-a8c5-9a22f3c65d66",
+      "observed_at": "2026-09-08T16:50:00+00:00",
+      "outcome_yes": 1,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.7569,
+      "recorded_midpoint_anchor_log_loss": 2.0402208285265546,
+      "recorded_midpoint_anchor_probability_yes": 0.13,
+      "regime": "uptrend / high-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-09-08T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "b2d9a5fc-ce2e-5be8-a8c5-9a22f3c65d66",
+      "run_manifest_sha256": "cd86cfb19222833443b7d6111e4ba191dcafc1074db09907f2d3a9a3b5eab1f1",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-09-08T17:02:00+00:00",
+      "state": "ENTER YES",
+      "structural_brier": 0.3303273300690229,
+      "structural_log_loss": 0.8550571150498214,
+      "structural_probability_yes": 0.42525890170527836,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": null,
+      "blend_log_loss": null,
+      "blend_probability_yes": 0.4818037200562501,
+      "calibration_profile_id": null,
+      "event_date": "2026-09-15",
+      "event_id": "SYNTH-KXBTC-26SEP1517",
+      "event_weight": null,
+      "execution": [],
+      "expires_at": "2026-09-15T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "63cb71fbd0c7abc027aa0623ad1aeba98595d32c8c080021da87f2284ade1dca",
+      "market_id": "SYNTH-KXBTC-26SEP1517-B117250",
+      "market_yes_ask": 0.42,
+      "market_yes_ask_brier": null,
+      "market_yes_ask_log_loss": null,
+      "market_yes_ask_size": 40.0,
+      "observation_end_at": "2026-09-15T17:00:00+00:00",
+      "observation_id": "b454b8ea-52cc-5d94-8303-11e592fbc9de",
+      "observed_at": "2026-09-15T16:40:00+00:00",
+      "outcome_yes": null,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": null,
+      "recorded_midpoint_anchor_log_loss": null,
+      "recorded_midpoint_anchor_probability_yes": 0.41000000000000003,
+      "regime": "range / typical-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": null,
+      "resolution_status": "unresolved",
+      "run_id": "b454b8ea-52cc-5d94-8303-11e592fbc9de",
+      "run_manifest_sha256": "ebb23aeb0b3bded60ba107777a76e7fbf72d9131cc6b2ba139136cc0bb7f5617",
+      "series_id": "KXBTC",
+      "settlement_ts": null,
+      "state": "WATCH",
+      "structural_brier": null,
+      "structural_log_loss": null,
+      "structural_probability_yes": 0.5543669116222973,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": "missing-resolution"
+    },
+    {
+      "blend_brier": 0.002623103781354294,
+      "blend_log_loss": 0.05257437281564173,
+      "blend_probability_yes": 0.05121624528754811,
+      "calibration_profile_id": null,
+      "event_date": "2026-07-28",
+      "event_id": "SYNTH-KXBTC-26JUL2817",
+      "event_weight": 0.5,
+      "execution": [],
+      "expires_at": "2026-07-28T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "9911d53555c872267ac5e6e9006ec5cd4818264e2b6fa7ad0712e7a7c2d01f86",
+      "market_id": "SYNTH-KXBTC-26JUL2817-B119250",
+      "market_yes_ask": 0.06,
+      "market_yes_ask_brier": 0.0036,
+      "market_yes_ask_log_loss": 0.06187540371808747,
+      "market_yes_ask_size": 50.0,
+      "observation_end_at": "2026-07-28T17:00:00+00:00",
+      "observation_id": "caba6d05-cced-5bad-827f-0f90c915612b",
+      "observed_at": "2026-07-28T16:50:00+00:00",
+      "outcome_yes": 0,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.0025000000000000022,
+      "recorded_midpoint_anchor_log_loss": 0.051293294387550564,
+      "recorded_midpoint_anchor_probability_yes": 0.050000000000000024,
+      "regime": "range / low-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-07-28T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "caba6d05-cced-5bad-827f-0f90c915612b",
+      "run_manifest_sha256": "9b7282d258d6f26fd3455aefa0c111296a09db47e8f653169b89c26b31df2d62",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-07-28T17:02:00+00:00",
+      "state": "WATCH",
+      "structural_brier": 0.0027520979638828067,
+      "structural_log_loss": 0.05388659291881505,
+      "structural_probability_yes": 0.052460441895611276,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    },
+    {
+      "blend_brier": 0.5447630984427878,
+      "blend_log_loss": 1.339718782922329,
+      "blend_probability_yes": 0.26191931440879196,
+      "calibration_profile_id": null,
+      "event_date": "2026-08-11",
+      "event_id": "SYNTH-KXBTC-26AUG1117",
+      "event_weight": 0.5,
+      "execution": [
+        {
+          "label": "partial-size",
+          "market_id": "SYNTH-KXBTC-26AUG1117-B111750",
+          "no_ask": 0.88,
+          "no_ask_size": 30.0,
+          "no_bid": 0.86,
+          "observed_at": "2026-08-11T16:50:30+00:00",
+          "snapshot_id": "48ad8af8-129e-5eb0-9e30-4c9e0e1beddb",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.14,
+          "yes_ask_size": 25.0,
+          "yes_bid": 0.12
+        },
+        {
+          "label": "partial-size",
+          "market_id": "SYNTH-KXBTC-26AUG1117-B111750",
+          "no_ask": 0.88,
+          "no_ask_size": 30.0,
+          "no_bid": 0.86,
+          "observed_at": "2026-08-11T16:51:00+00:00",
+          "snapshot_id": "f5bd7ad0-261a-5d84-9441-9f52fcef4212",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.14,
+          "yes_ask_size": 12.0,
+          "yes_bid": 0.12
+        },
+        {
+          "label": "partial-size",
+          "market_id": "SYNTH-KXBTC-26AUG1117-B111750",
+          "no_ask": 0.88,
+          "no_ask_size": 30.0,
+          "no_bid": 0.86,
+          "observed_at": "2026-08-11T16:52:00+00:00",
+          "snapshot_id": "59b637aa-df2e-5c2c-9e19-22568c665b01",
+          "source": "synthetic-fixture",
+          "status": "active",
+          "yes_ask": 0.14,
+          "yes_ask_size": 5.0,
+          "yes_bid": 0.12
+        }
+      ],
+      "expires_at": "2026-08-11T17:00:00+00:00",
+      "feature_source": "manual-synthetic",
+      "input_id": "b355877c915f037e34e4e5b71a3d11839a890751f153ac8caeb6cc46a958d274",
+      "market_id": "SYNTH-KXBTC-26AUG1117-B111750",
+      "market_yes_ask": 0.14,
+      "market_yes_ask_brier": 0.7395999999999999,
+      "market_yes_ask_log_loss": 1.9661128563728327,
+      "market_yes_ask_size": 60.0,
+      "observation_end_at": "2026-08-11T17:00:00+00:00",
+      "observation_id": "f815b846-c75e-5c27-bf78-912b2200ba7a",
+      "observed_at": "2026-08-11T16:50:00+00:00",
+      "outcome_yes": 1,
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "recorded_midpoint_anchor_brier": 0.7569,
+      "recorded_midpoint_anchor_log_loss": 2.0402208285265546,
+      "recorded_midpoint_anchor_probability_yes": 0.13,
+      "regime": "downtrend / high-volatility",
+      "research_context_id": null,
+      "resolution_observed_at": "2026-08-11T17:04:00+00:00",
+      "resolution_status": "resolved",
+      "run_id": "f815b846-c75e-5c27-bf78-912b2200ba7a",
+      "run_manifest_sha256": "1f0f26ffe4dc8a1e0729d84ad5b3b7388c87c37741f9165cee85a7ede02271ae",
+      "series_id": "KXBTC",
+      "settlement_ts": "2026-08-11T17:02:00+00:00",
+      "state": "ENTER YES",
+      "structural_brier": 0.2944849039444032,
+      "structural_log_loss": 0.7823383126525763,
+      "structural_probability_yes": 0.45733536696740296,
+      "uncertainty_source": "fixed",
+      "unresolved_reason": null
+    }
+  ],
+  "paired_differences": [
+    {
+      "baseline_role": "primary",
+      "comparison": "structural_minus_market_yes_ask",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.16622694965837922,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.07125973257101068,
+        "upper": 0.11632309530015984
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.23030174678647983,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.12080459095016112,
+        "upper": 0.2251829861180956
+      },
+      "events": 7,
+      "metric": "brier",
+      "minuend": "structural",
+      "point_estimate": -0.01774210072269374,
+      "resolved_forecasts": 11,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "structural_minus_market_yes_ask",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.3961818375552234,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.22933448187157493,
+        "upper": 0.48091372324311854
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.5974442667646171,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.4109236879618932,
+        "upper": 0.9271094392302506
+      },
+      "events": 7,
+      "metric": "log_loss",
+      "minuend": "structural",
+      "point_estimate": 0.08089929633434279,
+      "resolved_forecasts": 11,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_market_yes_ask",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.08949221249883021,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.04344959532926787,
+        "upper": 0.0755021217925414
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.1119272336001822,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.06949649665751306,
+        "upper": 0.14368436408001842
+      },
+      "events": 7,
+      "metric": "brier",
+      "minuend": "blend",
+      "point_estimate": -0.00018361785890164004,
+      "resolved_forecasts": 11,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_market_yes_ask",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.22463144972037155,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.10490977492966726,
+        "upper": 0.1738941951964851
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.3236339594209107,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.1927846358231195,
+        "upper": 0.3935155843073485
+      },
+      "events": 7,
+      "metric": "log_loss",
+      "minuend": "blend",
+      "point_estimate": -0.006781207374865067,
+      "resolved_forecasts": 11,
+      "subtrahend": "market_yes_ask"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_structural",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.06606577336085946,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.03759456149520742,
+        "upper": 0.08083740972788242
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.09418136160559977,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.05565423201306859,
+        "upper": 0.11961422839058454
+      },
+      "events": 7,
+      "metric": "brier",
+      "minuend": "blend",
+      "point_estimate": 0.01755848286379211,
+      "resolved_forecasts": 11,
+      "subtrahend": "structural"
+    },
+    {
+      "baseline_role": "primary",
+      "comparison": "blend_minus_structural",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.304244252632943,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.12483347373614574,
+        "upper": 0.1707632693599217
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.5391989081567132,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.2183897110645967,
+        "upper": 0.26936279295422577
+      },
+      "events": 7,
+      "metric": "log_loss",
+      "minuend": "blend",
+      "point_estimate": -0.08768050370920785,
+      "resolved_forecasts": 11,
+      "subtrahend": "structural"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "structural_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.16955500521393477,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.07071631608158495,
+        "upper": 0.11334981784566477
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.2369638896436227,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.12117271142133508,
+        "upper": 0.22465441468952418
+      },
+      "events": 7,
+      "metric": "brier",
+      "minuend": "structural",
+      "point_estimate": -0.02190876738936041,
+      "resolved_forecasts": 11,
+      "subtrahend": "recorded_midpoint_anchor"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "structural_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.4041467550968842,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.22409193995215554,
+        "upper": 0.45190133676032884
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.6261509683180729,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.4139785939289692,
+        "upper": 0.9143200975767835
+      },
+      "events": 7,
+      "metric": "log_loss",
+      "minuend": "structural",
+      "point_estimate": 0.06572551765817956,
+      "resolved_forecasts": 11,
+      "subtrahend": "recorded_midpoint_anchor"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "blend_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.09004320901921302,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.0414941844190953,
+        "upper": 0.06631788669591134
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.11771160505923932,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.06930413678434683,
+        "upper": 0.13776397363431364
+      },
+      "events": 7,
+      "metric": "brier",
+      "minuend": "blend",
+      "point_estimate": -0.0043502845255683036,
+      "resolved_forecasts": 11,
+      "subtrahend": "recorded_midpoint_anchor"
+    },
+    {
+      "baseline_role": "secondary",
+      "comparison": "blend_minus_recorded_midpoint_anchor",
+      "date_block_bootstrap": {
+        "clusters": 6,
+        "confidence": 0.95,
+        "lower": -0.23340861864401768,
+        "method": "utc-observation-end-date-block-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.09995004601410847,
+        "upper": 0.14656913118182668
+      },
+      "dates": 6,
+      "event_bootstrap": {
+        "clusters": 7,
+        "confidence": 0.95,
+        "lower": -0.35496150050919323,
+        "method": "event-cluster-percentile",
+        "replicates": 2000,
+        "seed": 1729,
+        "standard_error": 0.19603600306503546,
+        "upper": 0.38050271580172257
+      },
+      "events": 7,
+      "metric": "log_loss",
+      "minuend": "blend",
+      "point_estimate": -0.021954986051028295,
+      "resolved_forecasts": 11,
+      "subtrahend": "recorded_midpoint_anchor"
+    }
+  ],
+  "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+  "protocol_version": "pms-phase1-v2",
+  "regimes": [
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.2955578795103121,
+          "log_loss": 0.7910841761668672
+        },
+        "market_yes_ask": {
+          "brier": 0.3898,
+          "log_loss": 1.0946282038435213
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.3965,
+          "log_loss": 1.1254709299211036
+        },
+        "structural": {
+          "brier": 0.17675508778453436,
+          "log_loss": 0.5303329186701761
+        }
+      },
+      "eligible_forecasts": 2,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "downtrend / high-volatility",
+      "resolved_events": 1,
+      "resolved_forecasts": 2
+    },
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.1079153382429845,
+          "log_loss": 0.3982482630260952
+        },
+        "market_yes_ask": {
+          "brier": 0.22089999999999999,
+          "log_loss": 0.6348782724359695
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.21159999999999995,
+          "log_loss": 0.616186139423817
+        },
+        "structural": {
+          "brier": 0.04810609896104863,
+          "log_loss": 0.2476040678883623
+        }
+      },
+      "eligible_forecasts": 1,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "downtrend / low-volatility",
+      "resolved_events": 1,
+      "resolved_forecasts": 1
+    },
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.004111921763265446,
+          "log_loss": 0.06518044599193451
+        },
+        "market_yes_ask": {
+          "brier": 0.005,
+          "log_loss": 0.07262850632856926
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.0037000000000000036,
+          "log_loss": 0.06193199361119301
+        },
+        "structural": {
+          "brier": 0.004574593933188075,
+          "log_loss": 0.06862421506066813
+        }
+      },
+      "eligible_forecasts": 2,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "range / low-volatility",
+      "resolved_events": 1,
+      "resolved_forecasts": 2
+    },
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.12729636063365626,
+          "log_loss": 0.44127803667224286
+        },
+        "market_yes_ask": {
+          "brier": 0.04000000000000001,
+          "log_loss": 0.2231435513142098
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.03609999999999999,
+          "log_loss": 0.21072103131565256
+        },
+        "structural": {
+          "brier": 0.3219644525666429,
+          "log_loss": 0.8379859537717355
+        }
+      },
+      "eligible_forecasts": 2,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "range / typical-volatility",
+      "resolved_events": 1,
+      "resolved_forecasts": 1
+    },
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.741920966270086,
+          "log_loss": 1.975790548840282
+        },
+        "market_yes_ask": {
+          "brier": 0.3364000000000001,
+          "log_loss": 0.8675005677047231
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.34809999999999997,
+          "log_loss": 0.8915981192837835
+        },
+        "structural": {
+          "brier": 0.9293983554329792,
+          "log_loss": 3.325712080443561
+        }
+      },
+      "eligible_forecasts": 1,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "unknown",
+      "resolved_events": 1,
+      "resolved_forecasts": 1
+    },
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.5631966784717937,
+          "log_loss": 1.3881533222895543
+        },
+        "market_yes_ask": {
+          "brier": 0.7395999999999999,
+          "log_loss": 1.9661128563728327
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.7569,
+          "log_loss": 2.0402208285265546
+        },
+        "structural": {
+          "brier": 0.3303273300690229,
+          "log_loss": 0.8550571150498214
+        }
+      },
+      "eligible_forecasts": 1,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "uptrend / high-volatility",
+      "resolved_events": 1,
+      "resolved_forecasts": 1
+    },
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.19694886342892395,
+          "log_loss": 0.5655151840099125
+        },
+        "market_yes_ask": {
+          "brier": 0.3065333333333334,
+          "log_loss": 0.8138264706211186
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.31450000000000006,
+          "log_loss": 0.8328058372719825
+        },
+        "structural": {
+          "brier": 0.10291270952706104,
+          "log_loss": 0.37369715207701937
+        }
+      },
+      "eligible_forecasts": 4,
+      "note": "descriptive only; no regime-level uncertainty is reported",
+      "regime": "uptrend / typical-volatility",
+      "resolved_events": 1,
+      "resolved_forecasts": 3
+    }
+  ],
+  "report_schema": "pms-phase1-comparison-v1",
+  "source_kind": "synthetic-fixture",
+  "source_selection_branches": [
+    {
+      "arms": {
+        "blend": {
+          "brier": 0.29099257261728884,
+          "log_loss": 0.8036071395709842
+        },
+        "market_yes_ask": {
+          "brier": 0.2911761904761905,
+          "log_loss": 0.8103883469458493
+        },
+        "recorded_midpoint_anchor": {
+          "brier": 0.2953428571428572,
+          "log_loss": 0.8255621256220124
+        },
+        "structural": {
+          "brier": 0.2734340897534967,
+          "log_loss": 0.8912876432801919
+        }
+      },
+      "branch": "manual-synthetic",
+      "eligible_events": 9,
+      "eligible_forecasts": 13,
+      "feature_source": "manual-synthetic",
+      "note": "predeclared source-selection branch; pooled only under the fixed selection rule; descriptive only, no branch-level uncertainty",
+      "recipe_id": "sha256:755269bce88fce8f5530c75df4a8574e2edd297b197d4bd3dd8d2188536a9bbd",
+      "resolved_dates": 6,
+      "resolved_events": 7,
+      "resolved_forecasts": 11,
+      "selected_volatility_kind": null,
+      "selected_volatility_provider": null,
+      "selected_volatility_window_seconds": null
+    }
+  ]
+}

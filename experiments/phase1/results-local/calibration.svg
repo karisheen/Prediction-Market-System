@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="560" viewBox="0 0 720 560" font-family="sans-serif">
+<rect width="720" height="560" fill="#ffffff"/>
+<text x="20" y="26" font-size="14" font-weight="bold">DESCRIPTIVE RETROSPECTIVE: local archive summary, not unseen-event evidence</text>
+<text x="20" y="46" font-size="10">pms-phase1-v2 sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe</text>
+<text x="20" y="62" font-size="10">as of 2026-09-26T00:00:00+00:00; 0 resolved forecasts in 0 events; conclusion inconclusive</text>
+<text x="20" y="78" font-size="10">weighting: each resolved forecast weighted 1 / resolved forecasts in its event; pools 0 source-selection branches</text>
+<line x1="70.00" y1="90.00" x2="70.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="490.00" x2="470.00" y2="490.00" stroke="#e5e5e5"/><text x="70.00" y="506.00" font-size="10" text-anchor="middle">0.0</text><text x="62.00" y="490.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.0</text>
+<line x1="150.00" y1="90.00" x2="150.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="410.00" x2="470.00" y2="410.00" stroke="#e5e5e5"/><text x="150.00" y="506.00" font-size="10" text-anchor="middle">0.2</text><text x="62.00" y="410.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.2</text>
+<line x1="230.00" y1="90.00" x2="230.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="330.00" x2="470.00" y2="330.00" stroke="#e5e5e5"/><text x="230.00" y="506.00" font-size="10" text-anchor="middle">0.4</text><text x="62.00" y="330.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.4</text>
+<line x1="310.00" y1="90.00" x2="310.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="250.00" x2="470.00" y2="250.00" stroke="#e5e5e5"/><text x="310.00" y="506.00" font-size="10" text-anchor="middle">0.6</text><text x="62.00" y="250.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.6</text>
+<line x1="390.00" y1="90.00" x2="390.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="170.00" x2="470.00" y2="170.00" stroke="#e5e5e5"/><text x="390.00" y="506.00" font-size="10" text-anchor="middle">0.8</text><text x="62.00" y="170.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.8</text>
+<line x1="470.00" y1="90.00" x2="470.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="90.00" x2="470.00" y2="90.00" stroke="#e5e5e5"/><text x="470.00" y="506.00" font-size="10" text-anchor="middle">1.0</text><text x="62.00" y="90.00" font-size="10" text-anchor="end" dominant-baseline="middle">1.0</text>
+<rect x="70.00" y="90.00" width="400.00" height="400.00" fill="none" stroke="#000000"/>
+<line x1="70.00" y1="490.00" x2="470.00" y2="90.00" stroke="#000000" stroke-dasharray="2 4"/>
+<text x="270.00" y="526.00" font-size="11" text-anchor="middle">mean forecast probability (event-weighted)</text>
+<text x="18" y="290.00" font-size="11" text-anchor="middle" transform="rotate(-90 18 290.00)">observed YES frequency (event-weighted)</text>
+<line x1="490.00" y1="100.00" x2="514.00" y2="100.00" stroke="#1f77b4" stroke-width="2"/><text x="520.00" y="100.00" font-size="10" dominant-baseline="middle">structural</text>
+<line x1="490.00" y1="122.00" x2="514.00" y2="122.00" stroke="#2ca02c" stroke-width="2"/><text x="520.00" y="122.00" font-size="10" dominant-baseline="middle">blend</text>
+<line x1="490.00" y1="144.00" x2="514.00" y2="144.00" stroke="#d62728" stroke-width="2"/><text x="520.00" y="144.00" font-size="10" dominant-baseline="middle">YES ask (primary baseline)</text>
+<line x1="490.00" y1="166.00" x2="514.00" y2="166.00" stroke="#7f7f7f" stroke-width="2" stroke-dasharray="4 3"/><text x="520.00" y="166.00" font-size="10" dominant-baseline="middle">recorded midpoint (not executable)</text>
+<text x="270.00" y="290.00" font-size="12" text-anchor="middle">no resolved forecasts to calibrate</text>
+</svg>

@@ -1,0 +1,203 @@
+{
+  "protocol_version": "pms-phase1-v1",
+  "protocol_id": "sha256:531a074fbaa7be281ca15df07c6ebf8c9385278903b8c9732371130f805991d1",
+  "frozen_at": "2026-09-26T07:58:04+00:00",
+  "title": "Phase 1 market-baseline probability comparison for KXBTC 60-second averaged terminal ranges",
+  "research_only": true,
+  "series": "KXBTC",
+  "symbol": "BTC",
+  "contract_family": "terminal-range",
+  "model_name": "crypto-terminal-range-market-anchor-arithmetic-60s",
+  "model_version": "2.1.0",
+  "structural_weight": 0.5,
+  "market_baseline": "yes_ask",
+  "secondary_market_baseline": "recorded_midpoint_anchor",
+  "maximum_input_age_seconds": 120,
+  "minimum_ask_size": 1,
+  "settlement_window_seconds": 60,
+  "minimum_seconds_to_entry_horizon": 300,
+  "report_as_of": "2026-09-26T00:00:00+00:00",
+  "archive_start": "2026-07-01T00:00:00+00:00",
+  "archive_end": "2026-09-26T00:00:00+00:00",
+  "holdout_start": "2026-09-27T00:00:00+00:00",
+  "holdout_end": "2026-11-26T00:00:00+00:00",
+  "training_start": "2026-05-29T00:00:00+00:00",
+  "training_end": "2026-08-27T00:00:00+00:00",
+  "validation_start": "2026-08-27T00:00:00+00:00",
+  "validation_end": "2026-09-26T00:00:00+00:00",
+  "minimum_calibration_events": 30,
+  "minimum_resolved_events": 20,
+  "minimum_dates": 20,
+  "minimum_validation_folds": 2,
+  "minimum_fold_resolved_events": 10,
+  "log_loss_epsilon": 1e-12,
+  "calibration_bins": 10,
+  "bootstrap_replicates": 2000,
+  "bootstrap_seed": 1729,
+  "confidence": 0.95,
+  "decision_costs": {
+    "fee_coefficient": 0.07,
+    "fee_type": "quadratic",
+    "slippage_bps": 25,
+    "latency_seconds": 30,
+    "max_volume_participation": 0.1,
+    "resolution_haircut": 0.01,
+    "uncertainty_margin": 0.05,
+    "minimum_ask_size": 10,
+    "fractional_kelly": 0.25,
+    "paper_bankroll": 10000,
+    "max_bankroll_fraction": 0.02,
+    "max_event_bankroll_fraction": 0.02,
+    "min_conservative_edge": 0.03,
+    "minimum_seconds_to_expiry": 300
+  },
+  "cost_scenarios": [
+    {
+      "name": "base",
+      "slippage_bps": 25,
+      "latency_seconds": 30,
+      "fee_multiplier": 1.0,
+      "resolution_haircut": 0.01
+    },
+    {
+      "name": "adverse",
+      "slippage_bps": 50,
+      "latency_seconds": 60,
+      "fee_multiplier": 1.5,
+      "resolution_haircut": 0.02
+    },
+    {
+      "name": "severe",
+      "slippage_bps": 100,
+      "latency_seconds": 120,
+      "fee_multiplier": 2.0,
+      "resolution_haircut": 0.03
+    }
+  ],
+  "validation_folds": [
+    {
+      "name": "validation-1",
+      "start": "2026-08-27T00:00:00+00:00",
+      "end": "2026-09-11T00:00:00+00:00"
+    },
+    {
+      "name": "validation-2",
+      "start": "2026-09-11T00:00:00+00:00",
+      "end": "2026-09-26T00:00:00+00:00"
+    }
+  ],
+  "holdout_folds": [
+    {
+      "name": "holdout-1",
+      "start": "2026-09-27T00:00:00+00:00",
+      "end": "2026-10-27T00:00:00+00:00"
+    },
+    {
+      "name": "holdout-2",
+      "start": "2026-10-27T00:00:00+00:00",
+      "end": "2026-11-26T00:00:00+00:00"
+    }
+  ],
+  "arms": {
+    "structural": "opportunity.forecast.structural_probability_yes",
+    "blend": "opportunity.forecast.probability_yes",
+    "market": "opportunity.market.yes_ask"
+  },
+  "secondary_arms": {
+    "recorded_midpoint_anchor": "opportunity.forecast.market_probability_yes"
+  },
+  "paired_differences": [
+    "structural_minus_market",
+    "blend_minus_market",
+    "blend_minus_structural"
+  ],
+  "source_kinds": {
+    "synthetic-fixture": "Declarative synthetic observations run through the real engine; never empirical evidence.",
+    "retrospective-local": "Previously recorded forward-evaluation ledger rows inside the archive window; already-seen local evidence, never untouched.",
+    "forward-holdout": "Forward-evaluation rows with decision time inside the holdout window, recorded before outcomes existed; not implemented in Phase 1 and never inferred from retrospective provenance."
+  },
+  "timestamp_rules": [
+    "Every timestamp MUST be ISO 8601 with an explicit UTC offset and is normalized to UTC; naive or unparseable timestamps exclude the observation (reason: invalid_timestamp).",
+    "Decision time is opportunity.market.observed_at; opportunity.forecast.generated_at MUST equal it (reason: forecast_time_mismatch).",
+    "All windows are half-open [start, end) in UTC and are applied to decision time.",
+    "Event date is the UTC calendar date of the explicit opportunity.market.observation_end_at; every observation of one event MUST share that date, otherwise the whole event is excluded (reason: event_date_conflict) rather than being counted as more than one independent event.",
+    "Fold membership uses decision time; an event whose observations span two folds is assigned to the fold containing its earliest decision time."
+  ],
+  "availability_rules": [
+    "Only information available at decision time is admissible: inputs.crypto.observed_at <= decision time and all research-context source availability/retrieval times <= decision time (reason: future_input).",
+    "Crypto input age at decision (market.observed_at - crypto.observed_at) MUST be within [0, maximum_input_age_seconds] (reason: stale_input or future_input). Synthetic fixtures do not bypass this.",
+    "retrospective-local rows MUST carry a complete content-addressed research context whose content_id equals inputs.crypto.input_provenance.research_context_id, whose spot_end_at equals inputs.crypto.observed_at, and which passes ResearchContext.validate_at(decision time, maximum_input_age_seconds) (reason: research_context_unavailable or research_context_invalid). Legacy rows lacking provenance are excluded, never reconstructed as point-in-time.",
+    "synthetic-fixture rows MAY use manual features only when explicitly labelled synthetic; freshness and timing rules still apply.",
+    "run_manifest_sha256 MUST equal content_id(run_manifest) and input_id MUST equal content_id(inputs) (reason: identity_mismatch).",
+    "retrospective-local rows MUST be evidence class forward-evaluation; historical-evaluation, manual-evaluation and ambiguous-legacy rows are excluded (reason: evidence_class). Source provenance never fabricates a forward class.",
+    "A calibration profile recorded in inputs.calibration_profile is compatible only if symbol, model_name, model_version and recipe_id match the forecast, training_start >= protocol training_start, cutoff_at <= min(training_end, decision time), and independent_event_count >= minimum_calibration_events. An incompatible or temporally invalid recorded profile excludes the row (reason: calibration_profile_invalid). Rows with no profile (uncertainty_source fixed) remain eligible; calibration affects only the uncertainty interval and recommendation, never the scored probabilities.",
+    "An outcome is known only if resolution.result is yes or no and resolution.observed_at <= report as_of; otherwise the row is unresolved (retained, unscored). A resolution observed at or before decision time excludes the row (reason: outcome_leak)."
+  ],
+  "eligibility_rules": [
+    "opportunity.market.series_id equals series and inputs.crypto.symbol equals symbol (reason: out_of_scope).",
+    "inputs.contract is a terminal range: 0 < lower_bound < upper_bound and settlement_window_seconds equals settlement_window_seconds (reason: unsupported_contract).",
+    "forecast.model_name equals model_name exactly, forecast.model_version equals model_version, inputs.recipe.structural_weight and inputs.engine_config.structural_weight equal structural_weight, and forecast.recipe_id equals the fingerprint of inputs.recipe (reason: model_mismatch).",
+    "opportunity.market.event_id is an explicit non-empty venue event identifier; no fallback to market_id or contract label (reason: missing_event_id).",
+    "opportunity.market.observation_end_at is explicit; observation_start_at is null or equals observation_end_at - settlement_window_seconds (reason: missing_observation_provenance).",
+    "Decision time is at or before observation_end_at - settlement_window_seconds (averaging has not begun) and min(expires_at, observation_end_at) - decision time >= minimum_seconds_to_entry_horizon (reason: timing_ineligible).",
+    "market.yes_ask is present, finite and in [0, 1] with yes_ask_size present and >= minimum_ask_size (reason: no_displayed_ask).",
+    "All present quotes are finite in [0, 1] with yes_bid <= yes_ask and no_bid <= no_ask; structural, blend and recorded midpoint probabilities are finite in [0, 1] and lower_probability_yes <= probability_yes <= upper_probability_yes (reason: invalid_quote or invalid_arm). A missing or invalid arm excludes the entire row, never one arm.",
+    "Decision time lies inside the window of the source kind: archive window and before report_as_of for retrospective-local; holdout window for forward-holdout (reason: outside_window).",
+    "Duplicate observation_id values keep the first by stable (observed_at, observation_id) order; later copies are excluded (reason: duplicate_observation).",
+    "Every recommendation state (WATCH included) is eligible; no selection on entry, edge or recommendation state."
+  ],
+  "unsupported_rules": [
+    "Threshold (above/below) and touch-barrier contracts are outside the terminal-range family.",
+    "Ranges without positive strictly increasing bounds, without an explicit fixed-time terminal observation, or with touch semantics are unsupported.",
+    "Settlement averaging other than explicit simple arithmetic averaging of the 60 seconds before observation end (weighted, geometric, median, other windows, ambiguous wording) is unsupported.",
+    "Non-binary markets, non-$1 payouts, inactive markets, metadata from the future, conflicting observation clocks and elapsed averaging prefixes are unsupported.",
+    "Unsupported rows are listed in the excluded output with reason; they are never approximated or silently dropped."
+  ],
+  "metrics": {
+    "brier": "(p - y)^2 with y = 1 for yes, 0 for no",
+    "log_loss": "-(y*ln(q) + (1-y)*ln(1-q)) with q = min(max(p, log_loss_epsilon), 1 - log_loss_epsilon)",
+    "scored_population": "resolved eligible rows with all three arms valid; unresolved eligible rows are retained in observations and coverage but unscored",
+    "event_weighting": "average the metric over the scored rows of each event, then average event scores with equal weight; repeated contracts or timestamps never increase the independent event count",
+    "paired_delta": "per-event mean of arm A minus per-event mean of arm B, averaged over events; negative favours arm A",
+    "secondary_baseline": "recorded_midpoint_anchor is the engine's log-odds market anchor from bid/ask midpoints; it is descriptive only, reported separately, and is NOT an executable price",
+    "calibration": "per arm, calibration_bins equal-width bins on [0, 1] (last bin closed); each scored row weighted 1 / number of scored rows in its event; each bin emits forecast_count, event_count, weight_sum, weighted mean probability and weighted mean outcome",
+    "coverage": "counts of eligible rows/events, resolved/unresolved rows/events, excluded rows by reason, recommendation-state mix, distinct event dates, qualifying folds"
+  },
+  "bootstrap": {
+    "generator": "Python standard-library random.Random(bootstrap_seed); clusters sorted by stable identifier (event_id, or ISO date) before sampling",
+    "interval": "percentile interval at (1 - confidence) / 2 and 1 - (1 - confidence) / 2",
+    "primary": "event cluster bootstrap: resample scored events with replacement, statistic = mean of sampled event scores",
+    "secondary": "UTC event-date block bootstrap: resample event dates with replacement, include every scored event of each sampled date, statistic = sum of sampled event scores / sampled event count",
+    "pairing": "the same resample index sets are applied to every arm and every paired difference within a replicate",
+    "degenerate": "fewer than two clusters yields a null interval, not zero width"
+  },
+  "regimes": {
+    "source": "opportunity.market_regime price_trend and volatility at decision time; missing is 'unknown'; never inferred from outcomes",
+    "use": "descriptive per-regime point metrics with event and date counts; regime intervals only when the regime has at least two independent event clusters, otherwise null; regimes never select the population or the conclusion"
+  },
+  "fold_rules": [
+    "A validation or holdout fold qualifies when it contains at least minimum_fold_resolved_events scored events.",
+    "At least minimum_validation_folds qualifying folds are required before any directional statement; missing qualifying calibration or holdout folds are explicit limitations.",
+    "Training and validation windows constrain which existing calibration evidence may be recorded; they do not assert that such evidence exists or was fitted."
+  ],
+  "cost_rules": [
+    "decision_costs and cost_scenarios apply only to Phase 1C paper decision analysis after Phase 1B is complete; they never alter probability metrics or eligibility.",
+    "minimum_ask_size (top level) gates baseline eligibility; decision_costs.minimum_ask_size gates paper decisions.",
+    "Fill price is the actual later YES ask at or after decision time + latency_seconds, multiplied by (1 + slippage_bps / 10000), plus fee_multiplier * fee_coefficient * price * (1 - price) per contract with the engine's existing quadratic-fee rounding; filled quantity is capped at max_volume_participation of the later displayed ask size.",
+    "No later snapshot, or a later ask above the conservative limit, is a nonfill; partial displayed size is a partial fill; fills are never assumed.",
+    "resolution_haircut is subtracted from expected payout; every scenario is reported, and conclusions use the most adverse reported scenario."
+  ],
+  "tuning_policy": "No fitting, tuning, threshold search or model selection is performed under this protocol. Engine 2.1.0 with structural_weight 0.5 is fixed; all constants above were chosen before any outcome was read.",
+  "training_claim": "This protocol makes no claim that training, calibration or validation data exist or were fitted; any calibration evidence is used only if recorded, temporally valid and compatible.",
+  "outcome_access": "Frozen before any local database read and before any outcome was inspected.",
+  "conclusion_rules": [
+    "synthetic-fixture results are always 'inconclusive' and are pipeline demonstrations only.",
+    "retrospective-local results are always 'inconclusive' for any unseen-event claim, regardless of point estimate, p-value or interval sign; they are already-seen local evidence.",
+    "forward-holdout results are 'inconclusive' unless scored events >= minimum_resolved_events, distinct event dates >= minimum_dates, and qualifying holdout folds >= minimum_validation_folds.",
+    "When those minima hold, a directional statement for a paired difference requires both the event bootstrap and the date-block bootstrap intervals to exclude zero in the same direction for both Brier and log loss; otherwise 'inconclusive'.",
+    "Low events or dates, missing qualifying calibration or holdout folds, and unresolved or excluded coverage are always listed as limitations.",
+    "Probability evidence and paper decisions are reported separately; decisions wait for Phase 1B completion."
+  ],
+  "replacement_policy": "This file is immutable once any analysis has used it. Any change to eligibility, metrics, windows or constants requires a new protocol_version, a new file path and a new protocol_id, plus an explicit trial record; v1 is preserved unchanged.",
+  "protocol_id_rule": "protocol_id = 'sha256:' + content_id(every top-level field except protocol_id), where content_id is sha256 of json.dumps(sort_keys=True, separators=(',', ':'), allow_nan=False) as in prediction_market_system.evidence."
+}
