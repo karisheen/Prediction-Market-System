@@ -1,0 +1,511 @@
+{
+  "content": {
+    "analysis_id": "sha256:e92e264a88a90c4df3a93a1aa05644e5317a2966c1c6523d8c15480c7af72ae8",
+    "artifacts": {
+      "calibration.svg": {
+        "bytes": 3909,
+        "sha256": "e322c5021cf6d77874a688cbe2ad036b770a8a3c7026eb844d26a9f5bf606e5e"
+      },
+      "comparison.csv": {
+        "bytes": 630,
+        "sha256": "c7a8b895e3244861cd868b791414c2884f48fb883c2d19647bba6257e755f001"
+      },
+      "comparison.json": {
+        "bytes": 18306,
+        "sha256": "daee624a8b33a9b2b178e63e1e1daae2f6e91e6f6cd599ff2acb718e9a1d69cf"
+      },
+      "decisions.csv": {
+        "bytes": 50,
+        "sha256": "e2b40f38ef88b2a45f7c887502a0ed85fa8a748d7d127b1936a2bb2fc39ff5fb"
+      },
+      "decisions.json": {
+        "bytes": 21752,
+        "sha256": "88a54f66629fad7c6df520bcca1866a7e1e9984f98b91f8584b60d714a9d65d8"
+      }
+    },
+    "code": {
+      "git_revision": "fde83fc5cea3e6f19885bf9e0633a69a45520017",
+      "lock_sha256": "d087a754a285b5f5f69547e9cc8fa59ba011433d1bd6c5dee98fc2d26a3039e3",
+      "source_files": {
+        "src/prediction_market_system/__init__.py": "0a8e080a798a81e263abc02225cc72ac13461dfe24b62ac22fd59cab590072f0",
+        "src/prediction_market_system/__main__.py": "6134d2dc345c12b08af90338979da72fcc3bcfd5b2f0a063caec8d1faaddd16a",
+        "src/prediction_market_system/archive.py": "186b1dcc6e467b65b3ab52913325328237b0a73aa17c517ee1d9c9bda8e80871",
+        "src/prediction_market_system/audit_cli.py": "1e8623f359fe208cec33809b980b86901d860f27c70b104975cb53f8b47aaaa8",
+        "src/prediction_market_system/authorization.py": "ee8276324596b30f191b0beed60e708f96730cbae819b996116ada728a31e7c0",
+        "src/prediction_market_system/backtest.py": "9e27bb866196835bb8fc02f77e1199186801c6677d061271bffb694b8de3650d",
+        "src/prediction_market_system/calibration.py": "9fb3f1a50de35d580288bf82e2d7c1129b54020255f401d5eaa83224bcf3f612",
+        "src/prediction_market_system/cli.py": "7cc00b7e99d965c94cab6da1003dde5f35e3ae67ba0995373edc24dc0e1c6b02",
+        "src/prediction_market_system/config.py": "7e64700718780194d37a13e99e17e0b80da32428cb465d03a9360e5b6df8aaa2",
+        "src/prediction_market_system/discord.py": "cbfb87a6ed502d1a40dfd00971267405006fe93480696ceda665d799f122411e",
+        "src/prediction_market_system/domain.py": "07d3d43b92085fac8a39d6bc2fa8b2ba49401552ed59836a704c869e8513e532",
+        "src/prediction_market_system/engine.py": "2fab2b013c9a474984b7869aa6837779439112d5e329141e77eb061deb7bcbc9",
+        "src/prediction_market_system/evidence.py": "12d6d0b008e39625144d83977f07c87572f7f2d6f7ba3a2502f34b514bb674bb",
+        "src/prediction_market_system/experiment.py": "5f721fc1a2513ac66467712127771bb081cbe8a697012b24b34bb72e11e90c27",
+        "src/prediction_market_system/experiment_cli.py": "10f4f88aa23a9d2e81220da7bacfe14ddcd2572ec1e53ab2754bce20ef13175c",
+        "src/prediction_market_system/experiment_decisions.py": "29ff4535b58ac2ff55edee4db30efe4d47639b4201000d00d3b39bba1fe5fb95",
+        "src/prediction_market_system/experiment_inputs.py": "edf21001b263e7d37d885b753b1822a6bd5fa471849db547f8acd9949138c671",
+        "src/prediction_market_system/operations.py": "a8a9b94aec02b419d797aeac381a7488e235e7b25f843974c80347505ea37118",
+        "src/prediction_market_system/paper_alerts.py": "8f2b1cd1fa27211d71431d72895c3c43a78082664c73b4a93515b42a97bbf24e",
+        "src/prediction_market_system/recipe.py": "b03be8211b1213ba2dfd7f32bc105765ae920c68d31218aac88097ead79872ec",
+        "src/prediction_market_system/redaction.py": "b214b195e77c85d4cca9d4398b866a0a6401282d3773136baf5c5cce87672c92",
+        "src/prediction_market_system/research.py": "a5568d459b1f3b8f9bd520b9d1687be6f6a1a645bbba1fbb86f0280d6640592f",
+        "src/prediction_market_system/research_storage.py": "6d2d7803922a78947276fee3288db59b66db30bbff1b562814850c9e454a2fdf",
+        "src/prediction_market_system/sources/__init__.py": "e3071a071ab9733eb115a6dbb3ab9f2caf36000ebeb66ebeed0ad7eff0edd1e8",
+        "src/prediction_market_system/sources/coinbase.py": "b548e71f9926deb8d5de72522a9de9ee78553e945211b2695d1a26c9a11048a5",
+        "src/prediction_market_system/sources/deribit.py": "93bc77958af453890f86ad968f2bc6f49ff8a1653437406a30447cc331770b98",
+        "src/prediction_market_system/storage.py": "9f290c8ccd4a83e38dec3e43df98b0d3d2362b3a3b5a9e1650e602508baa1ccb",
+        "src/prediction_market_system/transport.py": "05a6b60415ff037546fb134b097468ed8e88fe1c63424958d49341261ef9590a",
+        "src/prediction_market_system/validation.py": "fb49e9863796f548303a83f113ac9906b438423753bc573df2261fd54f4d6c39",
+        "src/prediction_market_system/venues/__init__.py": "f78c760d18ca5d3b8d800b00003c31d928cda2cb87c72d16101922a3c01ff18b",
+        "src/prediction_market_system/venues/kalshi.py": "496adf7f47ce0c031df00b148a4de2ba3572ce9ce4613e60f74af2b5ba933a26"
+      },
+      "source_sha256": "1a312db94efb9ea4ff903963c5dadf422f8cc4691c3fa043fcf9941f6ec4372f"
+    },
+    "configuration": {
+      "command": "phase1-report",
+      "decision_scenarios": [
+        {
+          "configuration": {
+            "cost_rules": [
+              "decision_costs, cost_scenarios and execution apply only to Phase 1C paper decision analysis after Phase 1B is complete; they never alter probability metrics or eligibility.",
+              "minimum_ask_size (top level) gates baseline eligibility; decision_costs.minimum_ask_size is recorded engine policy and does not re-gate recorded engine states.",
+              "The execution side is the engine's chosen YES or NO side and fills use that side's actual later ask and displayed size, as defined in execution.",
+              "The fill snapshot is the first snapshot at or after decision time + latency_seconds, no later than maximum_input_age_seconds after that instant and no later than min(expires_at, observation_end_at) - minimum_seconds_to_expiry; otherwise nonfill.",
+              "Every scenario is reported, and conclusions use the most adverse reported scenario."
+            ],
+            "decision_costs": {
+              "fee_coefficient": 0.07,
+              "fee_rate": 0.0,
+              "fee_type": "quadratic",
+              "fractional_kelly": 0.25,
+              "latency_seconds": 30,
+              "max_bankroll_fraction": 0.02,
+              "max_event_bankroll_fraction": 0.02,
+              "max_volume_participation": 0.1,
+              "min_conservative_edge": 0.03,
+              "minimum_ask_size": 10,
+              "minimum_seconds_to_expiry": 300,
+              "paper_bankroll": 10000,
+              "resolution_haircut": 0.01,
+              "slippage_bps": 25,
+              "uncertainty_margin": 0.05
+            },
+            "deployment_policy_id": "sha256:ab1e8ff8de288a8cb9c64c71b691b41956a5c954d7c1eb66f66409afc9e72a59",
+            "engine_config": {
+              "binary_fee_coefficient": 0.07,
+              "binary_fee_type": "quadratic",
+              "fee_rate": 0.0,
+              "fractional_kelly": 0.25,
+              "max_bankroll_fraction": 0.02,
+              "max_event_bankroll_fraction": 0.02,
+              "maximum_input_age_seconds": 120,
+              "min_conservative_edge": 0.03,
+              "minimum_ask_size": 10.0,
+              "minimum_seconds_to_expiry": 300,
+              "paper_bankroll": 10000.0,
+              "resolution_haircut": 0.01,
+              "slippage_bps": 25.0,
+              "structural_weight": 0.5,
+              "uncertainty_margin": 0.05
+            },
+            "execution": {
+              "all_in_cost": "units * ask * (1 + fee_rate + scenario slippage_bps / 10000) + units * scenario fee_multiplier * fee_coefficient * ask * (1 - ask), with the fee rounded up to the cent as in CryptoThresholdEngine.all_in_cost",
+              "applies_to": "Phase 1C paper decisions only, after Phase 1B is complete; never alters probability metrics or eligibility",
+              "conservative_probability": "opportunity.conservative_probability (YES: lower_probability_yes; NO: 1 - upper_probability_yes)",
+              "entry": "only rows whose recorded opportunity.state is ENTER YES or ENTER NO create a paper order; WATCH and other states create no order but remain in probability evidence",
+              "executable_after": "decision time + scenario latency_seconds",
+              "no_search": "later snapshots are never searched for a better price; if the fill snapshot lacks a valid side ask (reason: side_ask_unavailable), has zero side ask size (reason: insufficient_liquidity), has non-finite, out-of-range or crossed quotes (reason: invalid_execution_snapshot), or fails the price limit (reason: limit_exceeded), the order is a nonfill",
+              "nonfill": "no snapshot inside snapshot_window is a nonfill (reason: no_execution_snapshot); fills are never assumed",
+              "price_limit": "fill only if conservative_probability - effective_cost - scenario resolution_haircut >= decision_costs.min_conservative_edge, where effective_cost = all_in_cost(1 unit) at the later side ask, i.e. the engine's whole-contract (Kalshi) candidate cost with the cent-rounded fee (reason: limit_exceeded)",
+              "quantity": "intended units = largest whole number of contracts whose all-in cost at the later side ask is <= opportunity.suggested_max_exposure; filled units = min(intended units, floor(max_volume_participation * later side ask size)) further limited by the remaining max_event_bankroll_fraction * paper_bankroll event exposure, processed in (decision time, observation_id) order; 0 filled units is a nonfill (reason: insufficient_liquidity) and fewer than intended is a partial fill",
+              "quote_preservation": "the chosen snapshot's yes_bid, yes_ask, no_bid, no_ask, yes_ask_size, no_ask_size and observed_at are all recorded unchanged in the decision output, together with the decision-time quotes",
+              "same_timestamp": "snapshots sharing that earliest observed_at count once when identical in every field; if they differ in any quote or size the order is a nonfill (reason: execution_snapshot_conflict), never an order-dependent choice",
+              "settlement": "per filled contract, payout is 1 if the chosen side wins else 0, minus scenario resolution_haircut; rows unresolved at report_as_of are open and unscored",
+              "side": "opportunity.side as chosen by the engine (YES or NO); YES uses yes_ask and yes_ask_size, NO uses no_ask and no_ask_size",
+              "snapshot_window": "the fill snapshot is the execution snapshot for the same market_id with the EARLIEST observed_at satisfying executable_after <= observed_at <= executable_after + maximum_input_age_seconds, observed_at <= min(expires_at, observation_end_at) - decision_costs.minimum_seconds_to_expiry (remaining entry horizon at execution >= 300 seconds) and observed_at <= report_as_of"
+            },
+            "fee_multiplier": 1.0,
+            "latency_seconds": 30,
+            "maximum_input_age_seconds": 120,
+            "name": "base",
+            "resolution_haircut": 0.01,
+            "slippage_bps": 25
+          },
+          "configuration_id": "c2f18ed415e6eda5e84cc7e993b506b6561e48d8ff086c083859a0ee7756a0f3",
+          "name": "base"
+        },
+        {
+          "configuration": {
+            "cost_rules": [
+              "decision_costs, cost_scenarios and execution apply only to Phase 1C paper decision analysis after Phase 1B is complete; they never alter probability metrics or eligibility.",
+              "minimum_ask_size (top level) gates baseline eligibility; decision_costs.minimum_ask_size is recorded engine policy and does not re-gate recorded engine states.",
+              "The execution side is the engine's chosen YES or NO side and fills use that side's actual later ask and displayed size, as defined in execution.",
+              "The fill snapshot is the first snapshot at or after decision time + latency_seconds, no later than maximum_input_age_seconds after that instant and no later than min(expires_at, observation_end_at) - minimum_seconds_to_expiry; otherwise nonfill.",
+              "Every scenario is reported, and conclusions use the most adverse reported scenario."
+            ],
+            "decision_costs": {
+              "fee_coefficient": 0.07,
+              "fee_rate": 0.0,
+              "fee_type": "quadratic",
+              "fractional_kelly": 0.25,
+              "latency_seconds": 30,
+              "max_bankroll_fraction": 0.02,
+              "max_event_bankroll_fraction": 0.02,
+              "max_volume_participation": 0.1,
+              "min_conservative_edge": 0.03,
+              "minimum_ask_size": 10,
+              "minimum_seconds_to_expiry": 300,
+              "paper_bankroll": 10000,
+              "resolution_haircut": 0.01,
+              "slippage_bps": 25,
+              "uncertainty_margin": 0.05
+            },
+            "deployment_policy_id": "sha256:ad02143592550d9195f2b1bc8e73fe2ba25f6708546b783fef8beb7265913453",
+            "engine_config": {
+              "binary_fee_coefficient": 0.105,
+              "binary_fee_type": "quadratic",
+              "fee_rate": 0.0,
+              "fractional_kelly": 0.25,
+              "max_bankroll_fraction": 0.02,
+              "max_event_bankroll_fraction": 0.02,
+              "maximum_input_age_seconds": 120,
+              "min_conservative_edge": 0.03,
+              "minimum_ask_size": 10.0,
+              "minimum_seconds_to_expiry": 300,
+              "paper_bankroll": 10000.0,
+              "resolution_haircut": 0.02,
+              "slippage_bps": 50.0,
+              "structural_weight": 0.5,
+              "uncertainty_margin": 0.05
+            },
+            "execution": {
+              "all_in_cost": "units * ask * (1 + fee_rate + scenario slippage_bps / 10000) + units * scenario fee_multiplier * fee_coefficient * ask * (1 - ask), with the fee rounded up to the cent as in CryptoThresholdEngine.all_in_cost",
+              "applies_to": "Phase 1C paper decisions only, after Phase 1B is complete; never alters probability metrics or eligibility",
+              "conservative_probability": "opportunity.conservative_probability (YES: lower_probability_yes; NO: 1 - upper_probability_yes)",
+              "entry": "only rows whose recorded opportunity.state is ENTER YES or ENTER NO create a paper order; WATCH and other states create no order but remain in probability evidence",
+              "executable_after": "decision time + scenario latency_seconds",
+              "no_search": "later snapshots are never searched for a better price; if the fill snapshot lacks a valid side ask (reason: side_ask_unavailable), has zero side ask size (reason: insufficient_liquidity), has non-finite, out-of-range or crossed quotes (reason: invalid_execution_snapshot), or fails the price limit (reason: limit_exceeded), the order is a nonfill",
+              "nonfill": "no snapshot inside snapshot_window is a nonfill (reason: no_execution_snapshot); fills are never assumed",
+              "price_limit": "fill only if conservative_probability - effective_cost - scenario resolution_haircut >= decision_costs.min_conservative_edge, where effective_cost = all_in_cost(1 unit) at the later side ask, i.e. the engine's whole-contract (Kalshi) candidate cost with the cent-rounded fee (reason: limit_exceeded)",
+              "quantity": "intended units = largest whole number of contracts whose all-in cost at the later side ask is <= opportunity.suggested_max_exposure; filled units = min(intended units, floor(max_volume_participation * later side ask size)) further limited by the remaining max_event_bankroll_fraction * paper_bankroll event exposure, processed in (decision time, observation_id) order; 0 filled units is a nonfill (reason: insufficient_liquidity) and fewer than intended is a partial fill",
+              "quote_preservation": "the chosen snapshot's yes_bid, yes_ask, no_bid, no_ask, yes_ask_size, no_ask_size and observed_at are all recorded unchanged in the decision output, together with the decision-time quotes",
+              "same_timestamp": "snapshots sharing that earliest observed_at count once when identical in every field; if they differ in any quote or size the order is a nonfill (reason: execution_snapshot_conflict), never an order-dependent choice",
+              "settlement": "per filled contract, payout is 1 if the chosen side wins else 0, minus scenario resolution_haircut; rows unresolved at report_as_of are open and unscored",
+              "side": "opportunity.side as chosen by the engine (YES or NO); YES uses yes_ask and yes_ask_size, NO uses no_ask and no_ask_size",
+              "snapshot_window": "the fill snapshot is the execution snapshot for the same market_id with the EARLIEST observed_at satisfying executable_after <= observed_at <= executable_after + maximum_input_age_seconds, observed_at <= min(expires_at, observation_end_at) - decision_costs.minimum_seconds_to_expiry (remaining entry horizon at execution >= 300 seconds) and observed_at <= report_as_of"
+            },
+            "fee_multiplier": 1.5,
+            "latency_seconds": 60,
+            "maximum_input_age_seconds": 120,
+            "name": "adverse",
+            "resolution_haircut": 0.02,
+            "slippage_bps": 50
+          },
+          "configuration_id": "d501b60931e2ceb64ab483570586a3fa6ef748bd52522c11fe7afc68b3dcdf64",
+          "name": "adverse"
+        },
+        {
+          "configuration": {
+            "cost_rules": [
+              "decision_costs, cost_scenarios and execution apply only to Phase 1C paper decision analysis after Phase 1B is complete; they never alter probability metrics or eligibility.",
+              "minimum_ask_size (top level) gates baseline eligibility; decision_costs.minimum_ask_size is recorded engine policy and does not re-gate recorded engine states.",
+              "The execution side is the engine's chosen YES or NO side and fills use that side's actual later ask and displayed size, as defined in execution.",
+              "The fill snapshot is the first snapshot at or after decision time + latency_seconds, no later than maximum_input_age_seconds after that instant and no later than min(expires_at, observation_end_at) - minimum_seconds_to_expiry; otherwise nonfill.",
+              "Every scenario is reported, and conclusions use the most adverse reported scenario."
+            ],
+            "decision_costs": {
+              "fee_coefficient": 0.07,
+              "fee_rate": 0.0,
+              "fee_type": "quadratic",
+              "fractional_kelly": 0.25,
+              "latency_seconds": 30,
+              "max_bankroll_fraction": 0.02,
+              "max_event_bankroll_fraction": 0.02,
+              "max_volume_participation": 0.1,
+              "min_conservative_edge": 0.03,
+              "minimum_ask_size": 10,
+              "minimum_seconds_to_expiry": 300,
+              "paper_bankroll": 10000,
+              "resolution_haircut": 0.01,
+              "slippage_bps": 25,
+              "uncertainty_margin": 0.05
+            },
+            "deployment_policy_id": "sha256:c4394a0dafbbd3f92da7c45d6b71a68d2d26f8949f47020266a5052882303ca4",
+            "engine_config": {
+              "binary_fee_coefficient": 0.14,
+              "binary_fee_type": "quadratic",
+              "fee_rate": 0.0,
+              "fractional_kelly": 0.25,
+              "max_bankroll_fraction": 0.02,
+              "max_event_bankroll_fraction": 0.02,
+              "maximum_input_age_seconds": 120,
+              "min_conservative_edge": 0.03,
+              "minimum_ask_size": 10.0,
+              "minimum_seconds_to_expiry": 300,
+              "paper_bankroll": 10000.0,
+              "resolution_haircut": 0.03,
+              "slippage_bps": 100.0,
+              "structural_weight": 0.5,
+              "uncertainty_margin": 0.05
+            },
+            "execution": {
+              "all_in_cost": "units * ask * (1 + fee_rate + scenario slippage_bps / 10000) + units * scenario fee_multiplier * fee_coefficient * ask * (1 - ask), with the fee rounded up to the cent as in CryptoThresholdEngine.all_in_cost",
+              "applies_to": "Phase 1C paper decisions only, after Phase 1B is complete; never alters probability metrics or eligibility",
+              "conservative_probability": "opportunity.conservative_probability (YES: lower_probability_yes; NO: 1 - upper_probability_yes)",
+              "entry": "only rows whose recorded opportunity.state is ENTER YES or ENTER NO create a paper order; WATCH and other states create no order but remain in probability evidence",
+              "executable_after": "decision time + scenario latency_seconds",
+              "no_search": "later snapshots are never searched for a better price; if the fill snapshot lacks a valid side ask (reason: side_ask_unavailable), has zero side ask size (reason: insufficient_liquidity), has non-finite, out-of-range or crossed quotes (reason: invalid_execution_snapshot), or fails the price limit (reason: limit_exceeded), the order is a nonfill",
+              "nonfill": "no snapshot inside snapshot_window is a nonfill (reason: no_execution_snapshot); fills are never assumed",
+              "price_limit": "fill only if conservative_probability - effective_cost - scenario resolution_haircut >= decision_costs.min_conservative_edge, where effective_cost = all_in_cost(1 unit) at the later side ask, i.e. the engine's whole-contract (Kalshi) candidate cost with the cent-rounded fee (reason: limit_exceeded)",
+              "quantity": "intended units = largest whole number of contracts whose all-in cost at the later side ask is <= opportunity.suggested_max_exposure; filled units = min(intended units, floor(max_volume_participation * later side ask size)) further limited by the remaining max_event_bankroll_fraction * paper_bankroll event exposure, processed in (decision time, observation_id) order; 0 filled units is a nonfill (reason: insufficient_liquidity) and fewer than intended is a partial fill",
+              "quote_preservation": "the chosen snapshot's yes_bid, yes_ask, no_bid, no_ask, yes_ask_size, no_ask_size and observed_at are all recorded unchanged in the decision output, together with the decision-time quotes",
+              "same_timestamp": "snapshots sharing that earliest observed_at count once when identical in every field; if they differ in any quote or size the order is a nonfill (reason: execution_snapshot_conflict), never an order-dependent choice",
+              "settlement": "per filled contract, payout is 1 if the chosen side wins else 0, minus scenario resolution_haircut; rows unresolved at report_as_of are open and unscored",
+              "side": "opportunity.side as chosen by the engine (YES or NO); YES uses yes_ask and yes_ask_size, NO uses no_ask and no_ask_size",
+              "snapshot_window": "the fill snapshot is the execution snapshot for the same market_id with the EARLIEST observed_at satisfying executable_after <= observed_at <= executable_after + maximum_input_age_seconds, observed_at <= min(expires_at, observation_end_at) - decision_costs.minimum_seconds_to_expiry (remaining entry horizon at execution >= 300 seconds) and observed_at <= report_as_of"
+            },
+            "fee_multiplier": 2.0,
+            "latency_seconds": 120,
+            "maximum_input_age_seconds": 120,
+            "name": "severe",
+            "resolution_haircut": 0.03,
+            "slippage_bps": 100
+          },
+          "configuration_id": "88ec93d3727afe4c2f9c28cbb1d6670fb0840b15d2ffe9396b8147fa200851a4",
+          "name": "severe"
+        }
+      ],
+      "include_decisions": true,
+      "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+      "report_as_of": "2026-09-26T00:00:00+00:00",
+      "source_kind": "retrospective-local"
+    },
+    "configuration_sha256": "71c44e3af4c70ecb6bd07ffe87e29b54a43f47d2484ad4364dba6c749bd9ab8f",
+    "dataset": {
+      "eligible_observations_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "excluded_observations_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "recipe_ids": [],
+      "source_selection_branches": []
+    },
+    "decisions": {
+      "comparison_sha256": "8fddf15d58a76713dc0594a1f45d2ec21a5cc3258ea2ed61b612432db17dc7e8",
+      "population_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+      "report_sha256": "5689ae76954fe927b97ea3839e24620cf8c9425a1c5bd485847bc9725dcafaf6",
+      "source_kind": "retrospective-local",
+      "source_sha256": "d08ecec9f41227159657869eab261e8615c4265c0f1b9f42e17f1e88174a096a"
+    },
+    "evidence_label": "DESCRIPTIVE RETROSPECTIVE: local archive summary, not unseen-event evidence",
+    "protocol": {
+      "file_sha256": "f3a058dc2edfd83c3e13db54abde4b04a40df1b65c837bb59116b5067cd9f22d",
+      "frozen_at": "2026-09-26T08:07:09+00:00",
+      "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+      "protocol_sha256": "f6c43d1d99596ca52b30b3129e5897460680d6488770a1168ac43c2bffb688f8",
+      "protocol_version": "pms-phase1-v2",
+      "supersedes": {
+        "documentation_path": "docs/phase1-protocol-v1.md",
+        "documentation_sha256": "bc60f9b5a4f51ffa96a29fd3970b7f715cf862647982ec707932a4e64e828b44",
+        "file_sha256": "9dc37ce851b55a4de66780e409729e8375acc645b8a2394c95215943df4c144a",
+        "frozen_at": "2026-09-26T07:58:04+00:00",
+        "path": "experiments/phase1/protocol-v1.json",
+        "protocol_id": "sha256:531a074fbaa7be281ca15df07c6ebf8c9385278903b8c9732371130f805991d1",
+        "protocol_version": "pms-phase1-v1"
+      },
+      "trial_record": [
+        {
+          "comparison_reports": 0,
+          "frozen_at": "2026-09-26T07:58:04+00:00",
+          "local_database_read": false,
+          "outcomes_inspected": false,
+          "path": "experiments/phase1/protocol-v1.json",
+          "protocol_id": "sha256:531a074fbaa7be281ca15df07c6ebf8c9385278903b8c9732371130f805991d1",
+          "protocol_version": "pms-phase1-v1",
+          "status": "superseded by this protocol before any use; preserved byte-for-byte"
+        },
+        {
+          "comparison_reports": 0,
+          "frozen_at": "2026-09-26T07:59:49+00:00",
+          "local_database_read": false,
+          "outcomes_inspected": false,
+          "path": "experiments/phase1/protocol-v1.json",
+          "protocol_id": "sha256:5c41045c6e3eb92fed817ed0940b45faa201aae00eab843a21f4bf743306fd9a",
+          "protocol_version": "pms-phase1-v1",
+          "status": "withdrawn: short-lived in-place edit of v1 adding feature pinning, reverted to the original v1 content before any use"
+        },
+        {
+          "comparison_reports": 0,
+          "frozen_at": "2026-09-26T08:03:02+00:00",
+          "local_database_read": false,
+          "outcomes_inspected": false,
+          "path": "experiments/phase1/protocol-v2.json",
+          "protocol_id": "sha256:10cdb5644a162f6b4f4f884aae97369f1f17d7b803ee88c56dff459678a07395",
+          "protocol_version": "pms-phase1-v2",
+          "status": "withdrawn: provisional v2 draft replaced in place before any use by this file, which adds this trial record and the v1 byte hashes, prices the execution limit with the engine's cent-rounded whole-contract fee, and makes conflicting same-timestamp execution snapshots a nonfill instead of an order-dependent choice"
+        },
+        {
+          "comparison_reports": 0,
+          "frozen_at": "this file's frozen_at",
+          "local_database_read": false,
+          "outcomes_inspected": false,
+          "path": "experiments/phase1/protocol-v2.json",
+          "protocol_id": "this file's protocol_id",
+          "protocol_version": "pms-phase1-v2",
+          "status": "active default protocol; at freeze no comparison report had used it, no local database had been read and no outcome had been inspected"
+        }
+      ]
+    },
+    "source": {
+      "boundaries": {
+        "archive_end": "2026-09-26T00:00:00+00:00",
+        "archive_start": "2026-07-01T00:00:00+00:00",
+        "execution_horizon_seconds": 240,
+        "execution_rule": "observed_at < snapshot.observed_at <= min(observed_at + execution_horizon_seconds, market.expires_at, report_as_of); horizon = slowest protocol latency + maximum_input_age_seconds",
+        "observation_rule": "archive_start <= observed_at < archive_end and observed_at <= report_as_of",
+        "report_as_of": "2026-09-26T00:00:00+00:00",
+        "resolution_rule": "latest record with observed_at <= report_as_of and settlement_ts null or <= report_as_of; conflicting, non-binary, or pre-forecast records exclude"
+      },
+      "consumed": {
+        "input_ids": [],
+        "research_context_ids": [],
+        "run_ids": [],
+        "run_manifest_sha256s": [],
+        "tables": [
+          "forecasts"
+        ]
+      },
+      "dataset_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "exclusions": [
+        {
+          "category": "legacy",
+          "count": 715,
+          "reason": "legacy forecast without a v2 ledger record (legacy-unreconstructible)"
+        },
+        {
+          "category": "schema",
+          "count": 0,
+          "reason": "required schema unavailable: forecast_ledger (missing columns: event_id, forecast_id, input_id, market_id, market_probability_yes, observed_at, payload_json, probability_yes, recipe_id, run_id, series_id, state); run_manifests (missing columns: kind, manifest_sha256, payload_json, recorded_at, run_id); input_objects (missing columns: input_id, payload_json); no qualified population"
+        }
+      ],
+      "fixture": null,
+      "inventory": {
+        "execution_snapshots_attached": 0,
+        "explicit_events_emitted": 0,
+        "ledger_rows_by_evidence_class": {},
+        "ledger_rows_total": 0,
+        "legacy_forecasts_without_ledger": 715,
+        "observations_emitted": 0,
+        "observations_excluded_by_adapter": 0,
+        "resolved_at_report_as_of": 0,
+        "series_ledger_rows_by_evidence_class": {},
+        "unresolved_at_report_as_of": 0
+      },
+      "protocol_id": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+      "schema": {
+        "missing_optional": [
+          {
+            "columns": [],
+            "effect": "rows referencing research contexts are excluded as irreproducible",
+            "table": "research_provider_revisions"
+          },
+          {
+            "columns": [],
+            "effect": "rows referencing research contexts are excluded as irreproducible",
+            "table": "research_revision_observations"
+          }
+        ],
+        "missing_required": [
+          {
+            "columns": [
+              "event_id",
+              "forecast_id",
+              "input_id",
+              "market_id",
+              "market_probability_yes",
+              "observed_at",
+              "payload_json",
+              "probability_yes",
+              "recipe_id",
+              "run_id",
+              "series_id",
+              "state"
+            ],
+            "table": "forecast_ledger"
+          },
+          {
+            "columns": [
+              "kind",
+              "manifest_sha256",
+              "payload_json",
+              "recorded_at",
+              "run_id"
+            ],
+            "table": "run_manifests"
+          },
+          {
+            "columns": [
+              "input_id",
+              "payload_json"
+            ],
+            "table": "input_objects"
+          }
+        ],
+        "status": "missing-required",
+        "tables_present": [
+          "alert_events",
+          "backtest_runs",
+          "crypto_derivatives_snapshots",
+          "crypto_funding_observations",
+          "crypto_spot_candles",
+          "crypto_volatility_observations",
+          "discord_deliveries",
+          "forecasts",
+          "kalshi_candlesticks",
+          "kalshi_event_data_snapshots",
+          "kalshi_event_fee_changes",
+          "kalshi_market_snapshots",
+          "kalshi_resolutions",
+          "kalshi_rule_snapshots",
+          "kalshi_series_fee_changes",
+          "market_regime_snapshots",
+          "opportunities",
+          "paper_alert_cycles",
+          "paper_alert_market_checks",
+          "paper_alert_status_requests",
+          "paper_model_validations",
+          "paper_validation_archive_runs",
+          "paper_validation_campaigns",
+          "research_data_sync_runs",
+          "uncertainty_calibrations"
+        ]
+      },
+      "source": {
+        "bytes": 71815168,
+        "hash_scope": "queried-backup-snapshot",
+        "sha256": "2732bb0eaddcafcd78ebd5b6f0cd3a111e96203c74e9e87d4a3c32c6c6aa0dd8",
+        "snapshot_method": "sqlite-online-backup",
+        "snapshot_semantics": "consistent committed SQLite state including WAL; read-only source closed before hashing and extraction; private backup removed after extraction",
+        "wal_sha256": null
+      },
+      "source_kind": "retrospective-local",
+      "synthetic": false
+    },
+    "source_sha256": "d08ecec9f41227159657869eab261e8615c4265c0f1b9f42e17f1e88174a096a"
+  },
+  "evidence_id": "sha256:6be514c4c476d304acf1728692173d6ad92d975f979abbabf74765a59d190b36",
+  "invocation": {
+    "command": [
+      "pms",
+      "phase1-report",
+      "--database",
+      "data/prediction_markets.db",
+      "--include-decisions",
+      "--output",
+      "experiments/phase1/results-local"
+    ],
+    "generated_at": "2026-09-28T00:08:51.347091+00:00",
+    "include_decisions": true,
+    "platform": "macOS-13.7.8-x86_64-i386-64bit",
+    "python": "3.11.13"
+  },
+  "schema": "pms-phase1-evidence-manifest-v1"
+}

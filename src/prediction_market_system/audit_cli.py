@@ -11,6 +11,7 @@ from typing import Annotated, Any
 import typer
 
 from prediction_market_system.config import Settings
+from prediction_market_system.experiment_cli import register_experiment_commands
 from prediction_market_system.operations import backup_database, database_health, restore_database
 from prediction_market_system.redaction import redact_payload, redact_secrets
 from prediction_market_system.storage import SQLiteRepository
@@ -147,3 +148,5 @@ def register_audit_commands(app: typer.Typer) -> None:
             _emit(_repository().compare_runs(first, second))
         except (ValueError, sqlite3.DatabaseError) as exc:
             raise typer.BadParameter(redact_secrets(str(exc))) from None
+
+    register_experiment_commands(app)

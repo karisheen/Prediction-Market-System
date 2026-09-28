@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="560" viewBox="0 0 720 560" font-family="sans-serif">
+<rect width="720" height="560" fill="#ffffff"/>
+<text x="20" y="26" font-size="14" font-weight="bold">SYNTHETIC FIXTURE: implementation check, not empirical evidence</text>
+<text x="20" y="46" font-size="10">pms-phase1-v2 sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe</text>
+<text x="20" y="62" font-size="10">as of 2026-09-26T00:00:00+00:00; 11 resolved forecasts in 7 events; conclusion inconclusive</text>
+<text x="20" y="78" font-size="10">weighting: each resolved forecast weighted 1 / resolved forecasts in its event; pools 1 source-selection branches</text>
+<line x1="70.00" y1="90.00" x2="70.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="490.00" x2="470.00" y2="490.00" stroke="#e5e5e5"/><text x="70.00" y="506.00" font-size="10" text-anchor="middle">0.0</text><text x="62.00" y="490.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.0</text>
+<line x1="150.00" y1="90.00" x2="150.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="410.00" x2="470.00" y2="410.00" stroke="#e5e5e5"/><text x="150.00" y="506.00" font-size="10" text-anchor="middle">0.2</text><text x="62.00" y="410.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.2</text>
+<line x1="230.00" y1="90.00" x2="230.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="330.00" x2="470.00" y2="330.00" stroke="#e5e5e5"/><text x="230.00" y="506.00" font-size="10" text-anchor="middle">0.4</text><text x="62.00" y="330.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.4</text>
+<line x1="310.00" y1="90.00" x2="310.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="250.00" x2="470.00" y2="250.00" stroke="#e5e5e5"/><text x="310.00" y="506.00" font-size="10" text-anchor="middle">0.6</text><text x="62.00" y="250.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.6</text>
+<line x1="390.00" y1="90.00" x2="390.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="170.00" x2="470.00" y2="170.00" stroke="#e5e5e5"/><text x="390.00" y="506.00" font-size="10" text-anchor="middle">0.8</text><text x="62.00" y="170.00" font-size="10" text-anchor="end" dominant-baseline="middle">0.8</text>
+<line x1="470.00" y1="90.00" x2="470.00" y2="490.00" stroke="#e5e5e5"/><line x1="70.00" y1="90.00" x2="470.00" y2="90.00" stroke="#e5e5e5"/><text x="470.00" y="506.00" font-size="10" text-anchor="middle">1.0</text><text x="62.00" y="90.00" font-size="10" text-anchor="end" dominant-baseline="middle">1.0</text>
+<rect x="70.00" y="90.00" width="400.00" height="400.00" fill="none" stroke="#000000"/>
+<line x1="70.00" y1="490.00" x2="470.00" y2="90.00" stroke="#000000" stroke-dasharray="2 4"/>
+<text x="270.00" y="526.00" font-size="11" text-anchor="middle">mean forecast probability (event-weighted)</text>
+<text x="18" y="290.00" font-size="11" text-anchor="middle" transform="rotate(-90 18 290.00)">observed YES frequency (event-weighted)</text>
+<polyline points="90.43,290.00 147.30,490.00 160.88,490.00 244.38,90.00 296.11,390.00 359.16,90.00" fill="none" stroke="#1f77b4"/>
+<circle cx="90.43" cy="290.00" r="4" fill="#1f77b4"><title>structural bin 0 0.00-0.10: mean p 0.0511, observed 0.5000, 3 forecasts, 2 events, weight 2.0000</title></circle>
+<circle cx="147.30" cy="490.00" r="4" fill="#1f77b4"><title>structural bin 1 0.10-0.20: mean p 0.1933, observed 0.0000, 1 forecasts, 1 events, weight 0.3333</title></circle>
+<circle cx="160.88" cy="490.00" r="4" fill="#1f77b4"><title>structural bin 2 0.20-0.30: mean p 0.2272, observed 0.0000, 2 forecasts, 2 events, weight 1.5000</title></circle>
+<circle cx="244.38" cy="90.00" r="4" fill="#1f77b4"><title>structural bin 4 0.40-0.50: mean p 0.4360, observed 1.0000, 2 forecasts, 2 events, weight 1.5000</title></circle>
+<circle cx="296.11" cy="390.00" r="4" fill="#1f77b4"><title>structural bin 5 0.50-0.60: mean p 0.5653, observed 0.2500, 2 forecasts, 2 events, weight 1.3333</title></circle>
+<circle cx="359.16" cy="90.00" r="4" fill="#1f77b4"><title>structural bin 7 0.70-0.80: mean p 0.7229, observed 1.0000, 1 forecasts, 1 events, weight 0.3333</title></circle>
+<line x1="490.00" y1="100.00" x2="514.00" y2="100.00" stroke="#1f77b4" stroke-width="2"/><text x="520.00" y="100.00" font-size="10" dominant-baseline="middle">structural</text>
+<polyline points="95.21,490.00 127.50,190.00 167.63,190.00 208.46,432.86 307.46,90.00" fill="none" stroke="#2ca02c"/>
+<circle cx="95.21" cy="490.00" r="4" fill="#2ca02c"><title>blend bin 0 0.00-0.10: mean p 0.0630, observed 0.0000, 2 forecasts, 1 events, weight 1.0000</title></circle>
+<circle cx="127.50" cy="190.00" r="4" fill="#2ca02c"><title>blend bin 1 0.10-0.20: mean p 0.1438, observed 0.7500, 2 forecasts, 2 events, weight 1.3333</title></circle>
+<circle cx="167.63" cy="190.00" r="4" fill="#2ca02c"><title>blend bin 2 0.20-0.30: mean p 0.2441, observed 0.7500, 3 forecasts, 2 events, weight 2.0000</title></circle>
+<circle cx="208.46" cy="432.86" r="4" fill="#2ca02c"><title>blend bin 3 0.30-0.40: mean p 0.3462, observed 0.1429, 3 forecasts, 3 events, weight 2.3333</title></circle>
+<circle cx="307.46" cy="90.00" r="4" fill="#2ca02c"><title>blend bin 5 0.50-0.60: mean p 0.5937, observed 1.0000, 1 forecasts, 1 events, weight 0.3333</title></circle>
+<line x1="490.00" y1="122.00" x2="514.00" y2="122.00" stroke="#2ca02c" stroke-width="2"/><text x="520.00" y="122.00" font-size="10" dominant-baseline="middle">blend</text>
+<polyline points="98.00,490.00 126.00,162.73 151.45,417.27 248.86,261.43" fill="none" stroke="#d62728"/>
+<circle cx="98.00" cy="490.00" r="4" fill="#d62728"><title>market_yes_ask bin 0 0.00-0.10: mean p 0.0700, observed 0.0000, 2 forecasts, 1 events, weight 1.0000</title></circle>
+<circle cx="126.00" cy="162.73" r="4" fill="#d62728"><title>market_yes_ask bin 1 0.10-0.20: mean p 0.1400, observed 0.8182, 3 forecasts, 3 events, weight 1.8333</title></circle>
+<circle cx="151.45" cy="417.27" r="4" fill="#d62728"><title>market_yes_ask bin 2 0.20-0.30: mean p 0.2036, observed 0.1818, 3 forecasts, 3 events, weight 1.8333</title></circle>
+<circle cx="248.86" cy="261.43" r="4" fill="#d62728"><title>market_yes_ask bin 4 0.40-0.50: mean p 0.4471, observed 0.5714, 3 forecasts, 3 events, weight 2.3333</title></circle>
+<line x1="490.00" y1="144.00" x2="514.00" y2="144.00" stroke="#d62728" stroke-width="2"/><text x="520.00" y="144.00" font-size="10" dominant-baseline="middle">YES ask (primary baseline)</text>
+<polyline points="94.00,490.00 132.80,310.00 154.00,90.00 244.86,261.43" fill="none" stroke="#7f7f7f" stroke-dasharray="4 3"/>
+<circle cx="94.00" cy="490.00" r="4" fill="#7f7f7f"><title>recorded_midpoint_anchor bin 0 0.00-0.10: mean p 0.0600, observed 0.0000, 2 forecasts, 1 events, weight 1.0000</title></circle>
+<circle cx="132.80" cy="310.00" r="4" fill="#7f7f7f"><title>recorded_midpoint_anchor bin 1 0.10-0.20: mean p 0.1570, observed 0.4500, 5 forecasts, 4 events, weight 3.3333</title></circle>
+<circle cx="154.00" cy="90.00" r="4" fill="#7f7f7f"><title>recorded_midpoint_anchor bin 2 0.20-0.30: mean p 0.2100, observed 1.0000, 1 forecasts, 1 events, weight 0.3333</title></circle>
+<circle cx="244.86" cy="261.43" r="4" fill="#7f7f7f"><title>recorded_midpoint_anchor bin 4 0.40-0.50: mean p 0.4371, observed 0.5714, 3 forecasts, 3 events, weight 2.3333</title></circle>
+<line x1="490.00" y1="166.00" x2="514.00" y2="166.00" stroke="#7f7f7f" stroke-width="2" stroke-dasharray="4 3"/><text x="520.00" y="166.00" font-size="10" dominant-baseline="middle">recorded midpoint (not executable)</text>
+</svg>
