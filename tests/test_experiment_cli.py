@@ -48,7 +48,10 @@ def snapshot(directory: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("sources", [[], ["--fixture", "--database"]])
-def test_phase1_report_requires_exactly_one_source(tmp_path: Path, sources: list[str]) -> None:
+@pytest.mark.parametrize("force_color", [False, True], ids=["plain", "color"])
+def test_phase1_report_requires_exactly_one_source(
+    tmp_path: Path, sources: list[str], force_color: bool
+) -> None:
     database = tmp_path / "never-created.db"
     arguments = {"--fixture": str(FIXTURE), "--database": str(database)}
     output = tmp_path / "evidence"
@@ -63,10 +66,15 @@ def test_phase1_report_requires_exactly_one_source(tmp_path: Path, sources: list
             "--output",
             str(output),
         ],
+        color=force_color,
+        env={
+            "FORCE_COLOR": "1" if force_color else None,
+            "NO_COLOR": None if force_color else "1",
+            "COLUMNS": "80",
+        },
     )
 
     assert result.exit_code == 2
-    assert "exactly one of --fixture or --database" in result.output
     assert not output.exists()
     assert not database.exists()
 

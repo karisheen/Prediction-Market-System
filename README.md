@@ -785,6 +785,10 @@ uv run mypy
 uv run pytest
 ```
 
+Phase 1 source-selection tests check usage-error exits and absence of output/database
+writes with color enabled and disabled. They avoid matching rendered error text,
+whose ANSI styling can differ between local terminals and CI.
+
 ## Current operating stage
 
 The intended operating mode is shadow-first: refresh research hourly, evaluate all
