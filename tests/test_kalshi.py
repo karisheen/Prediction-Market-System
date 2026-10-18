@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -223,6 +224,81 @@ async def test_retries_rate_limited_requests_with_bounded_backoff() -> None:
     assert market.ticker == "KXBTCTEST-30DEC31-T100000"
     assert attempts == 3
     assert delays == [1.0, 2.0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_delay_honours_retry_after_up_to_cap() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"})
+        if attempts == 2:
+            return httpx.Response(429, headers={"Retry-After": "600"})
+        if attempts < 5:
+            return httpx.Response(429)
+        return httpx.Response(200, json={"market": market_payload()})
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(
+        client=http_client,
+        max_rate_limit_retries=4,
+        max_rate_limit_delay=5.0,
+        sleep=record_sleep,
+    )
+
+    await client.get_market("KXBTCTEST-30DEC31-T100000")
+
+    assert attempts == 5
+    assert delays == [5.0, 5.0, 4.0, 5.0]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_min_request_interval_spaces_concurrent_requests() -> None:
+    now = 100.0
+    delays: list[float] = []
+    started_at: list[float] = []
+
+    def clock() -> float:
+        return now
+
+    async def advance(delay: float) -> None:
+        nonlocal now
+        delays.append(delay)
+        now += delay
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        started_at.append(now)
+        return httpx.Response(200, json={"market": market_payload()})
+
+    http_client = httpx.AsyncClient(
+        base_url="https://external-api.kalshi.com/trade-api/v2",
+        transport=httpx.MockTransport(handler),
+    )
+    client = KalshiClient(
+        client=http_client,
+        min_request_interval=0.25,
+        sleep=advance,
+        clock=clock,
+    )
+
+    await asyncio.gather(
+        *(client.get_market("KXBTCTEST-30DEC31-T100000") for _ in range(4))
+    )
+
+    assert started_at == [100.0, 100.25, 100.5, 100.75]
+    assert delays == [0.25, 0.25, 0.25]
     await http_client.aclose()
 
 

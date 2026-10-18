@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -445,8 +446,11 @@ class KalshiClient:
         base_url: str = KALSHI_PRODUCTION_API,
         client: httpx.AsyncClient | None = None,
         max_rate_limit_retries: int = 5,
+        max_rate_limit_delay: float = 60.0,
         max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
+        min_request_interval: float = 0.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -456,11 +460,20 @@ class KalshiClient:
         self._owns_client = client is None
         if max_rate_limit_retries < 0:
             raise ValueError("max_rate_limit_retries must be non-negative")
+        if max_rate_limit_delay < 0:
+            raise ValueError("max_rate_limit_delay must be non-negative")
         if max_transient_retries < 0:
             raise ValueError("max_transient_retries must be non-negative")
+        if min_request_interval < 0:
+            raise ValueError("min_request_interval must be non-negative")
         self._max_rate_limit_retries = max_rate_limit_retries
+        self._max_rate_limit_delay = max_rate_limit_delay
         self._max_transient_retries = max_transient_retries
+        self._min_request_interval = min_request_interval
         self._sleep = sleep
+        self._clock = clock
+        self._pace_lock = asyncio.Lock()
+        self._next_request_at: float | None = None
 
     async def list_events(
         self,
@@ -669,6 +682,7 @@ class KalshiClient:
         params: dict[str, str | int | bool] | None = None,
     ) -> httpx.Response:
         for attempt in range(self._max_rate_limit_retries + 1):
+            await self._pace()
             try:
                 response = await get_with_transient_retry(
                     self._client,
@@ -689,9 +703,19 @@ class KalshiClient:
                         delay = float(retry_after) if retry_after is not None else 2**attempt
                     except ValueError:
                         delay = 2**attempt
-                    await self._sleep(max(delay, 0.0))
+                    await self._sleep(min(max(delay, 0.0), self._max_rate_limit_delay))
                     continue
                 raise KalshiAPIError(f"Kalshi request failed for {path}: {exc}") from exc
             except httpx.HTTPError as exc:
                 raise KalshiAPIError(f"Kalshi request failed for {path}: {exc}") from exc
         raise RuntimeError("unreachable Kalshi retry state")
+
+    async def _pace(self) -> None:
+        if self._min_request_interval <= 0:
+            return
+        async with self._pace_lock:
+            now = self._clock()
+            if self._next_request_at is not None and now < self._next_request_at:
+                await self._sleep(self._next_request_at - now)
+                now = self._next_request_at
+            self._next_request_at = now + self._min_request_interval
