@@ -97,6 +97,46 @@ Runtime layout after the first atomic deployment:
 Old releases are deliberately retained for rollback. Remove them manually only after the
 active revision and rollback target are known.
 
+### Research release activation: 2026-10-18
+
+Release `20261018T072504Z-4a51f60` activated the merged research baseline. The previous
+operational release, `20261018T064901Z-b42104b`, remains on disk. All seven launch agents
+were reloaded; entry delivery remains disabled, while operational and validation-status
+notifications retain their existing configuration. Downturn backtests were not run.
+
+The staged release passed 402 tests (five existing Pydantic serialization warnings), Ruff
+lint, and strict Mypy. Before adding the evidence schema, initialization made
+`data/backups/prediction_markets-pre-v2-20261018T072546555071Z.sqlite3` using the verified
+backup/restore-drill path. The daily compressed backup remains separate in `backups/`.
+Legacy counts were unchanged: 1,877 alert events, 11 model validations, and 19 calibration
+profiles. The `v2_evidence_foundation` marker was recorded at 08:50:29 UTC.
+
+The deployment took 5,126 seconds, with collection stopped during the full integrity,
+content-fingerprint, backup, and restore verification. This is not the runtime of the
+daily compressed backup. The first resumed scan recorded 269 forward forecasts but
+rejected results when the decision price expired during recovery/evaluation. A subsequent
+warm scan evaluated all 318 markets in about 43 seconds with zero runtime failures.
+All remained WATCH-only without qualifying calibration; that condition intentionally
+returns CLI exit code 1 and does not imply a collector crash.
+
+At 08:54 UTC, `shadow-report --series KXBTC` reported 587 forward WATCH forecasts,
+none resolved yet. Every ledger row had its input object and run manifest;
+`explain-forecast` returned the recorded inputs, manifest, and research context. The
+heartbeat reported scans, research refresh, archive failures, and daily backup freshness
+healthy. Historical records were not relabelled as new forward evidence, and this
+deployment did not approve any model or establish a trading edge.
+
+Follow-up at 13:43 UTC confirmed 15,851 forward WATCH forecasts, with no resolved labels
+yet, and another scheduled scan of 318 markets with zero runtime failures. All heartbeat
+checks remained healthy. The scheduled 09:15 UTC backup had also completed successfully,
+producing a verified compressed backup of approximately 0.84 GiB.
+
+Run reports from the deployed application directory, not the development checkout,
+whose relative database path still refers to its separate development database.
+Legacy archive success also does not certify the new interval-completeness requirements;
+the archive/validation commands must establish eligibility rather than assuming an
+approval date from the old day count.
+
 ### Verified daily database backups
 
 `pms db-backup` runs daily at 04:15 local time, after the archive, weekly validation, and
