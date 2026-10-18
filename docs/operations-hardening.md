@@ -99,8 +99,9 @@ maintenance jobs. It copies the database with SQLite's online backup API from a 
 connection in a single step, so the whole copy comes from one WAL read snapshot. Scheduled
 writers keep committing during the copy; a paged backup was rejected because SQLite restarts
 it from the first page whenever another connection commits between steps. `VACUUM INTO`
-was also rejected: it would drop the roughly 20% of free pages, but it rebuilds every table
-and index and holds the same read snapshot for longer.
+would also hold a single read snapshot and would drop the roughly 20% of free pages, but it
+rebuilds every table and index and was no faster in the measurements below; the page copy
+was kept as the simpler operation.
 
 The copy is written under a hidden `.partial` name in `backups/` beside `data/`. It must
 pass `PRAGMA quick_check` before it is gzip-compressed (level 6), fsynced, and atomically
@@ -113,10 +114,14 @@ A failed attempt removes its partial files and leaves earlier backups untouched.
 
 On a 512 MiB sample read from the live 11.1 GB database, gzip level 6 compressed at about
 95 MB/s with a 13.9x ratio. Level 1 was about twice as fast but produced archives 50% larger.
-On a synthetic 1.1 GB WAL database with a concurrent writer, the single-step copy took 4.6 s
-(`VACUUM INTO` took 10.3 s) and `quick_check` ran at about 58 MB/s; no write failed or waited
-more than 11 ms. A full backup is expected to take about 6–7 minutes (roughly 1 minute
-copying, 3 minutes checking, and 2 minutes compressing) and to produce about 0.8 GB.
+On a synthetic 1.1 GB WAL database with a concurrent writer, the single-step copy took
+29 s with a cold page cache and 4.6 s warm (`VACUUM INTO`: 27 s and 10.3 s). `quick_check` ran
+at 17 MB/s cold and 58 MB/s warm. No write failed; the slowest write took 1.2 s during the
+cold copy, from disk contention rather than locking. A paged copy with a writer committing
+every 0.5 s never got past a quarter of the pages. This host has 8 GiB of RAM, so an 11 GB
+copy is mostly uncached: plan for a full backup of 10–20 minutes (up to about 5 minutes
+copying, which is the only time the read snapshot is held, up to about 11 minutes checking,
+and about 2 minutes compressing), producing about 0.8 GB.
 
 `paper-alert-heartbeat` reports a `Database backup` problem if the newest verified backup is
 older than 36 hours (`--max-backup-age-hours`), the last attempt failed, or no backup exists
