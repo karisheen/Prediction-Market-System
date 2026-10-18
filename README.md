@@ -110,16 +110,17 @@ require one.
 | `backtest` | Run walk-forward calibration, execution replay, and model approval |
 | `paper-alert-research` | Refresh slower research data and persist the current regime |
 | `paper-alerts` | Scan all open contracts; shadow-only unless `--send-discord` is supplied |
-| `paper-alert-status` | Report cycles since the previous request, all-time resolved alert profitability, and regime coverage |
+| `paper-alert-status` | Report cycles since the previous request, all-time price-and-fee paper P&L for alerts with stored results, and regime coverage |
 | `paper-alert-maintain` | Preview or apply bounded detailed `WATCH` retention with daily rollups |
 | `paper-alert-archive` / `paper-alert-validate` | Archive completed UTC days with a work budget; run the frozen validation campaign |
+| `db-backup` | Write a `quick_check`-verified, gzip-compressed online SQLite backup and prune old ones |
 | `history` | Review persisted forecasts and recommendations |
 | `discord-test` | Send a non-trading webhook health check |
 | `doctor` | Read-only integrity, capacity, freshness, cycle-gap, and unresolved-delivery telemetry |
 | `explain-forecast` | Replay one forecast's manifest, contract snapshot, and research-input context |
 | `shadow-report` / `campaign-report` / `compare-runs` | Forward ledger scoring, frozen campaign and holdout audit, paired run comparison |
 | `phase1-report` | Frozen structural/blend/YES-ask comparison, with optional research-only recorded-order cost sensitivity |
-| `db-backup` / `db-restore` | Online SQLite backup with a restore drill; restore to a new path only |
+| `db-snapshot` / `db-restore` | One-off uncompressed SQLite snapshot with a restore drill; restore to a new path only |
 | `alerts-unresolved` / `alerts-reconcile` | List uncertain Discord deliveries and record the operator-observed outcome |
 
 ## Phase 1 frozen comparison and paper decisions
@@ -637,8 +638,13 @@ uv run pms paper-alert-status --series KXBTC --symbol BTC
 The first request reports all recorded cycles. Later requests count cycles from the
 persisted series/symbol checkpoint. Alert totals are all-time so an alert that was
 unresolved during an earlier request is included after its Kalshi resolution is
-archived. Resolved, profitable, and unresolved counts are shown separately; an
-alert is profitable when its recommended side matches the archived resolution.
+archived. Only results already stored in the database are used, so alerts on
+markets the archive did not sample stay "awaiting stored result". Resolved alerts
+are scored like `paper-alert-outcomes`: one contract per alert at the entry ask
+plus the Kalshi taker fee (rounded per 100-contract order), reporting correct-side
+count, cost, P&L, and return on cost. Run
+`uv run pms paper-alert-outcomes --series KXBTC` to fetch missing results from
+Kalshi and see the full breakdown.
 
 Validation evidence maintenance is automated with two idempotent commands:
 
@@ -747,7 +753,7 @@ uv run pms explain-forecast FORECAST_ID
 uv run pms shadow-report --series KXBTC
 uv run pms campaign-report --series KXBTC --symbol BTC
 uv run pms compare-runs FIRST_RUN_ID SECOND_RUN_ID
-uv run pms db-backup --destination backups/audit.sqlite3
+uv run pms db-snapshot --destination backups/audit.sqlite3
 uv run pms db-restore --source backups/audit.sqlite3 --destination restored.sqlite3
 ```
 

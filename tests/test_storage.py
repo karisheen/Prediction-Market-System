@@ -1,6 +1,9 @@
 import sqlite3
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from prediction_market_system.domain import (
     CryptoSnapshot,
@@ -341,3 +344,87 @@ def test_changed_venue_candles_are_preserved_instead_of_silently_ignored(tmp_pat
         max_events=10,
     )
     assert float(loaded.candlesticks[0].yes_ask.close) == 0.5
+
+
+class ShortBusyTimeoutRepository(SQLiteRepository):
+    def __init__(self, database_path: Path, busy_timeout_ms: int) -> None:
+        super().__init__(database_path)
+        self.busy_timeout_ms = busy_timeout_ms
+        self.statements: list[str] = []
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = super()._connect()
+        connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+        connection.set_trace_callback(self.statements.append)
+        return connection
+
+
+def hold_write_lock(database_path: Path) -> sqlite3.Connection:
+    writer = sqlite3.connect(database_path, isolation_level=None, check_same_thread=False)
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute(
+        "INSERT INTO schema_migrations (migration_name, applied_at) VALUES ('writer', 'now')"
+    )
+    return writer
+
+
+def test_initialize_runs_no_ddl_while_another_job_holds_write_lock(tmp_path: Path) -> None:
+    database_path = tmp_path / "current.db"
+    SQLiteRepository(database_path).initialize()
+    writer = hold_write_lock(database_path)
+    try:
+        repository = ShortBusyTimeoutRepository(database_path, busy_timeout_ms=50)
+        repository.initialize()
+    finally:
+        writer.rollback()
+        writer.close()
+
+    executed = [statement.lstrip().upper() for statement in repository.statements]
+    assert not [
+        statement
+        for statement in executed
+        if statement.startswith(("CREATE", "INSERT", "BEGIN", "DROP", "ALTER"))
+    ]
+
+
+def test_initialize_restores_missing_schema_objects(tmp_path: Path) -> None:
+    database_path = tmp_path / "missing-index.db"
+    SQLiteRepository(database_path).initialize()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP INDEX idx_paper_checks_compaction")
+
+    SQLiteRepository(database_path).initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_paper_checks_compaction'"
+        ).fetchone() == (1,)
+
+
+def test_schema_change_waits_for_concurrent_writer_within_busy_timeout(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "pending-schema.db"
+    SQLiteRepository(database_path).initialize()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP INDEX idx_paper_checks_compaction")
+
+    writer = hold_write_lock(database_path)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            ShortBusyTimeoutRepository(database_path, busy_timeout_ms=50).initialize()
+
+        release = threading.Timer(0.2, writer.commit)
+        release.start()
+        ShortBusyTimeoutRepository(database_path, busy_timeout_ms=10_000).initialize()
+        release.join()
+    finally:
+        writer.close()
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_paper_checks_compaction'"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE migration_name = 'writer'"
+        ).fetchone() == (1,)

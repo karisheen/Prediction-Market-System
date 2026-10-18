@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 from typer.testing import CliRunner
 
+from prediction_market_system.backtest import EffectiveFee
 from prediction_market_system.calibration import CalibrationBin, UncertaintyCalibrationProfile
 from prediction_market_system.cli import _ResearchDataBatch, app
 from prediction_market_system.discord import DiscordWebhookClient
@@ -802,63 +803,75 @@ def test_paper_alert_maintenance_previews_by_default(
     assert "preview" in result.output
     assert "Preview only; pass --apply" in result.output
 
+def _save_status_check(
+    repository: SQLiteRepository,
+    cycle_id: str,
+    ticker: str,
+    observed_at: datetime,
+    status: MarketCheckStatus,
+    side: str | None = None,
+    price: float | None = None,
+) -> None:
+    payload: dict[str, object] = {}
+    if side is not None:
+        payload["opportunity"] = {"side": side, "executable_price": price}
+    repository.save_paper_market_check(
+        cycle_id=cycle_id,
+        market_id=ticker,
+        series_ticker="KXBTC",
+        event_ticker="KXBTCTEST-30DEC31",
+        observed_at=observed_at,
+        status=status,
+        reason=None,
+        payload=payload,
+    )
+
+
+def _save_status_resolution(
+    repository: SQLiteRepository,
+    ticker: str,
+    result: str,
+    settled_at: datetime,
+) -> None:
+    market = kalshi_market().model_copy(
+        update={
+            "ticker": ticker,
+            "status": "settled",
+            "result": result,
+            "settlement_ts": settled_at,
+            "settlement_value_dollars": Decimal("1.00"),
+            "expiration_value": "101.00",
+        }
+    )
+    repository.save_kalshi_history(
+        series_ticker="KXBTC",
+        observed_at=settled_at + timedelta(seconds=1),
+        markets=[market],
+        candlesticks={},
+        period_interval=1,
+        series_fee_changes=[],
+        event_fee_changes=[],
+    )
+
 
 def test_repository_reports_activity_since_previous_status_request(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "audit.db")
     repository.initialize()
+    fee = EffectiveFee(fee_type="quadratic", multiplier=0.07)
 
-    def save_check(
-        cycle_id: str,
-        ticker: str,
-        observed_at: datetime,
-        status: MarketCheckStatus,
-        side: str | None = None,
-    ) -> None:
-        payload: dict[str, object] = {}
-        if side is not None:
-            payload["opportunity"] = {"side": side}
-        repository.save_paper_market_check(
-            cycle_id=cycle_id,
-            market_id=ticker,
-            series_ticker="KXBTC",
-            event_ticker="KXBTCTEST-30DEC31",
-            observed_at=observed_at,
-            status=status,
-            reason=None,
-            payload=payload,
-        )
-
-    def save_resolution(ticker: str, result: str, settled_at: datetime) -> None:
-        market = kalshi_market().model_copy(
-            update={
-                "ticker": ticker,
-                "status": "settled",
-                "result": result,
-                "settlement_ts": settled_at,
-                "settlement_value_dollars": Decimal("1.00"),
-                "expiration_value": "101.00",
-            }
-        )
-        repository.save_kalshi_history(
-            series_ticker="KXBTC",
-            observed_at=settled_at + timedelta(seconds=1),
-            markets=[market],
-            candlesticks={},
-            period_interval=1,
-            series_fee_changes=[],
-            event_fee_changes=[],
-        )
-
-    save_check(
+    _save_status_check(
+        repository,
         "cycle-before-first-request",
         "KXBTCTEST-30DEC31-T100",
         AS_OF - timedelta(minutes=5),
         MarketCheckStatus.DELIVERED,
-        "YES",
+        "NO",
+        0.90,
     )
-    save_resolution(
+    _save_status_resolution(
+        repository,
         "KXBTCTEST-30DEC31-T100",
-        "yes",
+        "no",
         AS_OF - timedelta(minutes=3),
     )
 
@@ -867,47 +880,59 @@ def test_repository_reports_activity_since_previous_status_request(tmp_path: Pat
         symbol="BTC",
         requested_at=AS_OF,
     )
+    first_outcomes = first.outcomes(fee=fee)
 
     assert first.previous_requested_at is None
     assert first.cycles == 1
     assert first.delivered_alerts == 1
-    assert first.resolved_alerts == 1
-    assert first.profitable_alerts == 1
-    assert first.unresolved_alerts == 0
+    assert first_outcomes.resolved == 1
+    assert first_outcomes.unresolved == 0
+    assert first_outcomes.wins == 1
+    assert first_outcomes.total_cost == Decimal("0.9063")
+    assert first_outcomes.total_pnl == Decimal("0.0937")
 
-    save_check(
-        "cycle-winning-alert",
+    _save_status_check(
+        repository,
+        "cycle-expensive-winning-alert",
         "KXBTCTEST-30DEC31-T101",
         AS_OF + timedelta(minutes=1),
         MarketCheckStatus.DELIVERED,
         "YES",
+        0.95,
     )
-    save_check(
+    _save_status_check(
+        repository,
         "cycle-losing-alert",
         "KXBTCTEST-30DEC31-T102",
         AS_OF + timedelta(minutes=2),
         MarketCheckStatus.DELIVERED,
         "NO",
+        0.40,
     )
-    save_check(
+    _save_status_check(
+        repository,
         "cycle-without-alert",
         "KXBTCTEST-30DEC31-T103",
         AS_OF + timedelta(minutes=3),
         MarketCheckStatus.WATCH,
     )
-    save_check(
+    _save_status_check(
+        repository,
         "cycle-unresolved-alert",
         "KXBTCTEST-30DEC31-T104",
         AS_OF + timedelta(minutes=3, seconds=30),
         MarketCheckStatus.DELIVERED,
         "YES",
+        0.50,
     )
-    save_resolution(
+    _save_status_resolution(
+        repository,
         "KXBTCTEST-30DEC31-T101",
         "yes",
         AS_OF + timedelta(minutes=4),
     )
-    save_resolution(
+    _save_status_resolution(
+        repository,
         "KXBTCTEST-30DEC31-T102",
         "yes",
         AS_OF + timedelta(minutes=5),
@@ -918,13 +943,22 @@ def test_repository_reports_activity_since_previous_status_request(tmp_path: Pat
         symbol="BTC",
         requested_at=AS_OF + timedelta(minutes=10),
     )
+    second_outcomes = second.outcomes(fee=fee)
 
     assert second.previous_requested_at == AS_OF
     assert second.cycles == 4
     assert second.delivered_alerts == 4
-    assert second.resolved_alerts == 3
-    assert second.profitable_alerts == 2
-    assert second.unresolved_alerts == 1
+    assert second_outcomes.alerts == 4
+    assert second_outcomes.resolved == 3
+    assert second_outcomes.unresolved == 1
+    assert second_outcomes.wins == 2
+    assert second_outcomes.total_cost == Decimal("0.9063") + Decimal("0.9534") + Decimal(
+        "0.4168"
+    )
+    assert second_outcomes.total_pnl == Decimal("0.0937") + Decimal("0.0466") - Decimal(
+        "0.4168"
+    )
+    assert second_outcomes.return_on_cost == pytest.approx(-0.2765 / 2.2765)
 
     third = repository.paper_alert_status_since_last_request(
         series_ticker="KXBTC",
@@ -933,7 +967,7 @@ def test_repository_reports_activity_since_previous_status_request(tmp_path: Pat
     )
     assert third.cycles == 0
     assert third.delivered_alerts == 4
-    assert third.profitable_alerts == 2
+    assert third.outcomes(fee=fee).total_pnl == second_outcomes.total_pnl
 
 
 def test_paper_alert_status_displays_activity_since_previous_request(
@@ -944,16 +978,50 @@ def test_paper_alert_status_displays_activity_since_previous_request(
     monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
     repository = SQLiteRepository(database_path)
     repository.initialize()
-    repository.save_paper_market_check(
-        cycle_id="cycle-status-display",
-        market_id="KXBTCTEST-30DEC31-T100",
-        series_ticker="KXBTC",
-        event_ticker="KXBTCTEST-30DEC31",
-        observed_at=AS_OF,
-        status=MarketCheckStatus.WATCH,
-        reason=None,
-        payload={},
+    _save_status_check(
+        repository,
+        "cycle-status-watch",
+        "KXBTCTEST-30DEC31-T100",
+        AS_OF,
+        MarketCheckStatus.WATCH,
     )
+    _save_status_check(
+        repository,
+        "cycle-status-win",
+        "KXBTCTEST-30DEC31-T101",
+        AS_OF,
+        MarketCheckStatus.DELIVERED,
+        "NO",
+        0.90,
+    )
+    _save_status_check(
+        repository,
+        "cycle-status-loss",
+        "KXBTCTEST-30DEC31-T102",
+        AS_OF,
+        MarketCheckStatus.DELIVERED,
+        "YES",
+        0.60,
+    )
+    _save_status_check(
+        repository,
+        "cycle-status-unresolved",
+        "KXBTCTEST-30DEC31-T103",
+        AS_OF,
+        MarketCheckStatus.DELIVERED,
+        "YES",
+        0.30,
+    )
+    _save_status_check(
+        repository,
+        "cycle-status-unpriced",
+        "KXBTCTEST-30DEC31-T104",
+        AS_OF,
+        MarketCheckStatus.DELIVERED,
+        "YES",
+    )
+    _save_status_resolution(repository, "KXBTCTEST-30DEC31-T101", "no", AS_OF)
+    _save_status_resolution(repository, "KXBTCTEST-30DEC31-T102", "no", AS_OF)
 
     first = cli_runner.invoke(
         app,
@@ -966,7 +1034,15 @@ def test_paper_alert_status_displays_activity_since_previous_request(
 
     assert first.exit_code == 0, first.output
     assert "Cycles since last request" in first.output
-    assert "Profitable alerts" in first.output
+    assert "Profitable alerts" not in first.output
+    assert "Delivered without entry price" in first.output
+    assert "Resolved (stored results)" in first.output
+    assert "Awaiting stored result" in first.output
+    assert "1 (50.0%)" in first.output
+    assert "$1.52" in first.output
+    assert "$-0.52" in first.output
+    assert "-34.3%" in first.output
+    assert "pms paper-alert-outcomes --series KXBTC" in " ".join(first.output.split())
     assert "counts include all recorded activity" in first.output
     assert second.exit_code == 0, second.output
     assert "Previous status request:" in second.output

@@ -208,7 +208,7 @@ def test_backup_restore_and_doctor_cli_do_not_migrate_legacy_database(
     assert health.exit_code == 0, health.output
     assert json.loads(health.output)["integrity"] == "ok"
     backup = tmp_path / "backup.sqlite3"
-    result = runner.invoke(app, ["db-backup", "--destination", str(backup)])
+    result = runner.invoke(app, ["db-snapshot", "--destination", str(backup)])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["restore_verified"]
     restored = tmp_path / "restored.sqlite3"

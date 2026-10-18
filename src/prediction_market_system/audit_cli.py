@@ -92,8 +92,10 @@ def register_audit_commands(app: typer.Typer) -> None:
             }
         )
 
-    @app.command("db-backup")
-    def db_backup(destination: Annotated[Path, typer.Option(help="New backup file path.")]) -> None:
+    @app.command("db-snapshot")
+    def db_snapshot(
+        destination: Annotated[Path, typer.Option(help="New backup file path.")],
+    ) -> None:
         """Online SQLite backup with integrity, SHA256 and an exercised restore drill."""
         try:
             report = backup_database(Settings().database_path, destination)

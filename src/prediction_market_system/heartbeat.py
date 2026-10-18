@@ -12,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from prediction_market_system.db_backup import last_attempt, latest_manifest
+
 SendNotice = Callable[[str], Awaitable[object]]
 
 
@@ -79,6 +81,8 @@ def collect_checks(
     max_scan_age: timedelta,
     max_research_age: timedelta,
     archive_lookback: timedelta,
+    backup_dir: Path,
+    max_backup_age: timedelta,
 ) -> list[HeartbeatCheck]:
     series = series_ticker.upper()
     normalized_symbol = symbol.upper()
@@ -154,7 +158,49 @@ def collect_checks(
         checks.append(
             HeartbeatCheck("archive", "Validation archive", True, "no unrecovered failed days")
         )
+    checks.append(backup_check(backup_dir, now=now, max_age=max_backup_age))
     return checks
+
+
+def backup_check(backup_dir: Path, *, now: datetime, max_age: timedelta) -> HeartbeatCheck:
+    try:
+        manifest = latest_manifest(backup_dir)
+        attempt = last_attempt(backup_dir)
+    except (OSError, ValueError, KeyError) as exc:
+        return HeartbeatCheck(
+            "backup", "Database backup", False, f"unreadable backup records: {exc}"
+        )
+
+    if attempt is not None and attempt.get("status") == "failed":
+        failed_at = _parse(attempt.get("completed_at") or attempt["started_at"])
+        error = str(attempt.get("error") or "unknown error")
+        previous = (
+            f"; last success {_format_time(_parse(manifest['created_at']))}"
+            if manifest is not None
+            else "; no successful backup"
+        )
+        return HeartbeatCheck(
+            "backup",
+            "Database backup",
+            False,
+            f"last attempt {_format_time(failed_at)} failed: {error[:200]}{previous}",
+            since=failed_at,
+        )
+    if manifest is None:
+        return HeartbeatCheck(
+            "backup", "Database backup", False, f"no successful backup in {backup_dir}"
+        )
+
+    created_at = _parse(manifest["created_at"])
+    age = now - created_at
+    size = int(manifest["backup_bytes"]) / (1 << 30)
+    return HeartbeatCheck(
+        "backup",
+        "Database backup",
+        age <= max_age,
+        f"last backup {_format_time(created_at)} ({_format_age(age)} ago, {size:.2f} GiB)",
+        since=created_at,
+    )
 
 
 def load_state(path: Path) -> dict[str, dict[str, Any]]:

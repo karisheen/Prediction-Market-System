@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from prediction_market_system.alert_outcomes import (
+    DEFAULT_LOT_CONTRACTS,
     breakdown,
     first_alert_per_market,
     load_delivered_alerts,
@@ -32,6 +33,12 @@ from prediction_market_system.backtest import (
     HistoricalBacktester,
 )
 from prediction_market_system.config import Settings
+from prediction_market_system.db_backup import (
+    BackupError,
+    BackupInProgressError,
+    create_backup,
+    default_backup_dir,
+)
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
 from prediction_market_system.domain import (
     CryptoSnapshot,
@@ -1655,17 +1662,41 @@ def paper_alert_status(
         symbol=symbol,
     )
     activity_table = Table(title=f"Paper-alert activity: {series.upper()} / {symbol.upper()}")
+    fee = EffectiveFee(fee_type="quadratic", multiplier=settings.binary_fee_coefficient)
+    outcomes = activity.outcomes(fee=fee)
     activity_table.add_column("Metric")
-    activity_table.add_column("Count", justify="right")
+    activity_table.add_column("Value", justify="right")
     activity_table.add_row("Cycles since last request", str(activity.cycles))
     activity_table.add_row(
         "Discord alerts delivered (all time)",
         str(activity.delivered_alerts),
     )
-    activity_table.add_row("Resolved alerts (all time)", str(activity.resolved_alerts))
-    activity_table.add_row("Profitable alerts (all time)", str(activity.profitable_alerts))
-    activity_table.add_row("Unresolved alerts (all time)", str(activity.unresolved_alerts))
+    if outcomes.alerts != activity.delivered_alerts:
+        activity_table.add_row(
+            "Delivered without entry price",
+            str(activity.delivered_alerts - outcomes.alerts),
+        )
+    activity_table.add_row("Resolved (stored results)", str(outcomes.resolved))
+    activity_table.add_row("Awaiting stored result", str(outcomes.unresolved))
+    activity_table.add_row(
+        "Correct-side alerts (resolved)",
+        f"{outcomes.wins} ({_optional_percent(outcomes.win_rate)})",
+    )
+    activity_table.add_row("Paper cost per contract (resolved)", f"${outcomes.total_cost:,.2f}")
+    activity_table.add_row("Paper P&L per contract (resolved)", f"${outcomes.total_pnl:,.2f}")
+    activity_table.add_row("Return on cost (resolved)", _optional_percent(outcomes.return_on_cost))
     console.print(activity_table)
+    console.print(
+        "P&L buys one contract per alert at the entry ask plus Kalshi taker fee "
+        f"(coefficient {settings.binary_fee_coefficient}, rounded up per "
+        f"{DEFAULT_LOT_CONTRACTS}-contract order); slippage is not included."
+    )
+    if outcomes.unresolved:
+        console.print(
+            "[yellow]Stored results cover only archived markets; run "
+            f"`pms paper-alert-outcomes --series {series.upper()}` to fetch missing results "
+            "and see the full breakdown.[/yellow]"
+        )
     if activity.previous_requested_at is None:
         console.print(
             "[yellow]No previous status request; counts include all recorded activity.[/yellow]"
@@ -1713,6 +1744,14 @@ def paper_alert_heartbeat(
         int,
         typer.Option(min=1, max=31, help="Days of failed validation archives to report."),
     ] = 8,
+    backup_dir: Annotated[
+        Path | None,
+        typer.Option(help="Database backup directory; defaults to <database dir>/../backups."),
+    ] = None,
+    max_backup_age_hours: Annotated[
+        int,
+        typer.Option(min=1, max=720, help="Alert when the newest verified backup is older."),
+    ] = 36,
     state_path: Annotated[
         Path | None,
         typer.Option(help="Alert state file; defaults to the database directory."),
@@ -1733,6 +1772,8 @@ def paper_alert_heartbeat(
         max_scan_age=timedelta(minutes=max_scan_age_minutes),
         max_research_age=timedelta(minutes=max_research_age_minutes),
         archive_lookback=timedelta(days=archive_lookback_days),
+        backup_dir=backup_dir or default_backup_dir(settings.database_path),
+        max_backup_age=timedelta(hours=max_backup_age_hours),
     )
     resolved_state_path = state_path or (
         settings.database_path.parent / "paper-alert-heartbeat-state.json"
@@ -1782,7 +1823,7 @@ def paper_alert_outcomes(
     lot_contracts: Annotated[
         int,
         typer.Option(min=1, max=100_000, help="Order size used to round taker fees."),
-    ] = 100,
+    ] = DEFAULT_LOT_CONTRACTS,
     immutable: Annotated[
         bool,
         typer.Option("--immutable", help="Open the database as an immutable snapshot."),
@@ -1881,6 +1922,66 @@ def paper_alert_outcomes(
             encoding="utf-8",
         )
         console.print(f"Wrote {json_path}")
+
+
+@app.command("db-backup")
+def db_backup(
+    backup_dir: Annotated[
+        Path | None,
+        typer.Option(help="Backup directory; defaults to <database dir>/../backups."),
+    ] = None,
+    keep: Annotated[
+        int,
+        typer.Option(min=1, max=365, help="Verified backups to retain after a new success."),
+    ] = 3,
+    free_space_margin_gb: Annotated[
+        float,
+        typer.Option(
+            min=0,
+            help="Refuse to start unless free space exceeds 2x the database plus this margin.",
+        ),
+    ] = 10.0,
+) -> None:
+    """Write a verified, gzip-compressed online backup of the database; never restores.
+
+    The copy is taken from a read-only connection inside one WAL read snapshot, so scheduled
+    writers keep committing. It must pass PRAGMA quick_check before it is compressed, synced,
+    and renamed to <name>-<UTC timestamp>.db.gz with a .json manifest. Older backups are
+    pruned only after the new one succeeds.
+
+    To restore: stop every com.karisheen.prediction-market-* launch agent; verify the archive
+    with `shasum -a 256` against backup_sha256 in its manifest; move the live database and
+    its -wal and -shm files aside; `gunzip -c BACKUP.db.gz > data/prediction_markets.db`;
+    run `sqlite3 data/prediction_markets.db 'PRAGMA integrity_check'`; then redeploy or
+    bootstrap the agents again.
+    """
+    settings = Settings()
+    resolved_backup_dir = backup_dir or default_backup_dir(settings.database_path)
+    try:
+        result = create_backup(
+            settings.database_path,
+            resolved_backup_dir,
+            keep=keep,
+            free_space_margin_bytes=int(free_space_margin_gb * (1 << 30)),
+        )
+    except BackupInProgressError as exc:
+        console.print(f"[yellow]{exc}; skipping.[/yellow]")
+        raise typer.Exit(code=1) from exc
+    except BackupError as exc:
+        console.print(f"[red]Database backup failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    manifest = result.manifest
+    table = Table(title="Database backup")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("Backup", str(result.path))
+    table.add_row("Source size", f"{manifest['source_bytes'] / (1 << 30):.2f} GiB")
+    table.add_row("Backup size", f"{manifest['backup_bytes'] / (1 << 30):.2f} GiB")
+    table.add_row("Integrity", f"{manifest['check']}: {manifest['check_result']}")
+    table.add_row("Duration", f"{manifest['duration_seconds']:.1f} s")
+    table.add_row("Pruned", ", ".join(path.name for path in result.pruned) or "none")
+    console.print(table)
 
 
 @app.command()

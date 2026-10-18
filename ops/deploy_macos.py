@@ -20,6 +20,7 @@ SOURCE_IGNORES = {
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "backups",
     "build",
     "data",
     "dist",
@@ -215,6 +216,12 @@ def _agent_specs(
             ),
             schedule={"StartCalendarInterval": {"Hour": 3, "Minute": 15}},
             log_name="paper-alert-maintenance.log",
+        ),
+        AgentSpec(
+            suffix="backup",
+            arguments=("db-backup", "--keep", "3"),
+            schedule={"StartCalendarInterval": {"Hour": 4, "Minute": 15}},
+            log_name="db-backup.log",
         ),
         AgentSpec(
             suffix="heartbeat",

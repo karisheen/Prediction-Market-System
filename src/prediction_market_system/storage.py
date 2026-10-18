@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from prediction_market_system.backtest import BacktestResult, HistoricalMarketData
+from prediction_market_system.alert_outcomes import (
+    DEFAULT_LOT_CONTRACTS,
+    DeliveredAlert,
+    OutcomeSummary,
+    parse_delivered_alert,
+    score_alerts,
+    summarize,
+)
+from prediction_market_system.backtest import (
+    BacktestResult,
+    EffectiveFee,
+    HistoricalMarketData,
+)
 from prediction_market_system.calibration import UncertaintyCalibrationProfile
 from prediction_market_system.domain import MarketRegimeSnapshot, Opportunity, ProbabilityForecast
 from prediction_market_system.engine import deployment_policy_id
@@ -88,12 +102,24 @@ class PaperAlertStatusSummary:
     requested_at: datetime
     cycles: int
     delivered_alerts: int
-    resolved_alerts: int
-    profitable_alerts: int
+    scorable_alerts: tuple[DeliveredAlert, ...]
+    stored_results: dict[str, str]
 
-    @property
-    def unresolved_alerts(self) -> int:
-        return self.delivered_alerts - self.resolved_alerts
+    def outcomes(
+        self,
+        *,
+        fee: EffectiveFee,
+        lot_contracts: int = DEFAULT_LOT_CONTRACTS,
+    ) -> OutcomeSummary:
+        return summarize(
+            "All",
+            score_alerts(
+                self.scorable_alerts,
+                self.stored_results,
+                fee=fee,
+                lot_contracts=lot_contracts,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -123,6 +149,17 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@cache
+def _schema_objects(scripts: tuple[str, ...]) -> frozenset[tuple[str, str]]:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for script in scripts:
+            connection.executescript(script)
+        rows = connection.execute(
+            r"SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\'"
+        ).fetchall()
+    return frozenset((str(object_type), str(name)) for object_type, name in rows)
+
+
 class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
     """Append-oriented forecast, alert, and venue-history audit storage."""
 
@@ -133,7 +170,8 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._backup_before_v2_migration()
         with self._connect() as connection:
-            connection.executescript(
+            self._ensure_schema(
+                connection,
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (
                     migration_name TEXT PRIMARY KEY,
@@ -394,15 +432,20 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     PRIMARY KEY (series_ticker, observed_day)
                 );
 
-                """
+                """,
+                RESEARCH_SCHEMA,
+                EVIDENCE_SCHEMA,
             )
-            connection.executescript(RESEARCH_SCHEMA)
-            connection.executescript(EVIDENCE_SCHEMA)
             self._apply_migrations(connection)
-            connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
-                ("v2_evidence_foundation", _utc_now()),
-            )
+            recorded = connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+                ("v2_evidence_foundation",),
+            ).fetchone()
+            if recorded is None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
+                    ("v2_evidence_foundation", _utc_now()),
+                )
 
     def _backup_before_v2_migration(self) -> None:
         if not self.database_path.exists() or self.database_path.stat().st_size == 0:
@@ -427,6 +470,17 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
         )
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         backup_database(self.database_path, destination)
+
+    @staticmethod
+    def _ensure_schema(connection: sqlite3.Connection, *scripts: str) -> None:
+        existing = {
+            (str(row["type"]), str(row["name"]))
+            for row in connection.execute("SELECT type, name FROM sqlite_master").fetchall()
+        }
+        if _schema_objects(scripts) <= existing:
+            return
+        for script in scripts:
+            connection.executescript(script)
 
     @staticmethod
     def _apply_migrations(connection: sqlite3.Connection) -> None:
@@ -935,7 +989,8 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     WHERE observed_at <= ?
                       AND (settlement_ts IS NULL OR settlement_ts <= ?)
                 )
-                SELECT checks.payload_json, resolutions.result
+                SELECT checks.cycle_id, checks.market_id, checks.observed_at,
+                       checks.payload_json, resolutions.result
                 FROM paper_alert_market_checks AS checks
                 LEFT JOIN latest_resolutions AS resolutions
                   ON resolutions.ticker = checks.market_id
@@ -963,25 +1018,31 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 (normalized_series, normalized_symbol, requested_text),
             )
 
-        resolved_alerts = 0
-        profitable_alerts = 0
+        scorable_alerts: list[DeliveredAlert] = []
+        stored_results: dict[str, str] = {}
         for row in alert_rows:
-            result = row["result"]
-            if result is None:
-                continue
-            resolved_alerts += 1
-            payload = json.loads(str(row["payload_json"]))
-            side = payload.get("opportunity", {}).get("side")
-            if isinstance(side, str) and side.casefold() == str(result).casefold():
-                profitable_alerts += 1
+            market_id = str(row["market_id"])
+            if row["result"]:
+                stored_results[market_id] = str(row["result"]).casefold()
+            opportunity = json.loads(str(row["payload_json"])).get("opportunity") or {}
+            alert = parse_delivered_alert(
+                opportunity_id=str(
+                    opportunity.get("opportunity_id") or f"{row['cycle_id']}:{market_id}"
+                ),
+                market_id=market_id,
+                created_at=row["observed_at"],
+                opportunity=opportunity,
+            )
+            if alert is not None:
+                scorable_alerts.append(alert)
 
         return PaperAlertStatusSummary(
             previous_requested_at=previous,
             requested_at=requested,
             cycles=int(cycle_row["cycle_count"]),
             delivered_alerts=len(alert_rows),
-            resolved_alerts=resolved_alerts,
-            profitable_alerts=profitable_alerts,
+            scorable_alerts=tuple(scorable_alerts),
+            stored_results=stored_results,
         )
 
     def save_kalshi_history(

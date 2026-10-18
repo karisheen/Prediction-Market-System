@@ -55,6 +55,9 @@ def test_launch_agents_use_shadow_mode_and_schedule_maintenance() -> None:
         "BTC",
     )
     assert by_suffix["heartbeat"].schedule == {"RunAtLoad": True, "StartInterval": 600}
+    assert by_suffix["backup"].arguments == ("db-backup", "--keep", "3")
+    assert by_suffix["backup"].schedule == {"StartCalendarInterval": {"Hour": 4, "Minute": 15}}
+    assert by_suffix["backup"].log_name == "db-backup.log"
 
 
 def test_plist_uses_stable_application_pointer_and_shared_logs() -> None:
@@ -79,7 +82,7 @@ def test_plist_uses_stable_application_pointer_and_shared_logs() -> None:
 def test_release_copy_excludes_runtime_state_and_secrets() -> None:
     ignored = _ignore_source(
         "/source",
-        [".env", ".git", ".venv", "data", "module.py", "module.pyc"],
+        [".env", ".git", ".venv", "backups", "data", "module.py", "module.pyc"],
     )
 
-    assert ignored == {".env", ".git", ".venv", "data", "module.pyc"}
+    assert ignored == {".env", ".git", ".venv", "backups", "data", "module.pyc"}
