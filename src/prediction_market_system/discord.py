@@ -97,6 +97,21 @@ class DiscordWebhookClient:
             raise RuntimeError("Discord did not return a message ID")
         return str(message_id)
 
+    async def send_operational_notice(self, content: str) -> str:
+        response = await self._client.post(
+            self._webhook_url,
+            params={"wait": "true"},
+            json={
+                "content": _truncate(content, 2_000),
+                "allowed_mentions": {"parse": []},
+            },
+        )
+        response.raise_for_status()
+        message_id = response.json().get("id")
+        if not message_id:
+            raise RuntimeError("Discord did not return a message ID")
+        return str(message_id)
+
     async def send_validation_report(self, report: ValidationCampaignReport) -> str:
         response = await self._client.post(
             self._webhook_url,

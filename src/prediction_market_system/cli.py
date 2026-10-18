@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, cast
 from uuid import uuid4
 
@@ -28,6 +29,12 @@ from prediction_market_system.domain import (
     ThresholdModelKind,
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
+from prediction_market_system.heartbeat import (
+    HeartbeatCheck,
+    HeartbeatResult,
+    collect_checks,
+    run_heartbeat,
+)
 from prediction_market_system.paper_alerts import (
     PaperAlertCycleResult,
     PaperAlertRunner,
@@ -1508,6 +1515,81 @@ def paper_alert_status(
         console.print("[yellow]No paper-alert regime observations recorded yet.[/yellow]")
 
 
+@app.command("paper-alert-heartbeat")
+def paper_alert_heartbeat(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    max_scan_age_minutes: Annotated[
+        int,
+        typer.Option(min=1, max=1_440, help="Alert when the latest live scan is older."),
+    ] = 30,
+    max_research_age_minutes: Annotated[
+        int,
+        typer.Option(min=1, max=10_080, help="Alert when the latest research refresh is older."),
+    ] = 150,
+    archive_lookback_days: Annotated[
+        int,
+        typer.Option(min=1, max=31, help="Days of failed validation archives to report."),
+    ] = 8,
+    state_path: Annotated[
+        Path | None,
+        typer.Option(help="Alert state file; defaults to the database directory."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report notices without sending or saving state."),
+    ] = False,
+) -> None:
+    """Alert Discord once when scheduled jobs stall, and again when they recover."""
+    settings = Settings()
+    now = datetime.now(UTC)
+    checks = collect_checks(
+        settings.database_path,
+        series_ticker=series,
+        symbol=symbol,
+        now=now,
+        max_scan_age=timedelta(minutes=max_scan_age_minutes),
+        max_research_age=timedelta(minutes=max_research_age_minutes),
+        archive_lookback=timedelta(days=archive_lookback_days),
+    )
+    resolved_state_path = state_path or (
+        settings.database_path.parent / "paper-alert-heartbeat-state.json"
+    )
+    webhook_url = settings.discord_webhook_url
+    if not dry_run and webhook_url is None:
+        raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
+    result = asyncio.run(
+        _run_heartbeat(
+            checks=checks,
+            state_path=resolved_state_path,
+            series_ticker=series,
+            now=now,
+            webhook_url=None if dry_run or webhook_url is None else webhook_url.get_secret_value(),
+        )
+    )
+
+    table = Table(title=f"Paper-alert heartbeat: {series.upper()} / {symbol.upper()}")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for check in result.checks:
+        table.add_row(
+            check.label,
+            "[green]OK[/green]" if check.healthy else "[red]PROBLEM[/red]",
+            check.detail,
+        )
+    console.print(table)
+    for notice in result.notices:
+        if dry_run:
+            console.print(f"[yellow]Would send:[/yellow] {notice.content}")
+        elif notice in result.delivered:
+            console.print(f"Sent: {notice.content}")
+    for notice, error in result.failed:
+        console.print(f"[red]Heartbeat delivery failed ({notice.key}): {error}[/red]")
+    if result.failed:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def history(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
@@ -1986,6 +2068,35 @@ def _validation_report_payload(report: ValidationCampaignReport) -> dict[str, ob
 def _utc_day(value: datetime) -> datetime:
     value = value.astimezone(UTC)
     return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+async def _run_heartbeat(
+    *,
+    checks: list[HeartbeatCheck],
+    state_path: Path,
+    series_ticker: str,
+    now: datetime,
+    webhook_url: str | None,
+) -> HeartbeatResult:
+    if webhook_url is None:
+        return await run_heartbeat(
+            checks=checks,
+            state_path=state_path,
+            series_ticker=series_ticker,
+            now=now,
+            send=None,
+        )
+    client = DiscordWebhookClient(webhook_url)
+    try:
+        return await run_heartbeat(
+            checks=checks,
+            state_path=state_path,
+            series_ticker=series_ticker,
+            now=now,
+            send=client.send_operational_notice,
+        )
+    finally:
+        await client.close()
 
 
 async def _send_discord_health_check(webhook_url: str) -> str:

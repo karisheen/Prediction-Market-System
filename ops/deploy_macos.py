@@ -214,6 +214,18 @@ def _agent_specs(
             schedule={"StartCalendarInterval": {"Hour": 3, "Minute": 15}},
             log_name="paper-alert-maintenance.log",
         ),
+        AgentSpec(
+            suffix="heartbeat",
+            arguments=(
+                "paper-alert-heartbeat",
+                "--series",
+                series,
+                "--symbol",
+                symbol,
+            ),
+            schedule={"RunAtLoad": True, "StartInterval": 600},
+            log_name="paper-alert-heartbeat.log",
+        ),
     )
 
 
