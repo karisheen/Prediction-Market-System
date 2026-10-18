@@ -47,6 +47,14 @@ def test_launch_agents_use_shadow_mode_and_schedule_maintenance() -> None:
         "--apply",
     )
     assert by_suffix["maintenance"].schedule == {"StartCalendarInterval": {"Hour": 3, "Minute": 15}}
+    assert by_suffix["heartbeat"].arguments == (
+        "paper-alert-heartbeat",
+        "--series",
+        "KXBTC",
+        "--symbol",
+        "BTC",
+    )
+    assert by_suffix["heartbeat"].schedule == {"RunAtLoad": True, "StartInterval": 600}
 
 
 def test_plist_uses_stable_application_pointer_and_shared_logs() -> None:

@@ -1,4 +1,6 @@
 import asyncio
+import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -11,8 +13,10 @@ from prediction_market_system.calibration import (
 )
 from prediction_market_system.cli import (
     _fetch_kalshi_markets,
+    _KalshiHistoryBatch,
     _ResearchDataBatch,
     _select_history_markets,
+    _utc_day,
     app,
 )
 from prediction_market_system.domain import CryptoSnapshot, ThresholdModelKind
@@ -25,6 +29,7 @@ from prediction_market_system.research import (
 )
 from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.venues.kalshi import (
+    KalshiAPIError,
     KalshiMarket,
     KalshiOrderBook,
     to_market_snapshot,
@@ -582,3 +587,77 @@ def test_research_sync_and_context_commands(
     assert context.exit_code == 0, context.output
     assert "Point-in-time research context" in context.output
     assert "45.00%" in context.output
+
+
+def test_archive_continues_after_failed_day_and_leaves_it_for_catch_up(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    today = _utc_day(datetime.now(UTC))
+    failing_day = today - timedelta(days=2)
+    fetched_days: list[datetime] = []
+
+    async def fake_history(
+        series_ticker: str,
+        start_at: datetime,
+        *args: object,
+    ) -> _KalshiHistoryBatch:
+        fetched_days.append(start_at)
+        if start_at == failing_day:
+            raise KalshiAPIError("Client error '429 Too Many Requests'")
+        return _KalshiHistoryBatch(
+            observed_at=start_at + timedelta(days=1),
+            markets=[],
+            candlesticks={},
+            series_fee_changes=[],
+            event_fee_changes=[],
+        )
+
+    async def fake_research(*args: object, **kwargs: object) -> _ResearchDataBatch:
+        return _ResearchDataBatch(
+            spot_candles=[],
+            volatility_observations=[],
+            funding_observations=[],
+            derivatives_snapshots=[],
+            event_snapshots=[],
+        )
+
+    monkeypatch.setattr("prediction_market_system.cli._fetch_kalshi_history", fake_history)
+    monkeypatch.setattr("prediction_market_system.cli._fetch_research_data", fake_research)
+    database_path = tmp_path / "archive-cli.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+
+    result = runner.invoke(
+        app,
+        [
+            "paper-alert-archive",
+            "--series",
+            "KXBTC",
+            "--symbol",
+            "BTC",
+            "--campaign-start",
+            (today - timedelta(days=3)).isoformat(),
+            "--catch-up-days",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert fetched_days == [today - timedelta(days=offset) for offset in (3, 2, 1)]
+    assert "2 archived" in result.output
+    assert f"1 failed: {failing_day.date().isoformat()}" in result.output
+    with closing(sqlite3.connect(database_path)) as connection:
+        statuses = {
+            datetime.fromisoformat(row[0]): row[1]
+            for row in connection.execute(
+                "SELECT start_at, status FROM paper_validation_archive_runs ORDER BY start_at"
+            )
+        }
+    assert statuses == {
+        today - timedelta(days=3): "succeeded",
+        failing_day: "failed",
+        today - timedelta(days=1): "succeeded",
+    }

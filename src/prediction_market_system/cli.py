@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, cast
 from uuid import uuid4
 
@@ -13,9 +15,22 @@ from pydantic import HttpUrl
 from rich.console import Console
 from rich.table import Table
 
+from prediction_market_system.alert_outcomes import (
+    breakdown,
+    first_alert_per_market,
+    load_delivered_alerts,
+    resolve_outcomes,
+    score_alerts,
+    summary_payload,
+)
 from prediction_market_system.archive import archive_window_complete
 from prediction_market_system.audit_cli import register_audit_commands
-from prediction_market_system.backtest import BacktestConfig, BacktestResult, HistoricalBacktester
+from prediction_market_system.backtest import (
+    BacktestConfig,
+    BacktestResult,
+    EffectiveFee,
+    HistoricalBacktester,
+)
 from prediction_market_system.config import Settings
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
 from prediction_market_system.domain import (
@@ -31,6 +46,12 @@ from prediction_market_system.domain import (
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
 from prediction_market_system.evidence import EVIDENCE_MANUAL_RESEARCH
+from prediction_market_system.heartbeat import (
+    HeartbeatCheck,
+    HeartbeatResult,
+    collect_checks,
+    run_heartbeat,
+)
 from prediction_market_system.paper_alerts import (
     PaperAlertCycleResult,
     PaperAlertRunner,
@@ -72,6 +93,7 @@ from prediction_market_system.venues.kalshi import (
     KalshiEvent,
     KalshiEventFeeChange,
     KalshiMarket,
+    KalshiNotFoundError,
     KalshiSeriesFeeChange,
     UnsupportedMarketError,
 )
@@ -124,6 +146,10 @@ def save_prospective_kalshi_history(
         event_fee_changes=[],
     )
     return availability
+
+_HISTORY_RATE_LIMIT_RETRIES = 8
+_HISTORY_MIN_REQUEST_INTERVAL_SECONDS = 0.1
+_OUTCOME_REQUEST_SPACING_SECONDS = 0.15
 
 
 @dataclass(frozen=True)
@@ -498,8 +524,9 @@ def paper_alert_archive(
 
     archived = 0
     skipped = 0
+    failed_days: list[str] = []
     window_start = first_day
-    while window_start < today and archived < catch_up_days:
+    while window_start < today and archived + len(failed_days) < catch_up_days:
         window_end = window_start + timedelta(days=1)
         if repository.validation_archive_succeeded(
             series_ticker=normalized_series,
@@ -614,11 +641,18 @@ def paper_alert_archive(
                     f"[red]Validation archive failed for {window_start.date()}: "
                     f"{redact_secrets(str(exc))}[/red]"
                 )
-                raise typer.Exit(code=1) from exc
-            raise
+                failed_days.append(window_start.date().isoformat())
+            else:
+                raise
         window_start = window_end
 
     console.print(f"Validation archive complete • {archived} archived • {skipped} already stored")
+    if failed_days:
+        console.print(
+            f"[red]Validation archive incomplete • {len(failed_days)} failed: "
+            f"{', '.join(failed_days)}[/red]"
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command("sync-research-data")
@@ -1663,6 +1697,192 @@ def paper_alert_status(
         console.print("[yellow]No paper-alert regime observations recorded yet.[/yellow]")
 
 
+@app.command("paper-alert-heartbeat")
+def paper_alert_heartbeat(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker.")],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")],
+    max_scan_age_minutes: Annotated[
+        int,
+        typer.Option(min=1, max=1_440, help="Alert when the latest live scan is older."),
+    ] = 30,
+    max_research_age_minutes: Annotated[
+        int,
+        typer.Option(min=1, max=10_080, help="Alert when the latest research refresh is older."),
+    ] = 150,
+    archive_lookback_days: Annotated[
+        int,
+        typer.Option(min=1, max=31, help="Days of failed validation archives to report."),
+    ] = 8,
+    state_path: Annotated[
+        Path | None,
+        typer.Option(help="Alert state file; defaults to the database directory."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report notices without sending or saving state."),
+    ] = False,
+) -> None:
+    """Alert Discord once when scheduled jobs stall, and again when they recover."""
+    settings = Settings()
+    now = datetime.now(UTC)
+    checks = collect_checks(
+        settings.database_path,
+        series_ticker=series,
+        symbol=symbol,
+        now=now,
+        max_scan_age=timedelta(minutes=max_scan_age_minutes),
+        max_research_age=timedelta(minutes=max_research_age_minutes),
+        archive_lookback=timedelta(days=archive_lookback_days),
+    )
+    resolved_state_path = state_path or (
+        settings.database_path.parent / "paper-alert-heartbeat-state.json"
+    )
+    webhook_url = settings.discord_webhook_url
+    if not dry_run and webhook_url is None:
+        raise typer.BadParameter("set PMS_DISCORD_WEBHOOK_URL in .env first")
+    result = asyncio.run(
+        _run_heartbeat(
+            checks=checks,
+            state_path=resolved_state_path,
+            series_ticker=series,
+            now=now,
+            webhook_url=None if dry_run or webhook_url is None else webhook_url.get_secret_value(),
+        )
+    )
+
+    table = Table(title=f"Paper-alert heartbeat: {series.upper()} / {symbol.upper()}")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for check in result.checks:
+        table.add_row(
+            check.label,
+            "[green]OK[/green]" if check.healthy else "[red]PROBLEM[/red]",
+            check.detail,
+        )
+    console.print(table)
+    for notice in result.notices:
+        if dry_run:
+            console.print(f"[yellow]Would send:[/yellow] {notice.content}")
+        elif notice in result.delivered:
+            console.print(f"Sent: {notice.content}")
+    for notice, error in result.failed:
+        console.print(f"[red]Heartbeat delivery failed ({notice.key}): {error}[/red]")
+    if result.failed:
+        raise typer.Exit(code=1)
+
+
+@app.command("paper-alert-outcomes")
+def paper_alert_outcomes(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker.")],
+    fetch_missing: Annotated[
+        bool,
+        typer.Option(help="Fetch settled results missing from the database from Kalshi."),
+    ] = True,
+    lot_contracts: Annotated[
+        int,
+        typer.Option(min=1, max=100_000, help="Order size used to round taker fees."),
+    ] = 100,
+    immutable: Annotated[
+        bool,
+        typer.Option("--immutable", help="Open the database as an immutable snapshot."),
+    ] = False,
+    json_path: Annotated[
+        Path | None,
+        typer.Option("--json", help="Also write the summaries to this JSON file."),
+    ] = None,
+) -> None:
+    """Score delivered Discord alerts by price-and-fee P&L; never writes to the database."""
+    settings = Settings()
+    alerts, stored_results = load_delivered_alerts(
+        settings.database_path,
+        series_ticker=series,
+        immutable=immutable,
+    )
+    if not alerts:
+        console.print("[yellow]No delivered alerts recorded for this series.[/yellow]")
+        return
+    results, fetched = asyncio.run(
+        _resolve_alert_outcomes(
+            [alert.market_id for alert in alerts],
+            stored_results,
+            fetch_missing=fetch_missing,
+        )
+    )
+    fee = EffectiveFee(fee_type="quadratic", multiplier=settings.binary_fee_coefficient)
+    scored = score_alerts(alerts, results, fee=fee, lot_contracts=lot_contracts)
+    views = (
+        ("All delivered alerts", breakdown(scored)),
+        ("First alert per market and side", breakdown(first_alert_per_market(scored))),
+    )
+    for title, rows in views:
+        table = Table(title=f"{title}: {series.upper()}")
+        for column in (
+            "Slice",
+            "Alerts",
+            "Resolved",
+            "Win rate",
+            "Avg entry",
+            "Cost",
+            "P&L",
+            "Return",
+            "Model Brier",
+            "Market Brier",
+        ):
+            table.add_column(column, justify="left" if column == "Slice" else "right")
+        for row in rows:
+            table.add_row(
+                row.label,
+                str(row.alerts),
+                str(row.resolved),
+                _optional_percent(row.win_rate),
+                _optional_number(row.average_entry_price, "{:.3f}"),
+                f"${row.total_cost:,.2f}",
+                f"${row.total_pnl:,.2f}",
+                _optional_percent(row.return_on_cost),
+                _optional_number(row.model_brier, "{:.4f}"),
+                _optional_number(row.market_brier, "{:.4f}"),
+            )
+        console.print(table)
+
+    markets = set(results)
+    unresolved = sorted(market for market, result in results.items() if result not in {"yes", "no"})
+    console.print(
+        f"Markets: {len(markets)} • results from database {len(markets) - fetched} • "
+        f"fetched from Kalshi {fetched} • unresolved or void {len(unresolved)}"
+    )
+    console.print(
+        f"P&L is per contract: entry ask + Kalshi taker fee "
+        f"(coefficient {settings.binary_fee_coefficient}, rounded up per {lot_contracts}-contract "
+        "order); slippage is not included."
+    )
+    console.print(
+        "[yellow]These alerts came from an unapproved-model run before shadow mode. Repeated "
+        "alerts on the same market are not independent, and none of this is validation "
+        "evidence.[/yellow]"
+    )
+    if json_path is not None:
+        json_path.write_text(
+            json.dumps(
+                {
+                    "series_ticker": series.upper(),
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "lot_contracts": lot_contracts,
+                    "fee_coefficient": settings.binary_fee_coefficient,
+                    "markets": len(markets),
+                    "fetched_from_kalshi": fetched,
+                    "unresolved_markets": unresolved,
+                    "views": {
+                        title: [summary_payload(row) for row in rows] for title, rows in views
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"Wrote {json_path}")
+
+
 @app.command()
 def history(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
@@ -1857,7 +2077,10 @@ async def _fetch_kalshi_history(
     range_contracts_per_event: int,
     history_hours: int,
 ) -> _KalshiHistoryBatch:
-    client = KalshiClient()
+    client = KalshiClient(
+        max_rate_limit_retries=_HISTORY_RATE_LIMIT_RETRIES,
+        min_request_interval=_HISTORY_MIN_REQUEST_INTERVAL_SECONDS,
+    )
     try:
         events: list[KalshiEvent] = []
         cursor: str | None = None
@@ -2210,6 +2433,67 @@ def _validation_report_payload(report: ValidationCampaignReport) -> dict[str, ob
 def _utc_day(value: datetime) -> datetime:
     value = value.astimezone(UTC)
     return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+async def _run_heartbeat(
+    *,
+    checks: list[HeartbeatCheck],
+    state_path: Path,
+    series_ticker: str,
+    now: datetime,
+    webhook_url: str | None,
+) -> HeartbeatResult:
+    if webhook_url is None:
+        return await run_heartbeat(
+            checks=checks,
+            state_path=state_path,
+            series_ticker=series_ticker,
+            now=now,
+            send=None,
+        )
+    client = DiscordWebhookClient(webhook_url)
+    try:
+        return await run_heartbeat(
+            checks=checks,
+            state_path=state_path,
+            series_ticker=series_ticker,
+            now=now,
+            send=client.send_operational_notice,
+        )
+    finally:
+        await client.close()
+
+
+async def _resolve_alert_outcomes(
+    market_ids: list[str],
+    stored_results: dict[str, str],
+    *,
+    fetch_missing: bool,
+) -> tuple[dict[str, str | None], int]:
+    if not fetch_missing:
+        return await resolve_outcomes(market_ids, stored_results, None)
+    client = KalshiClient()
+
+    async def fetch(market_id: str) -> str | None:
+        await asyncio.sleep(_OUTCOME_REQUEST_SPACING_SECONDS)
+        try:
+            market = await client.get_market(market_id)
+        except KalshiNotFoundError:
+            return None
+        return market.result or None
+
+    try:
+        return await resolve_outcomes(market_ids, stored_results, fetch)
+    finally:
+        await client.close()
+
+
+def _optional_percent(value: float | None) -> str:
+    return "—" if value is None else f"{value:.1%}"
+
+
+def _optional_number(value: float | None, template: str) -> str:
+    return "—" if value is None else template.format(value)
 
 
 async def _send_discord_health_check(webhook_url: str) -> str:

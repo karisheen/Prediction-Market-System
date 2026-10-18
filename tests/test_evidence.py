@@ -251,6 +251,9 @@ def test_history_collection_records_receipt_not_requested_end(
     from prediction_market_system.venues.kalshi import KalshiEventsResponse
 
     class EmptyClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
         async def list_events(self, **kwargs: object) -> KalshiEventsResponse:
             return KalshiEventsResponse(events=[], cursor="")
 
