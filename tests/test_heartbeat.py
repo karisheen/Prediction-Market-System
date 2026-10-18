@@ -10,8 +10,14 @@ import pytest
 from typer.testing import CliRunner
 
 from prediction_market_system.cli import app
+from prediction_market_system.db_backup import LAST_ATTEMPT_NAME
 from prediction_market_system.discord import DiscordWebhookClient
-from prediction_market_system.heartbeat import HeartbeatCheck, collect_checks, run_heartbeat
+from prediction_market_system.heartbeat import (
+    HeartbeatCheck,
+    backup_check,
+    collect_checks,
+    run_heartbeat,
+)
 from prediction_market_system.storage import SQLiteRepository
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -75,6 +81,39 @@ def record_archive(path: Path, day: datetime, status: str, error: str | None = N
     )
 
 
+def record_backup(backup_dir: Path, created_at: datetime) -> None:
+    backup_dir.mkdir(exist_ok=True)
+    name = f"prediction_markets-{created_at.strftime('%Y%m%dT%H%M%SZ')}.db.gz"
+    (backup_dir / name).write_bytes(b"backup")
+    (backup_dir / f"{name}.json").write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "created_at": created_at.isoformat(),
+                "backup_file": name,
+                "backup_bytes": 3 << 29,
+            }
+        )
+    )
+    record_attempt(backup_dir, created_at, "succeeded")
+
+
+def record_attempt(
+    backup_dir: Path, started_at: datetime, status: str, error: str | None = None
+) -> None:
+    backup_dir.mkdir(exist_ok=True)
+    (backup_dir / LAST_ATTEMPT_NAME).write_text(
+        json.dumps(
+            {
+                "status": status,
+                "started_at": started_at.isoformat(),
+                "completed_at": (started_at + timedelta(minutes=5)).isoformat(),
+                "error": error,
+            }
+        )
+    )
+
+
 def checks_at(path: Path, now: datetime = NOW) -> list[HeartbeatCheck]:
     return collect_checks(
         path,
@@ -84,6 +123,8 @@ def checks_at(path: Path, now: datetime = NOW) -> list[HeartbeatCheck]:
         max_scan_age=timedelta(minutes=30),
         max_research_age=timedelta(minutes=150),
         archive_lookback=timedelta(days=8),
+        backup_dir=path.parent / "backups",
+        max_backup_age=timedelta(hours=36),
     )
 
 
@@ -101,6 +142,7 @@ def healthy_database(tmp_path: Path) -> Path:
     record_scan(path, NOW - timedelta(minutes=4))
     record_research(path, NOW - timedelta(minutes=40))
     record_archive(path, datetime(2026, 10, 17, tzinfo=UTC), "succeeded")
+    record_backup(tmp_path / "backups", NOW - timedelta(hours=8))
     return path
 
 
@@ -111,15 +153,7 @@ async def test_healthy_jobs_send_nothing(tmp_path: Path) -> None:
     send = Recorder()
 
     result = await run_heartbeat(
-        checks=collect_checks(
-            path,
-            series_ticker="KXBTC",
-            symbol="BTC",
-            now=NOW,
-            max_scan_age=timedelta(minutes=30),
-            max_research_age=timedelta(minutes=150),
-            archive_lookback=timedelta(days=8),
-        ),
+        checks=checks_at(path),
         state_path=state_path,
         series_ticker="KXBTC",
         now=NOW,
@@ -147,6 +181,8 @@ async def test_stalled_scans_alert_once_then_recover_once(tmp_path: Path) -> Non
             max_scan_age=timedelta(minutes=30),
             max_research_age=timedelta(hours=24),
             archive_lookback=timedelta(days=8),
+            backup_dir=tmp_path / "backups",
+            max_backup_age=timedelta(hours=36),
         )
         await run_heartbeat(
             checks=checks,
@@ -223,6 +259,7 @@ async def test_stale_research_and_missing_scans_are_problems(tmp_path: Path) -> 
 async def test_failed_delivery_keeps_problem_pending(tmp_path: Path) -> None:
     path = database(tmp_path)
     record_research(path, NOW)
+    record_backup(tmp_path / "backups", NOW)
     state_path = tmp_path / "state.json"
 
     async def fail(content: str) -> str:
@@ -262,6 +299,10 @@ def test_dry_run_command_neither_sends_nor_writes(
             "BTC",
             "--state-path",
             str(state_path),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+            "--max-backup-age-hours",
+            "36",
             "--dry-run",
         ],
     )
@@ -269,8 +310,90 @@ def test_dry_run_command_neither_sends_nor_writes(
     assert result.exit_code == 0, result.output
     assert "Would send:" in result.output
     assert "Live scans problem" in result.output
+    assert "Database backup problem" in result.output
     assert not state_path.exists()
+    assert not (tmp_path / "backups").exists()
     assert path.read_bytes() == before
+
+
+def test_missing_backup_directory_is_reported_without_creating_it(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+
+    check = backup_check(backup_dir, now=NOW, max_age=timedelta(hours=36))
+
+    assert not check.healthy
+    assert check.detail == f"no successful backup in {backup_dir}"
+    assert not backup_dir.exists()
+
+
+def test_stale_backup_is_a_problem(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+    record_backup(backup_dir, NOW - timedelta(hours=40))
+
+    check = backup_check(backup_dir, now=NOW, max_age=timedelta(hours=36))
+
+    assert not check.healthy
+    assert check.since == NOW - timedelta(hours=40)
+    assert "1d 16h 0m ago" in check.detail
+    assert "1.50 GiB" in check.detail
+
+
+def test_backup_manifest_without_archive_is_not_success(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+    record_backup(backup_dir, NOW - timedelta(hours=2))
+    for archive in backup_dir.glob("*.db.gz"):
+        archive.unlink()
+
+    check = backup_check(backup_dir, now=NOW, max_age=timedelta(hours=36))
+
+    assert not check.healthy
+    assert check.detail.startswith("no successful backup")
+
+
+@pytest.mark.asyncio
+async def test_failed_backup_attempt_alerts_until_next_success(tmp_path: Path) -> None:
+    path = healthy_database(tmp_path)
+    backup_dir = tmp_path / "backups"
+    failed_at = NOW - timedelta(hours=1)
+    record_attempt(backup_dir, failed_at, "failed", "refusing to back up: 3.0 GiB free")
+    state_path = tmp_path / "state.json"
+    send = Recorder()
+
+    checks = {check.key: check for check in checks_at(path)}
+    assert not checks["backup"].healthy
+    assert "failed: refusing to back up: 3.0 GiB free" in checks["backup"].detail
+    assert "last success 2026-10-18 04:00 UTC" in checks["backup"].detail
+
+    await run_heartbeat(
+        checks=checks_at(path),
+        state_path=state_path,
+        series_ticker="KXBTC",
+        now=NOW,
+        send=send,
+    )
+    record_backup(backup_dir, NOW - timedelta(minutes=10))
+    await run_heartbeat(
+        checks=checks_at(path),
+        state_path=state_path,
+        series_ticker="KXBTC",
+        now=NOW,
+        send=send,
+    )
+
+    assert len(send.messages) == 2
+    assert "Database backup problem" in send.messages[0]
+    assert "Database backup recovered after 55m" in send.messages[1]
+
+
+def test_unreadable_backup_records_are_a_problem(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    (backup_dir / LAST_ATTEMPT_NAME).write_text("{not json")
+
+    check = backup_check(backup_dir, now=NOW, max_age=timedelta(hours=36))
+
+    assert not check.healthy
+    assert check.detail.startswith("unreadable backup records")
 
 
 @pytest.mark.asyncio

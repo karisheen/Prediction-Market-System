@@ -112,6 +112,7 @@ require one.
 | `paper-alerts` | Scan all open contracts; shadow-only unless `--send-discord` is supplied |
 | `paper-alert-status` | Report cycles since the previous request, all-time resolved alert profitability, and regime coverage |
 | `paper-alert-maintain` | Preview or apply bounded detailed `WATCH` retention with daily rollups |
+| `db-backup` | Write a `quick_check`-verified, gzip-compressed online SQLite backup and prune old ones |
 | `history` | Review persisted forecasts and recommendations |
 | `discord-test` | Send a non-trading webhook health check |
 

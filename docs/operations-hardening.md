@@ -68,7 +68,8 @@ exclusive rewrite of the database.
    release.
 6. Switches the stable `app` symlink to the verified release.
 7. Runs schema migrations once while all managed agents remain stopped.
-8. Rewrites and reloads the alert, research, archive, validation, and maintenance launch agents.
+8. Rewrites and reloads the alert, research, archive, validation, maintenance, backup, and
+   heartbeat launch agents.
 9. Restores the previous application pointer and agents if activation fails.
 
 Run from a clean, committed checkout:
@@ -83,12 +84,56 @@ Runtime layout after the first atomic deployment:
 ~/Library/Application Support/PredictionMarketSystem/
 ├── .env                 # shared secret configuration
 ├── data/                # shared SQLite database and logs
+├── backups/             # verified, compressed database backups and manifests
 ├── app -> releases/...  # stable atomic application pointer
 └── releases/            # immutable revision-labelled code releases
 ```
 
 Old releases are deliberately retained for rollback. Remove them manually only after the
 active revision and rollback target are known.
+
+### Verified daily database backups
+
+`pms db-backup` runs daily at 04:15 local time, after the archive, weekly validation, and
+maintenance jobs. It copies the database with SQLite's online backup API from a read-only
+connection in a single step, so the whole copy comes from one WAL read snapshot. Scheduled
+writers keep committing during the copy; a paged backup was rejected because SQLite restarts
+it from the first page whenever another connection commits between steps. `VACUUM INTO`
+was also rejected: it would drop the roughly 20% of free pages, but it rebuilds every table
+and index and holds the same read snapshot for longer.
+
+The copy is written under a hidden `.partial` name in `backups/` beside `data/`. It must
+pass `PRAGMA quick_check` before it is gzip-compressed (level 6), fsynced, and atomically
+renamed to `prediction_markets-<UTC timestamp>.db.gz`. Each backup has a `.json` manifest
+with its creation time, source and backup sizes, SHA-256, check result, and duration.
+`db-backup-last-attempt.json` records whether the latest attempt succeeded. The command
+refuses to start unless free space exceeds twice the database size plus a 10 GiB margin.
+It keeps the newest three backups and prunes older ones only after a new backup succeeds.
+A failed attempt removes its partial files and leaves earlier backups untouched.
+
+On a 512 MiB sample read from the live 11.1 GB database, gzip level 6 compressed at about
+95 MB/s with a 13.9x ratio. Level 1 was about twice as fast but produced archives 50% larger.
+On a synthetic 1.1 GB WAL database with a concurrent writer, the single-step copy took 4.6 s
+(`VACUUM INTO` took 10.3 s) and `quick_check` ran at about 58 MB/s; no write failed or waited
+more than 11 ms. A full backup is expected to take about 6–7 minutes (roughly 1 minute
+copying, 3 minutes checking, and 2 minutes compressing) and to produce about 0.8 GB.
+
+`paper-alert-heartbeat` reports a `Database backup` problem if the newest verified backup is
+older than 36 hours (`--max-backup-age-hours`), the last attempt failed, or no backup exists
+yet. Run `uv run pms db-backup` once after the first deployment so the heartbeat does not
+report a missing backup until the first scheduled run.
+
+Backups stay on the same disk as the database, so they protect against corruption and
+mistaken writes but not against disk loss. Restoring is manual:
+
+1. Stop every `com.karisheen.prediction-market-*` launch agent with `launchctl bootout`.
+2. Compare `shasum -a 256 BACKUP.db.gz` with `backup_sha256` in its manifest.
+3. Move `data/prediction_markets.db` and its `-wal` and `-shm` files aside; do not delete
+   them until the restore is verified.
+4. Run `gunzip -c BACKUP.db.gz > data/prediction_markets.db`, then
+   `sqlite3 data/prediction_markets.db 'PRAGMA integrity_check'`.
+5. Redeploy or bootstrap the agents again. Audit records written after the backup's
+   `created_at` are not in the restored database.
 
 ### Validation campaign continuity
 
@@ -145,7 +190,8 @@ calibrated evaluations, and zero delivery attempts.
 3. **Plan an offline SQLite rewrite.** The historical database already contains substantial
    append-only data. After WATCH compaction has created free pages, back it up, verify the
    backup, stop all agents, run `VACUUM`, and verify integrity before restart.
-4. **Add off-machine backups and restore drills.** Protect `.env` separately from SQLite.
+4. **Add off-machine backups and restore drills.** Daily backups are still on the same
+   disk; copy them off the machine. Protect `.env` separately from SQLite.
    Exercise point-in-time restoration before relying on the long validation campaign.
 5. **Evaluate rollup granularity after one month.** Daily WATCH counts preserve operational
    volume but not every old forecast payload. Add model/regime dimensions only if a concrete
