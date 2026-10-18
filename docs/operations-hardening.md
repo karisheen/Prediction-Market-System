@@ -72,6 +72,11 @@ exclusive rewrite of the database.
    heartbeat launch agents.
 9. Restores the previous application pointer and agents if activation fails.
 
+Scheduled commands still initialize the store on startup, but they compare `sqlite_master` with
+the tables and indexes the schema defines and run DDL only when an object is missing. Applied
+migrations are likewise detected read-only, so routine job starts never request the SQLite
+writer lock.
+
 Run from a clean, committed checkout:
 
 ```bash

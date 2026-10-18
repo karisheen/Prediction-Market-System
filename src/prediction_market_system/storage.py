@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -86,6 +88,17 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@cache
+def _schema_objects(scripts: tuple[str, ...]) -> frozenset[tuple[str, str]]:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for script in scripts:
+            connection.executescript(script)
+        rows = connection.execute(
+            r"SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\'"
+        ).fetchall()
+    return frozenset((str(object_type), str(name)) for object_type, name in rows)
+
+
 class SQLiteRepository(ResearchRepositoryMixin):
     """Append-oriented forecast, alert, and venue-history audit storage."""
 
@@ -95,7 +108,8 @@ class SQLiteRepository(ResearchRepositoryMixin):
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(
+            self._ensure_schema(
+                connection,
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (
                     migration_name TEXT PRIMARY KEY,
@@ -356,10 +370,21 @@ class SQLiteRepository(ResearchRepositoryMixin):
                     PRIMARY KEY (series_ticker, observed_day)
                 );
 
-                """
+                """,
+                RESEARCH_SCHEMA,
             )
-            connection.executescript(RESEARCH_SCHEMA)
             self._apply_migrations(connection)
+
+    @staticmethod
+    def _ensure_schema(connection: sqlite3.Connection, *scripts: str) -> None:
+        existing = {
+            (str(row["type"]), str(row["name"]))
+            for row in connection.execute("SELECT type, name FROM sqlite_master").fetchall()
+        }
+        if _schema_objects(scripts) <= existing:
+            return
+        for script in scripts:
+            connection.executescript(script)
 
     @staticmethod
     def _apply_migrations(connection: sqlite3.Connection) -> None:
