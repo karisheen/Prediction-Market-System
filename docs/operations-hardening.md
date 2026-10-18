@@ -64,8 +64,8 @@ exclusive rewrite of the database.
 3. Moves runtime data and `.env` to shared paths outside a code release on the first run.
 4. Copies source into a revision-labelled release directory without secrets, data, caches, or
    Git metadata.
-5. Runs `uv sync --frozen`, the full test suite, Ruff, and strict Mypy checks inside the staged
-   release.
+5. Runs `uv sync --frozen`, the full test suite, Ruff lint and formatting checks, and strict
+   Mypy checks inside the staged release, matching the GitHub quality gate.
 6. Switches the stable `app` symlink to the verified release.
 7. Runs schema migrations once while all managed agents remain stopped.
 8. Rewrites and reloads the alert, research, archive, validation, maintenance, backup, and

@@ -294,9 +294,7 @@ async def test_min_request_interval_spaces_concurrent_requests() -> None:
         clock=clock,
     )
 
-    await asyncio.gather(
-        *(client.get_market("KXBTCTEST-30DEC31-T100000") for _ in range(4))
-    )
+    await asyncio.gather(*(client.get_market("KXBTCTEST-30DEC31-T100000") for _ in range(4)))
 
     assert started_at == [100.0, 100.25, 100.5, 100.75]
     assert delays == [0.25, 0.25, 0.25]

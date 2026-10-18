@@ -154,6 +154,7 @@ def save_prospective_kalshi_history(
     )
     return availability
 
+
 _HISTORY_RATE_LIMIT_RETRIES = 8
 _HISTORY_MIN_REQUEST_INTERVAL_SECONDS = 0.1
 _OUTCOME_REQUEST_SPACING_SECONDS = 0.15

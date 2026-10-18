@@ -329,6 +329,7 @@ def _build_release(
     for command in (
         ["uv", "run", "pytest"],
         ["uv", "run", "ruff", "check", "."],
+        ["uv", "run", "ruff", "format", "--check", "."],
         ["uv", "run", "mypy"],
     ):
         _run(command, cwd=release, env=check_environment)

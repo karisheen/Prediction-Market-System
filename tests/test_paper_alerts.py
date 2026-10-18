@@ -803,6 +803,7 @@ def test_paper_alert_maintenance_previews_by_default(
     assert "preview" in result.output
     assert "Preview only; pass --apply" in result.output
 
+
 def _save_status_check(
     repository: SQLiteRepository,
     cycle_id: str,
@@ -952,12 +953,8 @@ def test_repository_reports_activity_since_previous_status_request(tmp_path: Pat
     assert second_outcomes.resolved == 3
     assert second_outcomes.unresolved == 1
     assert second_outcomes.wins == 2
-    assert second_outcomes.total_cost == Decimal("0.9063") + Decimal("0.9534") + Decimal(
-        "0.4168"
-    )
-    assert second_outcomes.total_pnl == Decimal("0.0937") + Decimal("0.0466") - Decimal(
-        "0.4168"
-    )
+    assert second_outcomes.total_cost == Decimal("0.9063") + Decimal("0.9534") + Decimal("0.4168")
+    assert second_outcomes.total_pnl == Decimal("0.0937") + Decimal("0.0466") - Decimal("0.4168")
     assert second_outcomes.return_on_cost == pytest.approx(-0.2765 / 2.2765)
 
     third = repository.paper_alert_status_since_last_request(
