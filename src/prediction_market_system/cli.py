@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from prediction_market_system.alert_outcomes import (
+    DEFAULT_LOT_CONTRACTS,
     breakdown,
     first_alert_per_market,
     load_delivered_alerts,
@@ -1506,17 +1507,41 @@ def paper_alert_status(
     activity_table = Table(
         title=f"Paper-alert activity: {series.upper()} / {symbol.upper()}"
     )
+    fee = EffectiveFee(fee_type="quadratic", multiplier=settings.binary_fee_coefficient)
+    outcomes = activity.outcomes(fee=fee)
     activity_table.add_column("Metric")
-    activity_table.add_column("Count", justify="right")
+    activity_table.add_column("Value", justify="right")
     activity_table.add_row("Cycles since last request", str(activity.cycles))
     activity_table.add_row(
         "Discord alerts delivered (all time)",
         str(activity.delivered_alerts),
     )
-    activity_table.add_row("Resolved alerts (all time)", str(activity.resolved_alerts))
-    activity_table.add_row("Profitable alerts (all time)", str(activity.profitable_alerts))
-    activity_table.add_row("Unresolved alerts (all time)", str(activity.unresolved_alerts))
+    if outcomes.alerts != activity.delivered_alerts:
+        activity_table.add_row(
+            "Delivered without entry price",
+            str(activity.delivered_alerts - outcomes.alerts),
+        )
+    activity_table.add_row("Resolved (stored results)", str(outcomes.resolved))
+    activity_table.add_row("Awaiting stored result", str(outcomes.unresolved))
+    activity_table.add_row(
+        "Correct-side alerts (resolved)",
+        f"{outcomes.wins} ({_optional_percent(outcomes.win_rate)})",
+    )
+    activity_table.add_row("Paper cost per contract (resolved)", f"${outcomes.total_cost:,.2f}")
+    activity_table.add_row("Paper P&L per contract (resolved)", f"${outcomes.total_pnl:,.2f}")
+    activity_table.add_row("Return on cost (resolved)", _optional_percent(outcomes.return_on_cost))
     console.print(activity_table)
+    console.print(
+        "P&L buys one contract per alert at the entry ask plus Kalshi taker fee "
+        f"(coefficient {settings.binary_fee_coefficient}, rounded up per "
+        f"{DEFAULT_LOT_CONTRACTS}-contract order); slippage is not included."
+    )
+    if outcomes.unresolved:
+        console.print(
+            "[yellow]Stored results cover only archived markets; run "
+            f"`pms paper-alert-outcomes --series {series.upper()}` to fetch missing results "
+            "and see the full breakdown.[/yellow]"
+        )
     if activity.previous_requested_at is None:
         console.print(
             "[yellow]No previous status request; counts include all recorded activity.[/yellow]"
@@ -1643,7 +1668,7 @@ def paper_alert_outcomes(
     lot_contracts: Annotated[
         int,
         typer.Option(min=1, max=100_000, help="Order size used to round taker fees."),
-    ] = 100,
+    ] = DEFAULT_LOT_CONTRACTS,
     immutable: Annotated[
         bool,
         typer.Option("--immutable", help="Open the database as an immutable snapshot."),
