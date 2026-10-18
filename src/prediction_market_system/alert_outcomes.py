@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +16,8 @@ from prediction_market_system.backtest import EffectiveFee, kalshi_taker_fee
 
 Outcome = Literal["yes", "no"]
 FetchResult = Callable[[str], Awaitable[str | None]]
+
+DEFAULT_LOT_CONTRACTS = 100
 
 PRICE_BUCKETS: tuple[tuple[str, float, float], ...] = (
     ("< 0.25", 0.0, 0.25),
@@ -139,25 +141,39 @@ def load_delivered_alerts(
 
     alerts: list[DeliveredAlert] = []
     for row in rows:
-        payload: dict[str, Any] = json.loads(str(row["payload_json"]))
-        side = str(payload.get("side") or "").upper()
-        price = payload.get("executable_price")
-        if side not in {"YES", "NO"} or price is None:
-            continue
-        forecast = payload.get("forecast") or {}
-        alerts.append(
-            DeliveredAlert(
-                opportunity_id=str(row["opportunity_id"]),
-                market_id=str(row["market_id"]),
-                side="YES" if side == "YES" else "NO",
-                created_at=_parse_time(row["created_at"]),
-                entry_price=float(price),
-                probability_yes=_optional_float(forecast.get("probability_yes")),
-                market_probability_yes=_optional_float(forecast.get("market_probability_yes")),
-                conservative_net_edge=_optional_float(payload.get("conservative_net_edge")),
-            )
+        alert = parse_delivered_alert(
+            opportunity_id=str(row["opportunity_id"]),
+            market_id=str(row["market_id"]),
+            created_at=row["created_at"],
+            opportunity=json.loads(str(row["payload_json"])),
         )
+        if alert is not None:
+            alerts.append(alert)
     return alerts, stored_results
+
+
+def parse_delivered_alert(
+    *,
+    opportunity_id: str,
+    market_id: str,
+    created_at: object,
+    opportunity: dict[str, Any],
+) -> DeliveredAlert | None:
+    side = str(opportunity.get("side") or "").upper()
+    price = opportunity.get("executable_price")
+    if side not in {"YES", "NO"} or price is None:
+        return None
+    forecast = opportunity.get("forecast") or {}
+    return DeliveredAlert(
+        opportunity_id=opportunity_id,
+        market_id=market_id,
+        side="YES" if side == "YES" else "NO",
+        created_at=_parse_time(created_at),
+        entry_price=float(price),
+        probability_yes=_optional_float(forecast.get("probability_yes")),
+        market_probability_yes=_optional_float(forecast.get("market_probability_yes")),
+        conservative_net_edge=_optional_float(opportunity.get("conservative_net_edge")),
+    )
 
 
 async def resolve_outcomes(
@@ -179,8 +195,8 @@ async def resolve_outcomes(
 
 
 def score_alerts(
-    alerts: list[DeliveredAlert],
-    results: dict[str, str | None],
+    alerts: Iterable[DeliveredAlert],
+    results: Mapping[str, str | None],
     *,
     fee: EffectiveFee,
     lot_contracts: int,
