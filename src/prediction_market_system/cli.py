@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,20 @@ from pydantic import HttpUrl
 from rich.console import Console
 from rich.table import Table
 
-from prediction_market_system.backtest import BacktestConfig, BacktestResult, HistoricalBacktester
+from prediction_market_system.alert_outcomes import (
+    breakdown,
+    first_alert_per_market,
+    load_delivered_alerts,
+    resolve_outcomes,
+    score_alerts,
+    summary_payload,
+)
+from prediction_market_system.backtest import (
+    BacktestConfig,
+    BacktestResult,
+    EffectiveFee,
+    HistoricalBacktester,
+)
 from prediction_market_system.config import Settings
 from prediction_market_system.discord import DiscordAlertService, DiscordWebhookClient
 from prediction_market_system.domain import (
@@ -66,6 +80,7 @@ from prediction_market_system.venues.kalshi import (
     KalshiEvent,
     KalshiEventFeeChange,
     KalshiMarket,
+    KalshiNotFoundError,
     KalshiSeriesFeeChange,
     UnsupportedMarketError,
 )
@@ -79,6 +94,7 @@ console = Console()
 
 _HISTORY_RATE_LIMIT_RETRIES = 8
 _HISTORY_MIN_REQUEST_INTERVAL_SECONDS = 0.1
+_OUTCOME_REQUEST_SPACING_SECONDS = 0.15
 
 
 @dataclass(frozen=True)
@@ -1601,6 +1617,117 @@ def paper_alert_heartbeat(
         raise typer.Exit(code=1)
 
 
+@app.command("paper-alert-outcomes")
+def paper_alert_outcomes(
+    series: Annotated[str, typer.Option(help="Kalshi series ticker.")],
+    fetch_missing: Annotated[
+        bool,
+        typer.Option(help="Fetch settled results missing from the database from Kalshi."),
+    ] = True,
+    lot_contracts: Annotated[
+        int,
+        typer.Option(min=1, max=100_000, help="Order size used to round taker fees."),
+    ] = 100,
+    immutable: Annotated[
+        bool,
+        typer.Option("--immutable", help="Open the database as an immutable snapshot."),
+    ] = False,
+    json_path: Annotated[
+        Path | None,
+        typer.Option("--json", help="Also write the summaries to this JSON file."),
+    ] = None,
+) -> None:
+    """Score delivered Discord alerts by price-and-fee P&L; never writes to the database."""
+    settings = Settings()
+    alerts, stored_results = load_delivered_alerts(
+        settings.database_path,
+        series_ticker=series,
+        immutable=immutable,
+    )
+    if not alerts:
+        console.print("[yellow]No delivered alerts recorded for this series.[/yellow]")
+        return
+    results, fetched = asyncio.run(
+        _resolve_alert_outcomes(
+            [alert.market_id for alert in alerts],
+            stored_results,
+            fetch_missing=fetch_missing,
+        )
+    )
+    fee = EffectiveFee(fee_type="quadratic", multiplier=settings.binary_fee_coefficient)
+    scored = score_alerts(alerts, results, fee=fee, lot_contracts=lot_contracts)
+    views = (
+        ("All delivered alerts", breakdown(scored)),
+        ("First alert per market and side", breakdown(first_alert_per_market(scored))),
+    )
+    for title, rows in views:
+        table = Table(title=f"{title}: {series.upper()}")
+        for column in (
+            "Slice",
+            "Alerts",
+            "Resolved",
+            "Win rate",
+            "Avg entry",
+            "Cost",
+            "P&L",
+            "Return",
+            "Model Brier",
+            "Market Brier",
+        ):
+            table.add_column(column, justify="left" if column == "Slice" else "right")
+        for row in rows:
+            table.add_row(
+                row.label,
+                str(row.alerts),
+                str(row.resolved),
+                _optional_percent(row.win_rate),
+                _optional_number(row.average_entry_price, "{:.3f}"),
+                f"${row.total_cost:,.2f}",
+                f"${row.total_pnl:,.2f}",
+                _optional_percent(row.return_on_cost),
+                _optional_number(row.model_brier, "{:.4f}"),
+                _optional_number(row.market_brier, "{:.4f}"),
+            )
+        console.print(table)
+
+    markets = set(results)
+    unresolved = sorted(market for market, result in results.items() if result not in {"yes", "no"})
+    console.print(
+        f"Markets: {len(markets)} • results from database {len(markets) - fetched} • "
+        f"fetched from Kalshi {fetched} • unresolved or void {len(unresolved)}"
+    )
+    console.print(
+        f"P&L is per contract: entry ask + Kalshi taker fee "
+        f"(coefficient {settings.binary_fee_coefficient}, rounded up per {lot_contracts}-contract "
+        "order); slippage is not included."
+    )
+    console.print(
+        "[yellow]These alerts came from an unapproved-model run before shadow mode. Repeated "
+        "alerts on the same market are not independent, and none of this is validation "
+        "evidence.[/yellow]"
+    )
+    if json_path is not None:
+        json_path.write_text(
+            json.dumps(
+                {
+                    "series_ticker": series.upper(),
+                    "generated_at": datetime.now(UTC).isoformat(),
+                    "lot_contracts": lot_contracts,
+                    "fee_coefficient": settings.binary_fee_coefficient,
+                    "markets": len(markets),
+                    "fetched_from_kalshi": fetched,
+                    "unresolved_markets": unresolved,
+                    "views": {
+                        title: [summary_payload(row) for row in rows] for title, rows in views
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"Wrote {json_path}")
+
+
 @app.command()
 def history(
     limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
@@ -2111,6 +2238,38 @@ async def _run_heartbeat(
         )
     finally:
         await client.close()
+
+
+async def _resolve_alert_outcomes(
+    market_ids: list[str],
+    stored_results: dict[str, str],
+    *,
+    fetch_missing: bool,
+) -> tuple[dict[str, str | None], int]:
+    if not fetch_missing:
+        return await resolve_outcomes(market_ids, stored_results, None)
+    client = KalshiClient()
+
+    async def fetch(market_id: str) -> str | None:
+        await asyncio.sleep(_OUTCOME_REQUEST_SPACING_SECONDS)
+        try:
+            market = await client.get_market(market_id)
+        except KalshiNotFoundError:
+            return None
+        return market.result or None
+
+    try:
+        return await resolve_outcomes(market_ids, stored_results, fetch)
+    finally:
+        await client.close()
+
+
+def _optional_percent(value: float | None) -> str:
+    return "—" if value is None else f"{value:.1%}"
+
+
+def _optional_number(value: float | None, template: str) -> str:
+    return "—" if value is None else template.format(value)
 
 
 async def _send_discord_health_check(webhook_url: str) -> str:
