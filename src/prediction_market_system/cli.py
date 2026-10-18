@@ -70,6 +70,9 @@ app = typer.Typer(
 )
 console = Console()
 
+_HISTORY_RATE_LIMIT_RETRIES = 8
+_HISTORY_MIN_REQUEST_INTERVAL_SECONDS = 0.1
+
 
 @dataclass(frozen=True)
 class _KalshiHistoryBatch:
@@ -446,6 +449,7 @@ def paper_alert_archive(
 
     archived = 0
     skipped = 0
+    failed_days: list[str] = []
     window_start = first_day
     while window_start < today:
         window_end = window_start + timedelta(days=1)
@@ -545,11 +549,18 @@ def paper_alert_archive(
                 console.print(
                     f"[red]Validation archive failed for {window_start.date()}: {exc}[/red]"
                 )
-                raise typer.Exit(code=1) from exc
-            raise
+                failed_days.append(window_start.date().isoformat())
+            else:
+                raise
         window_start = window_end
 
     console.print(f"Validation archive complete • {archived} archived • {skipped} already stored")
+    if failed_days:
+        console.print(
+            f"[red]Validation archive incomplete • {len(failed_days)} failed: "
+            f"{', '.join(failed_days)}[/red]"
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command("sync-research-data")
@@ -1642,7 +1653,10 @@ async def _fetch_kalshi_history(
     range_contracts_per_event: int,
     history_hours: int,
 ) -> _KalshiHistoryBatch:
-    client = KalshiClient()
+    client = KalshiClient(
+        max_rate_limit_retries=_HISTORY_RATE_LIMIT_RETRIES,
+        min_request_interval=_HISTORY_MIN_REQUEST_INTERVAL_SECONDS,
+    )
     try:
         events: list[KalshiEvent] = []
         cursor: str | None = None
