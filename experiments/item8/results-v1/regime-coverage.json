@@ -1,0 +1,172 @@
+{
+  "code": {
+    "git_revision": "066f9a8e6fbaa30e4b2a307b3806ccde09684c37",
+    "lock_sha256": "d087a754a285b5f5f69547e9cc8fa59ba011433d1bd6c5dee98fc2d26a3039e3",
+    "platform": "macOS-13.7.8-x86_64-i386-64bit",
+    "python": "3.11.13",
+    "source_files": {
+      "src/prediction_market_system/__init__.py": "0a8e080a798a81e263abc02225cc72ac13461dfe24b62ac22fd59cab590072f0",
+      "src/prediction_market_system/__main__.py": "6134d2dc345c12b08af90338979da72fcc3bcfd5b2f0a063caec8d1faaddd16a",
+      "src/prediction_market_system/alert_outcomes.py": "2b2d9eeda643b640356e10a09c706c7e657f2392a21e93cb1933989e466d1ed6",
+      "src/prediction_market_system/archive.py": "186b1dcc6e467b65b3ab52913325328237b0a73aa17c517ee1d9c9bda8e80871",
+      "src/prediction_market_system/audit_cli.py": "d0c00238f8b7f2c41798ec0252d5fa46ea08cfef4723e694dd2d9928e3ed53c0",
+      "src/prediction_market_system/authorization.py": "ee8276324596b30f191b0beed60e708f96730cbae819b996116ada728a31e7c0",
+      "src/prediction_market_system/backtest.py": "9e27bb866196835bb8fc02f77e1199186801c6677d061271bffb694b8de3650d",
+      "src/prediction_market_system/calibration.py": "9fb3f1a50de35d580288bf82e2d7c1129b54020255f401d5eaa83224bcf3f612",
+      "src/prediction_market_system/cli.py": "d6506fe36576ecfe0b6f24321aa464adf652280d22bc410059001a89570ef716",
+      "src/prediction_market_system/config.py": "7e64700718780194d37a13e99e17e0b80da32428cb465d03a9360e5b6df8aaa2",
+      "src/prediction_market_system/db_backup.py": "290f2adbec4cd323b1ad2ba4943431ed2848eaa181df27e28760606810a08b86",
+      "src/prediction_market_system/discord.py": "7d62bf4306f222e6f4de87468fe9023118661f33d7aabb83083c61b967b2424c",
+      "src/prediction_market_system/domain.py": "07d3d43b92085fac8a39d6bc2fa8b2ba49401552ed59836a704c869e8513e532",
+      "src/prediction_market_system/engine.py": "2fab2b013c9a474984b7869aa6837779439112d5e329141e77eb061deb7bcbc9",
+      "src/prediction_market_system/evidence.py": "12d6d0b008e39625144d83977f07c87572f7f2d6f7ba3a2502f34b514bb674bb",
+      "src/prediction_market_system/experiment.py": "5f721fc1a2513ac66467712127771bb081cbe8a697012b24b34bb72e11e90c27",
+      "src/prediction_market_system/experiment_cli.py": "10f4f88aa23a9d2e81220da7bacfe14ddcd2572ec1e53ab2754bce20ef13175c",
+      "src/prediction_market_system/experiment_decisions.py": "29ff4535b58ac2ff55edee4db30efe4d47639b4201000d00d3b39bba1fe5fb95",
+      "src/prediction_market_system/experiment_inputs.py": "edf21001b263e7d37d885b753b1822a6bd5fa471849db547f8acd9949138c671",
+      "src/prediction_market_system/heartbeat.py": "86d852186711c8ad4299340b98404fc136640a5c6bbbe55c245f8b070a4491c5",
+      "src/prediction_market_system/operations.py": "a8a9b94aec02b419d797aeac381a7488e235e7b25f843974c80347505ea37118",
+      "src/prediction_market_system/paper_alerts.py": "8f2b1cd1fa27211d71431d72895c3c43a78082664c73b4a93515b42a97bbf24e",
+      "src/prediction_market_system/recipe.py": "b03be8211b1213ba2dfd7f32bc105765ae920c68d31218aac88097ead79872ec",
+      "src/prediction_market_system/redaction.py": "b214b195e77c85d4cca9d4398b866a0a6401282d3773136baf5c5cce87672c92",
+      "src/prediction_market_system/research.py": "a5568d459b1f3b8f9bd520b9d1687be6f6a1a645bbba1fbb86f0280d6640592f",
+      "src/prediction_market_system/research_storage.py": "6d2d7803922a78947276fee3288db59b66db30bbff1b562814850c9e454a2fdf",
+      "src/prediction_market_system/sources/__init__.py": "e3071a071ab9733eb115a6dbb3ab9f2caf36000ebeb66ebeed0ad7eff0edd1e8",
+      "src/prediction_market_system/sources/coinbase.py": "b548e71f9926deb8d5de72522a9de9ee78553e945211b2695d1a26c9a11048a5",
+      "src/prediction_market_system/sources/deribit.py": "93bc77958af453890f86ad968f2bc6f49ff8a1653437406a30447cc331770b98",
+      "src/prediction_market_system/storage.py": "0ed1d2b7fbf0a5795a35692d6f96060ed81c284193788e0f84aaf0bdde2560fe",
+      "src/prediction_market_system/transport.py": "05a6b60415ff037546fb134b097468ed8e88fe1c63424958d49341261ef9590a",
+      "src/prediction_market_system/validation.py": "fb49e9863796f548303a83f113ac9906b438423753bc573df2261fd54f4d6c39",
+      "src/prediction_market_system/venues/__init__.py": "f78c760d18ca5d3b8d800b00003c31d928cda2cb87c72d16101922a3c01ff18b",
+      "src/prediction_market_system/venues/kalshi.py": "958dcb006db64d6f199931a83de56a41dba834b26585259f202b07a50eb0ae90"
+    },
+    "source_sha256": "bd27cff2c0ce06fd0e8fb101fc3466837cd346507be2b98ecb668720c558cf14"
+  },
+  "conflicting_closes": 0,
+  "daily_cutoffs": 633,
+  "downtrend_days": 159,
+  "evidence_class": "current-retrieval descriptive historical prices",
+  "expected_hourly_candles": 15913,
+  "high_volatility_days": 0,
+  "hourly_candles": 15903,
+  "monthly_regime_days": {
+    "2025-01": {
+      "downtrend / typical-volatility": 7,
+      "range / typical-volatility": 12,
+      "uptrend / typical-volatility": 12
+    },
+    "2025-02": {
+      "downtrend / typical-volatility": 13,
+      "range / typical-volatility": 14,
+      "uptrend / typical-volatility": 1
+    },
+    "2025-03": {
+      "downtrend / typical-volatility": 27,
+      "range / typical-volatility": 4
+    },
+    "2025-04": {
+      "downtrend / typical-volatility": 6,
+      "range / typical-volatility": 14,
+      "uptrend / typical-volatility": 10
+    },
+    "2025-05": {
+      "uptrend / low-volatility": 22,
+      "uptrend / typical-volatility": 9
+    },
+    "2025-06": {
+      "downtrend / low-volatility": 3,
+      "range / low-volatility": 18,
+      "uptrend / low-volatility": 9
+    },
+    "2025-07": {
+      "range / low-volatility": 9,
+      "uptrend / low-volatility": 22
+    },
+    "2025-08": {
+      "downtrend / low-volatility": 6,
+      "range / low-volatility": 20,
+      "uptrend / low-volatility": 5
+    },
+    "2025-09": {
+      "downtrend / low-volatility": 3,
+      "range / low-volatility": 26,
+      "uptrend / low-volatility": 1
+    },
+    "2025-10": {
+      "downtrend / low-volatility": 4,
+      "downtrend / typical-volatility": 1,
+      "range / low-volatility": 7,
+      "range / typical-volatility": 3,
+      "unavailable": 6,
+      "uptrend / low-volatility": 10
+    },
+    "2025-11": {
+      "downtrend / typical-volatility": 6,
+      "unavailable": 24
+    },
+    "2025-12": {
+      "downtrend / typical-volatility": 19,
+      "range / typical-volatility": 12
+    },
+    "2026-01": {
+      "range / low-volatility": 20,
+      "range / typical-volatility": 4,
+      "uptrend / low-volatility": 7
+    },
+    "2026-02": {
+      "downtrend / low-volatility": 2,
+      "downtrend / typical-volatility": 26
+    },
+    "2026-03": {
+      "downtrend / typical-volatility": 8,
+      "range / typical-volatility": 14,
+      "uptrend / typical-volatility": 9
+    },
+    "2026-04": {
+      "downtrend / typical-volatility": 2,
+      "range / typical-volatility": 15,
+      "uptrend / low-volatility": 8,
+      "uptrend / typical-volatility": 5
+    },
+    "2026-05": {
+      "unavailable": 23,
+      "uptrend / low-volatility": 8
+    },
+    "2026-06": {
+      "downtrend / typical-volatility": 23,
+      "unavailable": 7
+    },
+    "2026-07": {
+      "downtrend / typical-volatility": 3,
+      "range / typical-volatility": 19,
+      "uptrend / low-volatility": 6,
+      "uptrend / typical-volatility": 3
+    },
+    "2026-08": {
+      "range / low-volatility": 19,
+      "uptrend / low-volatility": 12
+    },
+    "2026-09": {
+      "range / low-volatility": 1,
+      "uptrend / low-volatility": 14,
+      "uptrend / typical-volatility": 10
+    }
+  },
+  "overlap_downtrend_high_days": 0,
+  "point_in_time_replay_eligible": false,
+  "price_source_sha256": "e643de8683445d6d6bdbdd14f125adc672a98b192095812ec303e1959ee032aa",
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79",
+  "provider": "Coinbase BTC-USD; not Kalshi settlement benchmark",
+  "regime_days": {
+    "downtrend / low-volatility": 18,
+    "downtrend / typical-volatility": 141,
+    "range / low-volatility": 120,
+    "range / typical-volatility": 111,
+    "unavailable": 60,
+    "uptrend / low-volatility": 124,
+    "uptrend / typical-volatility": 59
+  },
+  "runner_sha256": "b8659a91f752fd085688f9ee82efebf81d545c08d089b443e65a5aba486f9700",
+  "uncertainty": "Overlapping trailing windows are dependent. Day counts are descriptive coverage, not independent forecast samples.",
+  "unclassifiable_days": 60
+}

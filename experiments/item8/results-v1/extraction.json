@@ -1,0 +1,127 @@
+{
+  "code": {
+    "git_revision": "066f9a8e6fbaa30e4b2a307b3806ccde09684c37",
+    "lock_sha256": "d087a754a285b5f5f69547e9cc8fa59ba011433d1bd6c5dee98fc2d26a3039e3",
+    "platform": "macOS-13.7.8-x86_64-i386-64bit",
+    "python": "3.11.13",
+    "source_files": {
+      "src/prediction_market_system/__init__.py": "0a8e080a798a81e263abc02225cc72ac13461dfe24b62ac22fd59cab590072f0",
+      "src/prediction_market_system/__main__.py": "6134d2dc345c12b08af90338979da72fcc3bcfd5b2f0a063caec8d1faaddd16a",
+      "src/prediction_market_system/alert_outcomes.py": "2b2d9eeda643b640356e10a09c706c7e657f2392a21e93cb1933989e466d1ed6",
+      "src/prediction_market_system/archive.py": "186b1dcc6e467b65b3ab52913325328237b0a73aa17c517ee1d9c9bda8e80871",
+      "src/prediction_market_system/audit_cli.py": "d0c00238f8b7f2c41798ec0252d5fa46ea08cfef4723e694dd2d9928e3ed53c0",
+      "src/prediction_market_system/authorization.py": "ee8276324596b30f191b0beed60e708f96730cbae819b996116ada728a31e7c0",
+      "src/prediction_market_system/backtest.py": "9e27bb866196835bb8fc02f77e1199186801c6677d061271bffb694b8de3650d",
+      "src/prediction_market_system/calibration.py": "9fb3f1a50de35d580288bf82e2d7c1129b54020255f401d5eaa83224bcf3f612",
+      "src/prediction_market_system/cli.py": "d6506fe36576ecfe0b6f24321aa464adf652280d22bc410059001a89570ef716",
+      "src/prediction_market_system/config.py": "7e64700718780194d37a13e99e17e0b80da32428cb465d03a9360e5b6df8aaa2",
+      "src/prediction_market_system/db_backup.py": "290f2adbec4cd323b1ad2ba4943431ed2848eaa181df27e28760606810a08b86",
+      "src/prediction_market_system/discord.py": "7d62bf4306f222e6f4de87468fe9023118661f33d7aabb83083c61b967b2424c",
+      "src/prediction_market_system/domain.py": "07d3d43b92085fac8a39d6bc2fa8b2ba49401552ed59836a704c869e8513e532",
+      "src/prediction_market_system/engine.py": "2fab2b013c9a474984b7869aa6837779439112d5e329141e77eb061deb7bcbc9",
+      "src/prediction_market_system/evidence.py": "12d6d0b008e39625144d83977f07c87572f7f2d6f7ba3a2502f34b514bb674bb",
+      "src/prediction_market_system/experiment.py": "5f721fc1a2513ac66467712127771bb081cbe8a697012b24b34bb72e11e90c27",
+      "src/prediction_market_system/experiment_cli.py": "10f4f88aa23a9d2e81220da7bacfe14ddcd2572ec1e53ab2754bce20ef13175c",
+      "src/prediction_market_system/experiment_decisions.py": "29ff4535b58ac2ff55edee4db30efe4d47639b4201000d00d3b39bba1fe5fb95",
+      "src/prediction_market_system/experiment_inputs.py": "edf21001b263e7d37d885b753b1822a6bd5fa471849db547f8acd9949138c671",
+      "src/prediction_market_system/heartbeat.py": "86d852186711c8ad4299340b98404fc136640a5c6bbbe55c245f8b070a4491c5",
+      "src/prediction_market_system/operations.py": "a8a9b94aec02b419d797aeac381a7488e235e7b25f843974c80347505ea37118",
+      "src/prediction_market_system/paper_alerts.py": "8f2b1cd1fa27211d71431d72895c3c43a78082664c73b4a93515b42a97bbf24e",
+      "src/prediction_market_system/recipe.py": "b03be8211b1213ba2dfd7f32bc105765ae920c68d31218aac88097ead79872ec",
+      "src/prediction_market_system/redaction.py": "b214b195e77c85d4cca9d4398b866a0a6401282d3773136baf5c5cce87672c92",
+      "src/prediction_market_system/research.py": "a5568d459b1f3b8f9bd520b9d1687be6f6a1a645bbba1fbb86f0280d6640592f",
+      "src/prediction_market_system/research_storage.py": "6d2d7803922a78947276fee3288db59b66db30bbff1b562814850c9e454a2fdf",
+      "src/prediction_market_system/sources/__init__.py": "e3071a071ab9733eb115a6dbb3ab9f2caf36000ebeb66ebeed0ad7eff0edd1e8",
+      "src/prediction_market_system/sources/coinbase.py": "b548e71f9926deb8d5de72522a9de9ee78553e945211b2695d1a26c9a11048a5",
+      "src/prediction_market_system/sources/deribit.py": "93bc77958af453890f86ad968f2bc6f49ff8a1653437406a30447cc331770b98",
+      "src/prediction_market_system/storage.py": "0ed1d2b7fbf0a5795a35692d6f96060ed81c284193788e0f84aaf0bdde2560fe",
+      "src/prediction_market_system/transport.py": "05a6b60415ff037546fb134b097468ed8e88fe1c63424958d49341261ef9590a",
+      "src/prediction_market_system/validation.py": "fb49e9863796f548303a83f113ac9906b438423753bc573df2261fd54f4d6c39",
+      "src/prediction_market_system/venues/__init__.py": "f78c760d18ca5d3b8d800b00003c31d928cda2cb87c72d16101922a3c01ff18b",
+      "src/prediction_market_system/venues/kalshi.py": "958dcb006db64d6f199931a83de56a41dba834b26585259f202b07a50eb0ae90"
+    },
+    "source_sha256": "bd27cff2c0ce06fd0e8fb101fc3466837cd346507be2b98ecb668720c558cf14"
+  },
+  "isolation": "No production database/configuration read or written. No forward holdout rows copied.",
+  "parameters": {
+    "end": "2026-09-26T00:00:00+00:00",
+    "end_ts": 1790380800,
+    "start": "2024-10-03T00:00:00+00:00",
+    "start_ts": 1727913600,
+    "warmup": "2024-09-02T23:00:00+00:00"
+  },
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79",
+  "runner_sha256": "37b062b98d04908d038a497a7570e7366209a880059c8c0c07bb08bb1d9a7df9",
+  "selected_events": 1131,
+  "selected_source_sha256": "66aee70e99e02d3a44ee11f66634f4614b4f7010a178d9d5372f20afbd00f4e7",
+  "source_bytes": 11133689856,
+  "source_evidence_tables": {
+    "forecast_ledger": false,
+    "input_objects": false,
+    "research_provider_revisions": false,
+    "research_revision_observations": false,
+    "run_manifests": false,
+    "venue_revision_observations": false,
+    "venue_source_revisions": false
+  },
+  "source_file": "prediction_markets-pre-v2-20261018T072546555071Z.sqlite3",
+  "source_mtime_ns": 1792310145926383939,
+  "source_schema_sha256": "599968f3a42b7a32b0e0d5d0eba1379678a04b7264a27f3bb3c8138e4ce4f2de",
+  "tables": {
+    "crypto_derivatives_snapshots": {
+      "query": "SELECT \"provider\",\"instrument_name\",\"observed_at\",\"retrieved_at\",\"payload_json\" FROM \"crypto_derivatives_snapshots\" WHERE instrument_name LIKE 'BTC-%' AND julianday(observed_at)>=julianday(:warmup) AND julianday(observed_at)<julianday(:end) AND julianday(retrieved_at)<julianday(:end) ORDER BY provider,instrument_name,observed_at",
+      "rows": 921,
+      "sha256": "03b4da05cb81d9ead7ab2f25b0eef5bc25a66e09f54c12c35ada6388566615af"
+    },
+    "crypto_funding_observations": {
+      "query": "SELECT \"provider\",\"instrument_name\",\"observed_at\",\"retrieved_at\",\"payload_json\" FROM \"crypto_funding_observations\" WHERE instrument_name LIKE 'BTC-%' AND julianday(observed_at)>=julianday(:warmup) AND julianday(observed_at)<julianday(:end) AND julianday(retrieved_at)<julianday(:end) ORDER BY provider,instrument_name,observed_at",
+      "rows": 6775,
+      "sha256": "856e65db16fe6f335509c8afe305f3bf14c2b5c4be084e59303d7bd29307deed"
+    },
+    "crypto_spot_candles": {
+      "query": "SELECT \"provider\",\"product_id\",\"interval_seconds\",\"start_at\",\"end_at\",\"retrieved_at\",\"payload_json\" FROM \"crypto_spot_candles\" WHERE product_id='BTC-USD' AND interval_seconds IN (60,3600) AND julianday(end_at)>=julianday(:warmup) AND julianday(end_at)<julianday(:end) AND julianday(retrieved_at)<julianday(:end) ORDER BY provider,product_id,interval_seconds,start_at",
+      "rows": 73347,
+      "sha256": "e8bbd4ffd2d84aa39c5d6c387278d9a11c822755f9f5581a4c044cb67634ac2c"
+    },
+    "crypto_volatility_observations": {
+      "query": "SELECT \"provider\",\"symbol\",\"kind\",\"window_seconds\",\"source_start_at\",\"observed_at\",\"retrieved_at\",\"payload_json\" FROM \"crypto_volatility_observations\" WHERE symbol='BTC' AND julianday(observed_at)>=julianday(:warmup) AND julianday(observed_at)<julianday(:end) AND julianday(retrieved_at)<julianday(:end) ORDER BY provider,symbol,kind,window_seconds,observed_at",
+      "rows": 75199,
+      "sha256": "c9cff6fad26b6cbb0609cb245321b3c5659f7c67d0fb04c34c15bdf936c36fef"
+    },
+    "kalshi_candlesticks": {
+      "query": "SELECT \"ticker\",\"series_ticker\",\"period_interval_minutes\",\"end_period_ts\",\"retrieved_at\",\"payload_json\" FROM \"kalshi_candlesticks\" WHERE ticker IN (SELECT DISTINCT ticker FROM kalshi_market_snapshots WHERE series_ticker='KXBTC' AND julianday(close_time)>=julianday(:start) AND julianday(close_time)<julianday(:end) AND julianday(observed_at)<julianday(:end)) AND end_period_ts>=:start_ts AND end_period_ts<:end_ts AND julianday(retrieved_at)<julianday(:end) ORDER BY ticker,period_interval_minutes,end_period_ts",
+      "rows": 204381,
+      "sha256": "0b969469048d1faf851158840f9778c6efad0c96a62d75b98f720e856a68d05b"
+    },
+    "kalshi_event_data_snapshots": {
+      "query": "SELECT \"provider\",\"event_ticker\",\"data_type\",\"observed_at\",\"retrieved_at\",\"is_historical\",\"payload_json\" FROM \"kalshi_event_data_snapshots\" WHERE event_ticker LIKE 'KXBTC-%' AND julianday(observed_at)>=julianday(:warmup) AND julianday(observed_at)<julianday(:end) AND julianday(retrieved_at)<julianday(:end) ORDER BY provider,event_ticker,observed_at",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "kalshi_event_fee_changes": {
+      "query": "SELECT \"change_id\",\"event_ticker\",\"series_ticker\",\"fee_type_override\",\"fee_multiplier_override\",\"scheduled_at\",\"retrieved_at\",\"payload_json\" FROM \"kalshi_event_fee_changes\" WHERE series_ticker='KXBTC' AND julianday(retrieved_at)<julianday(:end) ORDER BY change_id",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "kalshi_market_snapshots": {
+      "query": "SELECT \"ticker\",\"observed_at\",\"series_ticker\",\"event_ticker\",\"status\",\"source_updated_at\",\"close_time\",\"result\",\"payload_json\" FROM \"kalshi_market_snapshots\" WHERE ticker IN (SELECT DISTINCT ticker FROM kalshi_market_snapshots WHERE series_ticker='KXBTC' AND julianday(close_time)>=julianday(:start) AND julianday(close_time)<julianday(:end) AND julianday(observed_at)<julianday(:end)) AND julianday(observed_at)<julianday(:end) ORDER BY ticker,observed_at",
+      "rows": 44577,
+      "sha256": "85e7c0c5d29d5ffa14a33184eaf5693e40d0613221256be2418652665ad52119"
+    },
+    "kalshi_resolutions": {
+      "query": "SELECT \"ticker\",\"observed_at\",\"result\",\"settlement_value_dollars\",\"settlement_ts\",\"expiration_value\" FROM \"kalshi_resolutions\" WHERE ticker IN (SELECT DISTINCT ticker FROM kalshi_market_snapshots WHERE series_ticker='KXBTC' AND julianday(close_time)>=julianday(:start) AND julianday(close_time)<julianday(:end) AND julianday(observed_at)<julianday(:end)) AND julianday(observed_at)<julianday(:end) AND (settlement_ts IS NULL OR julianday(settlement_ts)<julianday(:end)) ORDER BY ticker,observed_at",
+      "rows": 44577,
+      "sha256": "70201bea04696324d32100c6eed6dbcb4f8d56b48b768b2642b4313d12837f77"
+    },
+    "kalshi_rule_snapshots": {
+      "query": "SELECT \"ticker\",\"observed_at\",\"rules_primary\",\"rules_secondary\" FROM \"kalshi_rule_snapshots\" WHERE ticker IN (SELECT DISTINCT ticker FROM kalshi_market_snapshots WHERE series_ticker='KXBTC' AND julianday(close_time)>=julianday(:start) AND julianday(close_time)<julianday(:end) AND julianday(observed_at)<julianday(:end)) AND julianday(observed_at)<julianday(:end) ORDER BY ticker,observed_at",
+      "rows": 44577,
+      "sha256": "a288b10a88c9c24c5c1e1b5939a215e3ded7d1141035b853081d1ab92578a7c5"
+    },
+    "kalshi_series_fee_changes": {
+      "query": "SELECT \"change_id\",\"series_ticker\",\"fee_type\",\"fee_multiplier\",\"scheduled_at\",\"retrieved_at\",\"payload_json\" FROM \"kalshi_series_fee_changes\" WHERE series_ticker='KXBTC' AND julianday(retrieved_at)<julianday(:end) ORDER BY change_id",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

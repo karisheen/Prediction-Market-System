@@ -1,0 +1,78 @@
+{
+  "canonical_run_id": "47bb624b-3b8b-4093-835b-7d141eb980b3",
+  "files": {
+    "backtest-summary.json": {
+      "bytes": 20718,
+      "sha256": "c06a927f45f4b33293e299efa3774e67394501d66b1e3b34975211e3576e824a"
+    },
+    "backtest.json.gz": {
+      "bytes": 1495361,
+      "sha256": "6209a34013e79338b9289a26ba72743b21dfcd1b327bfc750cf747303a7f9d01"
+    },
+    "coinbase-hourly.jsonl.gz": {
+      "bytes": 755778,
+      "sha256": "e643de8683445d6d6bdbdd14f125adc672a98b192095812ec303e1959ee032aa"
+    },
+    "daily-regimes.csv": {
+      "bytes": 47417,
+      "sha256": "8f38423e23a8cfb88bb954fedc8ddfe9e52cb367f88035a43504a9a781283cfe"
+    },
+    "extraction.json": {
+      "bytes": 11649,
+      "sha256": "d587bde1b70ad7cd29e2a467c02cfe347d608d8b77b38f428e8f91b3c6df8602"
+    },
+    "gap-verification.json": {
+      "bytes": 1546,
+      "sha256": "9a6d8f69282392c9f3939b1be5beaf4ae0074a72e418e5fdec0a4029e5aec90a"
+    },
+    "price-gaps.json": {
+      "bytes": 15243,
+      "sha256": "6e4fd586805ace3907f2ba78c27e4a26d71f35432104bd420a3d70fecf34fd8c"
+    },
+    "price-requests.json": {
+      "bytes": 7455,
+      "sha256": "f79fef3416f8f02d3a8b767e7b40fe4eb3c13a10c67215b0ac22d6f0ab8efea8"
+    },
+    "regime-coverage.json": {
+      "bytes": 8345,
+      "sha256": "551c2f164e5ca9c7e7ea9fdfc6194193be876311618108237fa8041bb5709fc7"
+    },
+    "replay-coverage.json": {
+      "bytes": 714,
+      "sha256": "4eed470e00239895874cd6ec57891dbf5bdd8bada0a2269d3e40f87d40507783"
+    },
+    "replay-summary.json": {
+      "bytes": 697,
+      "sha256": "2be2621d4bc3ce38efdf862e2c50d73d893c4924b540b008f238bae44880ec3a"
+    },
+    "report.json": {
+      "bytes": 9857,
+      "sha256": "7659f6eb2bc6b2d1d7ffd8a0100e5ef4f1ae7fadbbfda4c095b3a66144e54665"
+    },
+    "venue-probe-source.json": {
+      "bytes": 5568,
+      "sha256": "d58f7951bc99f9f77a826373bbd0d7e8579d3d939f5e041628a3dcb092f177c8"
+    },
+    "venue-probe.json": {
+      "bytes": 412,
+      "sha256": "b29775302afd86960c6233cc9648afdd66af0f3dc34f00004a801d4f317ece0b"
+    },
+    "verification.json": {
+      "bytes": 2018,
+      "sha256": "f9aaab16abe83d03b88ce3dd920dffede967575ae0c2f43a916b73aafd603d1e"
+    }
+  },
+  "full_native_result_uncompressed_sha256": "c2ab539e062e183be12fb5ca974fbf32f7f85f78c68d049a2f7a0fb971316369",
+  "local_working_root": "/Users/dakariantoine/research/prediction-market-system/item8-v1",
+  "protocol_file_sha256": "c09bbbb145d8798568a97786f95400a3598962a980b51054566af22ae3efbd5a",
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79",
+  "published_at": "2026-10-19T12:31:56.850829+00:00",
+  "result": "INSUFFICIENT_EVIDENCE",
+  "review": "Independent protocol/code review accepted canonical runner binding and the insufficient-evidence conclusion.",
+  "runner_files": {
+    "price_coverage.py": "b8659a91f752fd085688f9ee82efebf81d545c08d089b443e65a5aba486f9700",
+    "replay_audit.py": "37b062b98d04908d038a497a7570e7366209a880059c8c0c07bb08bb1d9a7df9"
+  },
+  "verification_program_sha256": "f68c95a543700e6313c15f30e962c6d89308131342e5df1d6c2f10315a73c93f",
+  "verification_program_source": "\"\"\"Verify bounded extracted rows and independently recompute daily regime statistics.\"\"\"\nimport csv\nimport gzip\nimport hashlib\nimport io\nimport json\nimport math\nimport sqlite3\nimport subprocess\nimport tarfile\nfrom datetime import datetime, timedelta\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parent\nREPO = Path('/Users/dakariantoine/Developer/personal/prediction-market-system')\nextraction = json.loads((ROOT/'replay-verified/extraction.json').read_text())\nchecks = {}\nwith sqlite3.connect((ROOT/'replay-verified/research.sqlite3').as_uri()+'?mode=ro', uri=True) as db:\n    db.execute('PRAGMA query_only=ON')\n    for name, table in extraction['tables'].items():\n        digest = hashlib.sha256()\n        count = 0\n        for row in db.execute(table['query'], extraction['parameters']):\n            digest.update((json.dumps(row, separators=(',', ':'), ensure_ascii=True)+'\\n').encode())\n            count += 1\n        assert count == table['rows'] and digest.hexdigest() == table['sha256'], name\n        checks[name] = {'rows': count, 'selected_source_hash_matches': True}\n    assert db.execute('PRAGMA quick_check').fetchall() == [('ok',)]\n    metadata_before_close = db.execute('SELECT count(*) FROM kalshi_market_snapshots WHERE julianday(observed_at)<julianday(close_time)').fetchone()[0]\n    timely_quotes = db.execute(\"SELECT count(*) FROM kalshi_candlesticks WHERE period_interval_minutes=1 AND (julianday(retrieved_at)-julianday(end_period_ts,'unixepoch'))*86400<=120\").fetchone()[0]\n    postcutoff = {}\n    for table in extraction['tables']:\n        columns = {row[1] for row in db.execute('PRAGMA table_info('+table+')')}\n        clocks = [clock for clock in ('observed_at', 'retrieved_at', 'settlement_ts') if clock in columns]\n        predicate = ' OR '.join('julianday('+clock+')>=julianday(?)' for clock in clocks)\n        count = db.execute('SELECT count(*) FROM '+table+' WHERE '+predicate, [extraction['parameters']['end']]*len(clocks)).fetchone()[0]\n        assert count == 0, (table, count)\n        postcutoff[table] = count\n\n# Normalize Z and +00:00 to the same aware datetime; do not change source timestamps.\nraw = {}\nwith gzip.open(ROOT/'prices-verified/coinbase-hourly.jsonl.gz', 'rt') as file:\n    for line in file:\n        row = json.loads(line)\n        raw[datetime.fromisoformat(row['end_at'])] = float(row['close'])\nchecked = 0\nwith (ROOT/'prices-verified/daily-regimes.csv').open() as file:\n    for day in csv.DictReader(file):\n        boundary = datetime.fromisoformat(day['date']+'T00:00:00+00:00')\n        times = [boundary-timedelta(hours=720-index) for index in range(721)]\n        missing = sum(time not in raw for time in times)\n        assert missing == int(day['missing_or_conflicting_closes'])\n        if missing:\n            assert day['regime'] == 'unavailable'\n            continue\n        values = [math.log(raw[time]) for time in times]\n        increments = [right-left for left, right in zip(values, values[1:])]\n        mean = sum(increments)/720\n        vol = math.sqrt(sum((value-mean)**2 for value in increments)/719*365*24)\n        change = math.exp(values[-1]-values[0])-1\n        assert math.isclose(vol, float(day['annualized_realized_volatility']), rel_tol=1e-10)\n        assert math.isclose(change, float(day['trailing_return']), abs_tol=1e-12)\n        trend = 'downtrend' if change<=-0.05 else 'uptrend' if change>=0.05 else 'range'\n        regime = 'high-volatility' if vol>=0.8 else 'low-volatility' if vol<0.4 else 'typical-volatility'\n        assert day['regime'] == trend+' / '+regime\n        checked += 1\n\nprotocol = json.loads((ROOT/'replay-verified/protocol.json').read_text())\narchive = subprocess.run(['git', 'archive', protocol['code_revision'], 'src/prediction_market_system'], cwd=REPO, capture_output=True, check=True).stdout\nwith tarfile.open(fileobj=io.BytesIO(archive)) as tar:\n    baseline = {member.name: hashlib.sha256(tar.extractfile(member).read()).hexdigest() for member in tar if member.isfile() and member.name.endswith('.py')}\nassert baseline == extraction['code']['source_files'], 'Core executable code differs from frozen baseline'\nfor directory, name in [('replay-verified', 'replay_audit'), ('prices-verified', 'price_coverage')]:\n    path = ROOT/directory/(name+'.as_run.py')\n    record_name = 'extraction.json' if directory=='replay-verified' else 'regime-coverage.json'\n    record = json.loads((ROOT/directory/record_name).read_text())\n    assert hashlib.sha256(path.read_bytes()).hexdigest() == record['runner_sha256']\n    assert path.read_bytes() == (REPO/'experiments/item8'/(name+'.py')).read_bytes()\n    manifest = json.loads((ROOT/directory/'artifacts.json').read_text())\n    for filename, digest in manifest.items():\n        assert hashlib.sha256((ROOT/directory/filename).read_bytes()).hexdigest() == digest\nold_extraction = json.loads((ROOT/'replay/extraction.json').read_text())\nassert old_extraction['selected_source_sha256'] == extraction['selected_source_sha256']\nold_result = json.loads((ROOT/'replay/summary.json').read_text())\nnew_result = json.loads((ROOT/'replay-verified/summary.json').read_text())\nassert {key: value for key, value in old_result.items() if key != 'run_id'} == {key: value for key, value in new_result.items() if key != 'run_id'}\nassert (ROOT/'prices/daily-regimes.csv').read_bytes() == (ROOT/'prices-verified/daily-regimes.csv').read_bytes()\nresult = {'verification': 'PASS', 'sqlite_quick_check': 'ok', 'extraction_content_checks': checks,\n          'post_cutoff_row_counts': postcutoff, 'metadata_before_trading_close': metadata_before_close,\n          'minute_quotes_received_within_120_seconds': timely_quotes,\n          'independently_recomputed_regime_cutoffs': checked,\n          'core_code_matches_frozen_baseline': True, 'archived_runner_hashes_match': True,\n          'artifact_hashes_match': True, 'initial_and_verified_replay_results_match': True,\n          'initial_and_verified_daily_regime_results_match': True}\n(ROOT/'verification.json').write_text(json.dumps(result, indent=2)+'\\n')\nprint(json.dumps(result, indent=2))\n"
+}

@@ -1,0 +1,161 @@
+{
+  "artifact_notes": {
+    "backtest.json.gz": "Full unmodified native result; backtest-summary.json omits large market identity arrays but preserves all fold results.",
+    "coinbase-hourly.jsonl.gz": "Exact canonical raw hourly download including actual receipt timestamps and provider payloads.",
+    "daily-regimes.csv": "All633 predeclared daily cutoffs, including unavailable windows.",
+    "extraction.json": "Verbatim source-selection SQL, source row counts and canonical hashes, schema identity and exact runner hash.",
+    "verification.json": "Isolation, original-row, runner, artifact, baseline-library and independent-arithmetic checks."
+  },
+  "availability_funnel": {
+    "admissible_forecasts": 0,
+    "all_candle_rows_copied": 204381,
+    "finalized_market_snapshot_rows": 44577,
+    "hypothetical_trades": 0,
+    "independent_resolved_events": 0,
+    "loaded_contracts": 31970,
+    "market_snapshot_rows": 44577,
+    "metadata_available_before_trading_close": 0,
+    "minute_candle_revisions_examined": 186183,
+    "minute_quotes_received_within_120_seconds": 0,
+    "native_missing_metadata_or_ineligible_contract_signals": 186183,
+    "selected_events": 1131
+  },
+  "canonical_run_id": "47bb624b-3b8b-4093-835b-7d141eb980b3",
+  "code_revision_note": "Protocol code_revision8112ec6 identifies the executable-library baseline. Run HEAD066f9a8 adds only the frozen protocol. Verification compared every package Python file against git archive8112ec6 and matched. Research drivers were authored after protocol freeze; canonical archived runner hashes bind their actual executed bytes.",
+  "conclusion": "The strict historical replay cannot establish model accuracy, profitability, drawdown, or robustness in downturn/high-volatility conditions from this archive. This is a data-admissibility result, not evidence for or against a trading edge.",
+  "descriptive_regime_coverage": {
+    "classifiable_cutoffs": 573,
+    "daily_grid": "00:00 UTC Jan1 2025 through Sep25 2026, inclusive",
+    "definition": "Trailing 30-day endpoint return <= -5% for downturn; sample standard deviation of 720 hourly log returns * sqrt(365*24) >=80% for high volatility; require721 consecutive closes.",
+    "downloaded_hourly_closes": 15903,
+    "downtrend_cutoffs": 159,
+    "expected_hourly_closes": 15913,
+    "gap_verification": "Separate Coinbase Exchange endpoint requests also lacked the ten required hourly bars. No interpolation or threshold changes.",
+    "high_volatility_cutoffs": 0,
+    "interpretation": "Zero high-volatility classifications among COMPLETE SAMPLED cutoffs only. Does not rule out high volatility in excluded windows, intraday periods or short-lived jumps. Overlapping trailing windows are dependent, not573 independent events.",
+    "maximum_classifiable_volatility": {
+      "annualized": 0.6903702245254417,
+      "date": "2025-03-22"
+    },
+    "minimum_classifiable_trailing_return": {
+      "date": "2026-02-06",
+      "return": -0.3300293068831963
+    },
+    "missing_cutoff_ranges": [
+      "2025-10-26 through 2025-11-24",
+      "2026-05-09 through 2026-06-07"
+    ],
+    "regime_counts": {
+      "downtrend / low-volatility": 18,
+      "downtrend / typical-volatility": 141,
+      "range / low-volatility": 120,
+      "range / typical-volatility": 111,
+      "unavailable": 60,
+      "uptrend / low-volatility": 124,
+      "uptrend / typical-volatility": 59
+    },
+    "sampled_daily_cutoffs": 633,
+    "source": "Current-retrieval Coinbase BTC-USD hourly prices; not historical as-of model inputs and not the exact Kalshi settlement index.",
+    "unclassifiable_cutoffs": 60
+  },
+  "design": {
+    "calibration_overrides_used": false,
+    "end_exclusive": "2026-09-26T00:00:00Z",
+    "first_test": "2025-01-01T00:00:00Z",
+    "full_length_scheduled_folds": 21,
+    "model_or_threshold_tuning": false,
+    "partial_final_fold_days": 3,
+    "qualifying_scored_folds": 0,
+    "replay_start": "2024-10-03T00:00:00Z",
+    "scheduled_folds": 22,
+    "step_days": 30,
+    "test_days": 30,
+    "training_days": 90
+  },
+  "diagnosis": [
+    "Every selected market snapshot was already finalized. There is no selected snapshot recorded before that contract closed.",
+    "None of the selected one-minute quote records was received within the required 120-second freshness bound. The native backtester rejected the received-time records before model evaluation.",
+    "The native missing_metadata_signals counter also includes unsupported/ineligible metadata. It must not be interpreted as proof that metadata rows are literally absent.",
+    "The earliest source market metadata was recorded August 6, 2026. Downloaded older candle dates do not create contemporaneous market state or research input provenance.",
+    "No qualifying forecast exists on which to compare the structural model, blend, executable YES ask and midpoint baseline. Calibration thresholds were not the binding failure; no forecast reached that stage."
+  ],
+  "execution_sensitivity": {
+    "adverse": "Not estimated: the frozen availability stop rule applies.",
+    "base": "Native replay executed with frozen conservative costs; zero forecasts/trades.",
+    "limits": "Candle replay cannot establish order-book depth or queue priority; no real fills or trading occurred.",
+    "severe": "Not estimated: the frozen availability stop rule applies."
+  },
+  "historical_venue_probe": {
+    "conclusion": "Some public historical data are accessible. This one-event probe is not an exhaustive availability survey, continuous one-hour coverage, or evidence of contemporaneous receipt.",
+    "event": "KXBTC-25APR0717",
+    "markets_requested": 1,
+    "markets_returned": 1,
+    "minute_candles_returned_in_last_hour": 6
+  },
+  "integrity": {
+    "canonical_runner_snapshots_bound": true,
+    "discord_sent": false,
+    "extraction_content_hashes_verified": true,
+    "frozen_core_code_match": true,
+    "independently_recomputed_regime_cutoffs": 573,
+    "model_approved": false,
+    "post_cutoff_rows_in_extracted_inputs": 0,
+    "production_config_changed": false,
+    "production_database_mutated": false,
+    "reserved_phase1_holdout_consumed": false,
+    "separate_database": true,
+    "sqlite_quick_check": "ok"
+  },
+  "limitations": [
+    "No model performance under downturns or high volatility has been established by this work.",
+    "No threshold was lowered to create high-volatility samples. Broader dates or a different stress definition would require a new predeclared experiment.",
+    "The archive and experiments are retrospective and cannot establish untouched unseen-event evidence.",
+    "Fees have no preserved pre-cutoff schedule rows in this extraction; the configured fee fallback is recorded, but no trade reached execution.",
+    "Raw source SQLite remains local. Selected source rows and schema have canonical fingerprints; the mixed-period11GB backup was not given a new full-file byte hash. The published native backtest contains source-input identities, not a portable replacement for every raw database row."
+  ],
+  "next_requirements": [
+    "Continue the upgraded forward collection without altering the frozen holdout or approving signals from this result.",
+    "For older periods, obtain point-in-time market/rule snapshots and quotes with defensible publication/receipt and revision provenance, plus complete timely BTC inputs. A trusted historical-provider adapter would require its own provenance review; simply backdating current downloads is not acceptable.",
+    "Require enough independent resolved events/dates and qualifying full folds in the target regimes before interpreting performance. Dates elapsed and raw scan counts do not satisfy those requirements.",
+    "Any extension to earlier stress dates, alternate volatility windows or new data semantics must be frozen as a separate experiment before scoring."
+  ],
+  "performance": {
+    "blend_brier": null,
+    "confidence_intervals": null,
+    "drawdown": null,
+    "estimated_strategy_pnl": null,
+    "log_loss_comparisons": null,
+    "midpoint_baseline_brier": null,
+    "reason": "No admissible scored population. Native zero cash flows with zero trades are bookkeeping zeros, not measured performance.",
+    "return_on_cost": null,
+    "structural_brier": null,
+    "yes_ask_baseline_brier": null
+  },
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79",
+  "reproduce": [
+    "uv run --frozen python experiments/item8/replay_audit.py --source '/path/to/prediction_markets-pre-v2-20261018T072546555071Z.sqlite3' --output /new/isolated/replay",
+    "uv run --frozen python experiments/item8/price_coverage.py --output /new/isolated/prices"
+  ],
+  "status": "INSUFFICIENT_EVIDENCE",
+  "title": "Item 8: historical downturn and high-volatility evidence audit",
+  "trial_lineage": [
+    {
+      "kind": "initial development replay",
+      "run_id": "7864d2f3-a803-4c9e-96ed-25cc6440e543",
+      "status": "Retained locally; not canonical because the uncommitted research runner bytes were not initially bound to its manifest."
+    },
+    {
+      "kind": "canonical provenance-bound replay",
+      "run_id": "47bb624b-3b8b-4093-835b-7d141eb980b3",
+      "status": "Exact runner bytes archived and SHA-256 bound. Same selected source row hashes and replay statistics as initial run; only run_id differs."
+    },
+    {
+      "kind": "canonical price reacquisition",
+      "status": "Repeated the same frozen download requests after binding runner provenance. Daily regime CSV identical to initial run; no revised thresholds, models, windows, or selection."
+    },
+    {
+      "kind": "verification correction",
+      "status": "The independent verifier normalized equivalent UTC strings Z and +00:00 after its first version hit a dictionary-key error. This did not alter raw observations or report statistics."
+    }
+  ]
+}

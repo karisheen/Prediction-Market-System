@@ -1,0 +1,10 @@
+{
+  "close_time": "2025-04-07T21:00:00+00:00",
+  "conclusion": "A returned archive is not evidence of receipt before historical decisions; this probe is not an exhaustive availability claim.",
+  "event_ticker": "KXBTC-25APR0717",
+  "limit": 1,
+  "minute_candles_in_last_hour": 6,
+  "purpose": "bounded public historical-data availability only",
+  "returned_markets": 1,
+  "ticker": "KXBTC-25APR0717-T92249.99"
+}

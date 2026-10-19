@@ -1,0 +1,28 @@
+{
+  "counts": {
+    "candle_revisions": 186183,
+    "loaded_contracts": 31970
+  },
+  "events": 1131,
+  "metadata_status_counts": {
+    "finalized": 44577
+  },
+  "monthly": {
+    "2026-06": {
+      "contracts": 6000,
+      "metadata_snapshots": 9600
+    },
+    "2026-08": {
+      "candle_revisions": 83913,
+      "contracts": 23290,
+      "metadata_snapshots": 32297
+    },
+    "2026-09": {
+      "candle_revisions": 102270,
+      "contracts": 2680,
+      "metadata_snapshots": 2680
+    }
+  },
+  "note": "Receipt-before-close uses trading close, not a substitute for stricter benchmark and eligibility checks in replay.",
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79"
+}

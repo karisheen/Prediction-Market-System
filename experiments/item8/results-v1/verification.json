@@ -1,0 +1,71 @@
+{
+  "verification": "PASS",
+  "sqlite_quick_check": "ok",
+  "extraction_content_checks": {
+    "crypto_derivatives_snapshots": {
+      "rows": 921,
+      "selected_source_hash_matches": true
+    },
+    "crypto_funding_observations": {
+      "rows": 6775,
+      "selected_source_hash_matches": true
+    },
+    "crypto_spot_candles": {
+      "rows": 73347,
+      "selected_source_hash_matches": true
+    },
+    "crypto_volatility_observations": {
+      "rows": 75199,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_candlesticks": {
+      "rows": 204381,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_event_data_snapshots": {
+      "rows": 0,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_event_fee_changes": {
+      "rows": 0,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_market_snapshots": {
+      "rows": 44577,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_resolutions": {
+      "rows": 44577,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_rule_snapshots": {
+      "rows": 44577,
+      "selected_source_hash_matches": true
+    },
+    "kalshi_series_fee_changes": {
+      "rows": 0,
+      "selected_source_hash_matches": true
+    }
+  },
+  "post_cutoff_row_counts": {
+    "crypto_derivatives_snapshots": 0,
+    "crypto_funding_observations": 0,
+    "crypto_spot_candles": 0,
+    "crypto_volatility_observations": 0,
+    "kalshi_candlesticks": 0,
+    "kalshi_event_data_snapshots": 0,
+    "kalshi_event_fee_changes": 0,
+    "kalshi_market_snapshots": 0,
+    "kalshi_resolutions": 0,
+    "kalshi_rule_snapshots": 0,
+    "kalshi_series_fee_changes": 0
+  },
+  "metadata_before_trading_close": 0,
+  "minute_quotes_received_within_120_seconds": 0,
+  "independently_recomputed_regime_cutoffs": 573,
+  "core_code_matches_frozen_baseline": true,
+  "archived_runner_hashes_match": true,
+  "artifact_hashes_match": true,
+  "initial_and_verified_replay_results_match": true,
+  "initial_and_verified_daily_regime_results_match": true
+}

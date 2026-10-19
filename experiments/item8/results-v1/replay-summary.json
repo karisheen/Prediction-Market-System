@@ -1,0 +1,21 @@
+{
+  "brier": null,
+  "deployment_approval": false,
+  "folds": 22,
+  "forecasts": 0,
+  "full_folds": 21,
+  "independent_resolved_events": 0,
+  "log_loss": null,
+  "missing_calibration_signals": 0,
+  "missing_context_signals": 0,
+  "missing_metadata_signals": 186183,
+  "native_market_brier": null,
+  "native_market_log_loss": null,
+  "pnl_interpretation": "Accounting zero with no trades is not an estimated strategy return or measured drawdown.",
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79",
+  "resolved_forecasts": 0,
+  "return_on_cost": null,
+  "run_id": "47bb624b-3b8b-4093-835b-7d141eb980b3",
+  "status": "insufficient-evidence",
+  "trades": 0
+}
