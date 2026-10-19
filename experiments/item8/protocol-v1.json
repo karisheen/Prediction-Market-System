@@ -1,0 +1,153 @@
+{
+  "code_revision": "8112ec626c270caab4047d1f41d658c1849e4b8b",
+  "data_policy": {
+    "archive_source": "immutable pre-v2 Oct18 backup, opened query-only; never initialize source or production",
+    "current_downloads": "descriptive price data only, actual receipt times preserved, separate from replay database; never manufacture past availability",
+    "hard_cutoff": "filter every copied observation/retrieval/label availability before 2026-09-26 UTC; retain earlier fee schedules",
+    "public_venue_probe": "at most one predetermined April7 2025 historical market per outcome-independent API ordering plus one-hour candles; availability evidence only, no evaluation population chosen from probe",
+    "source_fingerprints": "canonical hashes/counts of selected original rows, schema and exact extraction predicates; no legacy forward-ledger synthesis",
+    "subset": "new database initialized before verbatim row import; select universe by series, close date and metadata availability, never by outcome/edge/recommendation; preserve all eligible revisions and original timestamps"
+  },
+  "engine": {
+    "binary_fee_coefficient": 0.07,
+    "binary_fee_type": "quadratic",
+    "fee_rate": 0.0,
+    "fractional_kelly": 0.25,
+    "max_bankroll_fraction": 0.02,
+    "max_event_bankroll_fraction": 0.02,
+    "maximum_input_age_seconds": 120,
+    "min_conservative_edge": 0.03,
+    "minimum_ask_size": 10.0,
+    "minimum_seconds_to_expiry": 300,
+    "paper_bankroll": 10000.0,
+    "resolution_haircut": 0.01,
+    "slippage_bps": 25.0,
+    "structural_weight": 0.5,
+    "uncertainty_margin": 0.05
+  },
+  "execution": "Existing candle-based adverse-price replay, 10% volume participation, whole contracts. This is not historical order-book depth, queue priority or actual fills. No new fee/latency implementation; if no forecast survives base availability gates, stress economics are unidentifiable and are not fabricated.",
+  "frozen_at": "2026-10-19T04:41:47.042681+00:00",
+  "model": {
+    "expected_annual_return": 0.0,
+    "features": "existing point-in-time-complete-windows-v2; 60s decision spot; 30d hourly realized volatility; admissible matching-interval DVOL else realized; distinct recipes never silently pooled",
+    "structural_weight": 0.5,
+    "version": "2.1.0"
+  },
+  "phase1_protocol_unchanged": "sha256:ca38fcdf3ef1b0659270d1a31a8b1d4cb418b0dffdd06560f5898c3deb5421fe",
+  "prohibited": [
+    "production mutations",
+    "Discord sends",
+    "model tuning",
+    "changing Phase1 frozen protocol",
+    "forward-holdout consumption",
+    "data backdating",
+    "deployment approval",
+    "automatic trades"
+  ],
+  "protocol_id": "sha256:b0a8c44bf46245540183452734580cff5813cdbbe908b377797b886985e08e79",
+  "protocol_version": "pms-item8-regime-audit-v1",
+  "purpose": "Availability-gated retrospective evaluation of BTC downturn and high-volatility conditions; no unseen-event or deployment-approval claim.",
+  "regime": {
+    "descriptive_grid": "00:00 UTC daily; all dates Jan1 2025 through Sep25 2026, no cherry-picked stress days",
+    "downtrend": "trailing_return <= -0.05",
+    "high_volatility": "annualized realized volatility >=0.80",
+    "low_volatility": "annualized realized volatility <0.40",
+    "range": "otherwise",
+    "realized_estimator": "sample standard deviation of 720 hourly log returns, annualized by sqrt(365*24), requiring 721 consecutive hourly closes",
+    "replay_regime": "same trailing formula evaluated at actual decision time using admissible historical inputs; unavailable stays unknown",
+    "trend_threshold": 0.05,
+    "typical_volatility": "otherwise",
+    "uptrend": "trailing_return >= 0.05",
+    "window_days": 30
+  },
+  "scenarios": [
+    {
+      "fee_multiplier": 1.0,
+      "latency_seconds": 30,
+      "name": "base",
+      "resolution_haircut": 0.01,
+      "slippage_bps": 25
+    },
+    {
+      "fee_multiplier": 1.5,
+      "latency_seconds": 60,
+      "name": "adverse",
+      "resolution_haircut": 0.02,
+      "slippage_bps": 50
+    },
+    {
+      "fee_multiplier": 2.0,
+      "latency_seconds": 120,
+      "name": "severe",
+      "resolution_haircut": 0.03,
+      "slippage_bps": 100
+    }
+  ],
+  "scope": {
+    "excluded": "touch/barrier, ambiguous contract semantics, all input or label availability at/after hard cutoff",
+    "primary": "terminal ranges",
+    "secondary": "supported terminal thresholds reported separately",
+    "series": "KXBTC",
+    "symbol": "BTC"
+  },
+  "scores": {
+    "arms": [
+      "structural",
+      "blend",
+      "signal YES ask (primary price comparison)",
+      "recorded midpoint anchor (secondary non-executable comparison)"
+    ],
+    "common_population": "resolved forecasts with all compared arms; group by model and recipe; probability evidence includes WATCH",
+    "event_weighting": "average within venue event then equal weight across events; repeated contracts/decisions do not increase independent count",
+    "metrics": [
+      "Brier",
+      "log loss with fixed identical clipping",
+      "net hypothetical P&L",
+      "return on cost",
+      "settlement-time cumulative net-P&L drawdown; not mark-to-market"
+    ],
+    "minimums": {
+      "distinct_event_dates": 20,
+      "events_per_qualifying_fold": 10,
+      "qualifying_full_folds": 2,
+      "resolved_events": 20
+    },
+    "native_backtest_baseline": "existing backtest market_probability_yes is retained and explicitly labelled; not misrepresented as YES ask",
+    "no_observations": "null probabilities/returns/drawdown, not zero-risk or proof of no edge",
+    "regime_metrics": "descriptive only; no inferential subgroup claims or threshold search"
+  },
+  "stop_rule": "If the bounded preserved source yields no admissible forecasts, finish an insufficient-evidence report with full coverage funnel, native replay result, descriptive regime coverage and concrete missing inputs. Do not loosen timing or calibration to force a result.",
+  "trial_record": [
+    "First item8 protocol. Repository protocols and source schema/time extents inspected before freeze; no item8 outcome or profitability query executed. Earlier legacy alert results were already discussed with the user and are not untouched evidence."
+  ],
+  "walk_forward": {
+    "calibration_bins": 5,
+    "calibration_confidence": 0.95,
+    "calibration_lead_seconds": 300,
+    "cap_policy": "abort rather than silently truncate if selected events exceed cap",
+    "market_period_minutes": 1,
+    "max_events": 5000,
+    "maximum_brier_score": 0.25,
+    "minimum_calibration_samples": 30,
+    "minimum_return_on_cost": 0.0,
+    "minimum_validation_events": 20,
+    "minimum_validation_folds": 2,
+    "partial_final_fold": "label separately and exclude from qualifying-fold counts",
+    "realized_window_days": 30,
+    "require_calibration": true,
+    "research_interval_seconds": 3600,
+    "spot_interval_seconds": 60,
+    "step_days": 30,
+    "test_days": 30,
+    "train_days": 90
+  },
+  "windows": {
+    "descriptive_decisions_start": "2025-01-01T00:00:00+00:00",
+    "descriptive_price_start": "2024-12-01T23:00:00+00:00",
+    "end_exclusive": "2026-09-26T00:00:00+00:00",
+    "first_test": "2025-01-01T00:00:00+00:00",
+    "protected_phase1_holdout": "2026-09-27/2026-11-26; no extraction, labels, fitting or scoring",
+    "replay_start": "2024-10-03T00:00:00+00:00",
+    "research_warmup_start": "2024-09-02T23:00:00+00:00"
+  }
+}
