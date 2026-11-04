@@ -226,22 +226,21 @@ def test_backup_restore_and_doctor_cli_do_not_migrate_legacy_database(
             ).fetchall() == [("immutable_evidence",)]
 
 
-def test_schema_upgrade_keeps_legacy_payload_and_requires_verified_backup(tmp_path: Path) -> None:
+def test_initialize_refuses_populated_legacy_database_without_mutating_it(tmp_path: Path) -> None:
     source = tmp_path / "legacy.db"
     with sqlite3.connect(source) as connection:
         connection.execute("CREATE TABLE legacy_evidence(id INTEGER PRIMARY KEY,payload TEXT)")
         connection.execute("INSERT INTO legacy_evidence VALUES (1,'original')")
     repository = SQLiteRepository(source)
-    repository.initialize()
-    backups = list((tmp_path / "backups").glob("*.sqlite3"))
-    assert len(backups) == 1
-    repository.initialize()
-    assert list((tmp_path / "backups").glob("*.sqlite3")) == backups
-    for path in (source, backups[0]):
-        with sqlite3.connect(path) as connection:
-            assert connection.execute("SELECT * FROM legacy_evidence").fetchall() == [
-                (1, "original")
-            ]
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="migrat"):
+            repository.initialize()
+    assert not (tmp_path / "backups").exists()
+    with sqlite3.connect(source) as connection:
+        assert connection.execute("SELECT * FROM legacy_evidence").fetchall() == [(1, "original")]
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall() == [("legacy_evidence",)]
 
 
 def test_history_collection_records_receipt_not_requested_end(

@@ -15,6 +15,74 @@ exact live calibration profiles pass the persisted approval gates, enabling appr
 Discord delivery is a deliberate deployment-policy change rather than an automatic side
 effect of model validation.
 
+### Compact evidence storage
+
+The `compact_evidence_v1` storage format removes repeated evaluation payloads
+without changing forecasts, IDs, timestamps, classifications, or approval rules.
+The canonical evaluation remains in `forecast_ledger`; inputs and research
+contexts remain content-addressed in `input_objects`. Operational forecast and
+opportunity rows reference the ledger only when their complete logical payloads
+match exactly. Market checks reference an identical saved opportunity instead
+of embedding it again. Differing, orphaned, and pre-ledger historical records
+stay inline and retain their original classification.
+
+`run_manifests` shares full build/source identity through `code_identities`.
+Hydration restores the original manifest and verifies the shared identity hash;
+the original `manifest_sha256` remains unchanged.
+
+The `payload_json` columns in `input_objects`, `forecast_ledger`, `run_manifests`,
+`forecasts`, `opportunities`, and `paper_alert_market_checks` now contain
+zlib-compressed canonical JSON BLOBs. `code_identities` uses the same encoding.
+Use repository readers or `storage_payloads.load_payload` for logical JSON;
+direct `json_extract(payload_json, ...)` is not valid for these columns.
+Market checks have a scalar `opportunity_id` for maintenance joins.
+
+Existing populated stores are not converted at startup. With scheduled writers
+stopped, run `pms db-migrate-storage --source SOURCE --destination NEW_PATH`.
+It copies bounded batches to a new file, preserves original rowids and logical
+content, verifies per-table counts and hydrated content hashes, checks integrity,
+and refuses introduced foreign-key violations. Existing violations are reported,
+not silently repaired. Unsupported source schema changes and corrupted input fail
+closed. The verification manifest is published last; an interrupted destination
+without a successful manifest must not be activated. Never overwrite the source.
+The command does not switch the application, enable alerts, or restart jobs.
+
+It verifies a consistent read snapshot, not permanent writer exclusion. With
+writers still stopped, run `pms db-verify-storage --manifest NEW_PATH.migration.json`
+immediately before activation. A changed source requires a new migration; keep
+writers stopped through the actual switch. Do not treat successful copying as
+proof that a concurrently running source has no newer records.
+
+Retention policy: immutable ledger, input, and provenance evidence is retained
+losslessly compressed, not deleted by age. The 14-day policy below applies to
+transient detailed WATCH checks and safely redundant operational indexes.
+Compression reduces the storage rate, but does not impose a fixed lifetime
+database-size cap. Capacity and backup space still require monitoring; archival
+to another store must preserve replay access and be verified before any deletion.
+
+#### November 4 recovery and migration
+
+The production database reported corruption after its last successful collection
+on October 31. The original damaged file is retained; a timed-out recovery attempt
+did not establish that its newer records are unrecoverable. The operator approved
+restoring the verified October 28 backup and resuming shadow collection.
+Records collected after that backup and before collection stopped are not present
+in the restored active store. Do not treat that interval as complete evidence.
+
+The October 28 backup's separate compact migration completed on November 4:
+44,263,919,616 bytes became 14,832,197,632 bytes, a 66.5% reduction.
+Both databases passed integrity checks, every original table's logical content
+hash and row count matched, and no foreign-key violations were introduced.
+These figures compare the same backup contents, not the larger damaged database.
+Retained recovery copies and backups consume additional disk space.
+
+The format cutover requires a coordinated database and code switch with all
+agents stopped. Stage and verify the committed release first, preserve the old
+database and sidecars, check migration-source freshness, then activate the new
+database and release before restarting agents. If activation fails, restore
+both database and application pointers before any restart; rolling back only
+the code would pair the old reader with the new BLOB format.
+
 ### Bounded detailed WATCH retention
 
 `pms paper-alert-maintain` compacts detailed `WATCH` evaluations older than a configured UTC
@@ -26,8 +94,9 @@ Before deletion, the command writes daily counts to `paper_alert_watch_rollups`.
 removes only the linked detailed records:
 
 - `paper_alert_market_checks` rows whose status is exactly `watch`;
-- their `WATCH` opportunities;
-- forecasts left without an opportunity; and
+- their unalerted `WATCH` opportunity rows when the payload is a canonical-ledger
+  reference and no remaining check depends on the opportunity;
+- canonical-ledger forecast references left without an opportunity; and
 - cycles left without any detailed checks.
 
 Entry candidates, delivered alerts, failures, unsupported-market records, missing-calibration
@@ -36,6 +105,10 @@ research inputs, venue history, and resolutions are not pruned. Each bounded bat
 transactional and releases the SQLite writer lock before the next batch. Compaction refuses
 to proceed if a WATCH check cannot be linked to its persisted evaluation. Re-running a
 completed compaction does not double-count its rollup.
+
+Inline historical forecasts and opportunities are retained: a daily count rollup
+is not a substitute for their unique audit evidence. Canonical ledger, input, and
+manifest records remain available after operational WATCH rows are removed.
 
 Preview or apply maintenance manually:
 
@@ -67,7 +140,7 @@ exclusive rewrite of the database.
 5. Runs `uv sync --frozen`, the full test suite, Ruff lint and formatting checks, and strict
    Mypy checks inside the staged release, matching the GitHub quality gate.
 6. Switches the stable `app` symlink to the verified release.
-7. Runs schema migrations once while all managed agents remain stopped.
+7. Initializes the current-format schema once while all managed agents remain stopped.
 8. Rewrites and reloads the alert, research, archive, validation, maintenance, backup, and
    heartbeat launch agents.
 9. Restores the previous application pointer and agents if activation fails.
@@ -76,6 +149,10 @@ Scheduled commands still initialize the store on startup, but they compare `sqli
 the tables and indexes the schema defines and run DDL only when an object is missing. Applied
 migrations are likewise detected read-only, so routine job starts never request the SQLite
 writer lock.
+
+The deployment script does not perform the offline compact-storage conversion.
+Migrate and verify a separate sound database before activating this format;
+an unconverted populated database is rejected by initialization.
 
 Run from a clean, committed checkout:
 

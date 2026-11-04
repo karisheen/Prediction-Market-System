@@ -11,6 +11,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from prediction_market_system.storage_payloads import compact_payload, load_payload
+
 if TYPE_CHECKING:
     from prediction_market_system.domain import Opportunity, ProbabilityForecast
     from prediction_market_system.research import ResearchContext
@@ -30,11 +32,11 @@ CREATE TABLE IF NOT EXISTS run_manifests (
     kind TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     manifest_sha256 TEXT NOT NULL,
-    payload_json TEXT NOT NULL
+    payload_json BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS input_objects (
     input_id TEXT PRIMARY KEY,
-    payload_json TEXT NOT NULL
+    payload_json BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS forecast_ledger (
     forecast_id TEXT PRIMARY KEY,
@@ -48,10 +50,14 @@ CREATE TABLE IF NOT EXISTS forecast_ledger (
     probability_yes REAL NOT NULL,
     market_probability_yes REAL NOT NULL,
     state TEXT NOT NULL,
-    payload_json TEXT NOT NULL
+    payload_json BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_recipe_time ON forecast_ledger(recipe_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_ledger_market_time ON forecast_ledger(market_id, observed_at);
+CREATE TABLE IF NOT EXISTS code_identities (
+    code_id TEXT PRIMARY KEY,
+    payload_json BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS venue_source_revisions (
     revision_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -155,7 +161,7 @@ def code_identity() -> dict[str, Any]:
 
 
 def insert_immutable(
-    connection: sqlite3.Connection, table: str, key_column: str, key: str, payload: str
+    connection: sqlite3.Connection, table: str, key_column: str, key: str, payload: str | bytes
 ) -> bool:
     """Only internal constant table names are accepted by callers."""
     allowed = {("input_objects", "input_id"), ("campaign_history", "report_id")}
@@ -164,8 +170,19 @@ def insert_immutable(
     row = connection.execute(
         f"SELECT payload_json FROM {table} WHERE {key_column} = ?", (key,)
     ).fetchone()
-    if row is not None and str(row[0]) != payload:
-        raise ValueError(f"immutable {table} identity collision")
+    if row is not None:
+        existing = (
+            canonical_json(load_payload(connection, table, row[0]))
+            if table == "input_objects"
+            else str(row[0])
+        )
+        incoming = (
+            canonical_json(load_payload(connection, table, payload))
+            if table == "input_objects"
+            else payload
+        )
+        if existing != incoming:
+            raise ValueError(f"immutable {table} identity collision")
     return row is None
 
 
@@ -187,7 +204,6 @@ def save_manifest(
         "configuration": configuration,
         "inputs": inputs,
     }
-    payload = canonical_json(manifest)
     digest = content_id(manifest)
     prior = connection.execute(
         "SELECT manifest_sha256 FROM run_manifests WHERE run_id = ?", (run_id,)
@@ -198,14 +214,20 @@ def save_manifest(
         return
     connection.execute(
         "INSERT INTO run_manifests VALUES (?, ?, ?, ?, ?)",
-        (run_id, kind, recorded_at.isoformat(), digest, payload),
+        (
+            run_id,
+            kind,
+            recorded_at.isoformat(),
+            digest,
+            compact_payload(connection, "run_manifests", manifest),
+        ),
     )
 
 
 def save_input_object(connection: sqlite3.Connection, payload: Any) -> str:
     """Store one content-addressed immutable input; identical content is written once."""
     input_id = content_id(payload)
-    serialized = canonical_json(payload)
+    serialized = compact_payload(connection, "input_objects", payload)
     if insert_immutable(connection, "input_objects", "input_id", input_id, serialized):
         connection.execute("INSERT INTO input_objects VALUES (?, ?)", (input_id, serialized))
     return input_id
@@ -229,8 +251,7 @@ def load_input_object(connection: sqlite3.Connection, input_id: str) -> dict[str
     ).fetchone()
     if row is None:
         return None
-    payload = json.loads(str(row[0]))
-    return payload if isinstance(payload, dict) else None
+    return load_payload(connection, "input_objects", row[0])
 
 
 def resolve_evidence_class(ledger_kind: str | None, *, venue: str) -> str:
@@ -270,12 +291,13 @@ def save_ledger_evaluation(
     )
     payload = opportunity.model_dump(mode="json")
     payload["forecast"].pop("input_manifest", None)
-    serialized = canonical_json(payload)
     previous = connection.execute(
         "SELECT payload_json FROM forecast_ledger WHERE forecast_id = ?", (run_id,)
     ).fetchone()
     if previous is not None:
-        if str(previous[0]) != serialized:
+        if canonical_json(
+            load_payload(connection, "forecast_ledger", previous[0])
+        ) != canonical_json(payload):
             raise ValueError("forecast ledger is immutable; forecast already recorded differently")
         return
     connection.execute(
@@ -292,7 +314,7 @@ def save_ledger_evaluation(
             forecast.probability_yes,
             forecast.market_probability_yes,
             opportunity.state.value,
-            serialized,
+            compact_payload(connection, "forecast_ledger", payload),
         ),
     )
 
@@ -346,11 +368,11 @@ class EvidenceRepositoryMixin:
                 "SELECT payload_json FROM opportunities WHERE forecast_id = ?",
                 (forecast_id,),
             ).fetchall()
-        if not rows:
-            return None
-        if len(rows) != 1:
-            raise ValueError("forecast has multiple persisted allocations")
-        return Opportunity.model_validate_json(str(rows[0][0]))
+            if not rows:
+                return None
+            if len(rows) != 1:
+                raise ValueError("forecast has multiple persisted allocations")
+            return Opportunity.model_validate(load_payload(connection, "opportunities", rows[0][0]))
 
     def forward_event_entry_exposure(self, *, event_id: str, exclude_forecast_id: str) -> float:
         """Sum persisted forward-shadow entry allocations for one event, excluding one forecast."""
@@ -371,7 +393,7 @@ class EvidenceRepositoryMixin:
                 continue
             if str(row["forecast_id"]) == exclude_forecast_id:
                 continue
-            payload = json.loads(str(row["payload_json"]))
+            payload = load_payload(connection, "forecast_ledger", row["payload_json"])
             total += float(payload["suggested_max_exposure"])
         return total
 
@@ -379,8 +401,8 @@ class EvidenceRepositoryMixin:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT f.payload_json, i.payload_json AS inputs, r.payload_json AS manifest
-                   FROM forecast_ledger f JOIN input_objects i USING(input_id)
-                   JOIN run_manifests r USING(run_id) WHERE f.forecast_id = ?""",
+                   FROM forecast_ledger f LEFT JOIN input_objects i USING(input_id)
+                   LEFT JOIN run_manifests r USING(run_id) WHERE f.forecast_id = ?""",
                 (forecast_id,),
             ).fetchone()
             if row is None:
@@ -392,16 +414,18 @@ class EvidenceRepositoryMixin:
                 return {
                     "classification": "legacy-unreconstructible",
                     "evidence_class": AMBIGUOUS_EVIDENCE_CLASS,
-                    "forecast": json.loads(legacy[0]),
+                    "forecast": load_payload(connection, "forecasts", legacy[0]),
                 }
-            inputs = json.loads(row[1])
+            if row[1] is None or row[2] is None:
+                raise ValueError("forecast ledger has dangling input or manifest evidence")
+            inputs = load_payload(connection, "input_objects", row[1])
             provenance = inputs.get("crypto", {}).get("input_provenance", {})
             context_id = provenance.get("research_context_id")
             research_context = (
                 load_input_object(connection, context_id) if isinstance(context_id, str) else None
             )
-        opportunity = json.loads(row[0])
-        manifest = json.loads(row[2])
+            opportunity = load_payload(connection, "forecast_ledger", row[0])
+            manifest = load_payload(connection, "run_manifests", row[2])
         kind = manifest.get("kind") if isinstance(manifest, dict) else None
         evidence_class = str(kind) if kind in KNOWN_EVIDENCE_CLASSES else AMBIGUOUS_EVIDENCE_CLASS
         return {

@@ -27,6 +27,7 @@ from prediction_market_system.research import (
 )
 from prediction_market_system.sources import CoinbaseDataError
 from prediction_market_system.storage import MarketCheckStatus, SQLiteRepository
+from prediction_market_system.storage_payloads import encode_payload
 from prediction_market_system.venues.kalshi import KalshiMarket, KalshiOrderBook
 
 AS_OF = datetime(2026, 7, 28, 12, tzinfo=UTC)
@@ -638,7 +639,12 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
                     forecast_id, market_id, generated_at, payload_json
                 ) VALUES (?, ?, ?, ?)
                 """,
-                (f"forecast-{suffix}", f"market-{suffix}", created_at.isoformat(), "{}"),
+                (
+                    f"forecast-{suffix}",
+                    f"market-{suffix}",
+                    created_at.isoformat(),
+                    encode_payload({}),
+                ),
             )
             connection.execute(
                 """
@@ -652,7 +658,7 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
                     f"forecast-{suffix}",
                     f"market-{suffix}",
                     created_at.isoformat(),
-                    "{}",
+                    encode_payload({}),
                 ),
             )
 
@@ -716,13 +722,17 @@ def test_compacts_only_expired_watch_evaluations(tmp_path: Path) -> None:
     assert applied.eligible_checks == 2
     assert applied.rolled_up_checks == 2
     assert applied.deleted_checks == 2
-    assert applied.deleted_opportunities == 2
-    assert applied.deleted_forecasts == 2
+    # These legacy fixture rows have no immutable ledger counterpart.
+    assert applied.deleted_opportunities == 0
+    assert applied.deleted_forecasts == 0
     assert applied.deleted_cycles == 2
     assert applied.batches == 2
     assert repository.paper_market_checks("cycle-old-watch") == []
     assert repository.paper_market_checks("cycle-recent-watch")
     assert repository.paper_market_checks("cycle-old-delivery")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT count(*) FROM forecasts").fetchone() == (3,)
+        assert connection.execute("SELECT count(*) FROM opportunities").fetchone() == (3,)
     assert repository.paper_watch_rollups("KXBTC") == [
         {
             "series_ticker": "KXBTC",
@@ -761,7 +771,7 @@ def test_legacy_cycle_backfill_runs_once(tmp_path: Path) -> None:
             INSERT INTO paper_alert_market_checks (
                 cycle_id, market_id, series_ticker, event_ticker,
                 observed_at, status, reason, payload_json
-            ) VALUES (?, ?, ?, ?, ?, 'watch', NULL, '{}')
+            ) VALUES (?, ?, ?, ?, ?, 'watch', NULL, ?)
             """,
             (
                 "legacy-cycle",
@@ -769,6 +779,7 @@ def test_legacy_cycle_backfill_runs_once(tmp_path: Path) -> None:
                 "KXBTC",
                 "legacy-event",
                 AS_OF.isoformat(),
+                encode_payload({}),
             ),
         )
 

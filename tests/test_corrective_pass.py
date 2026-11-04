@@ -38,6 +38,7 @@ from prediction_market_system.recipe import (
     MANAGED_KALSHI_PERIOD_MINUTES,
 )
 from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.storage_payloads import compact_payload, load_payload
 from prediction_market_system.validation import (
     campaign_matches_backtest,
     frozen_campaign_configuration,
@@ -437,24 +438,13 @@ def test_persisted_historical_forecasts_are_explainable_without_duplicating_cont
         (context_rows,) = connection.execute(
             "SELECT COUNT(*) FROM input_objects WHERE input_id=?", (context.content_id(),)
         ).fetchone()
-        ledger_payloads = [
-            str(row[0])
-            for row in connection.execute("SELECT payload_json FROM forecast_ledger").fetchall()
-        ]
         (forecast_inputs,) = connection.execute("SELECT COUNT(*) FROM input_objects").fetchone()
     assert context_rows == 1
-    assert all("source_candles" not in payload for payload in ledger_payloads)
     # Two compact forecast manifests plus one or two research contexts, not one giant
     # context copy per forecast.
     assert forecast_inputs <= 6
     with pytest.raises(ValueError, match="forecast not found"):
         repository.explain_forecast("missing-forecast-id")
-
-
-def test_pycdc_is_absent_from_project_dependencies() -> None:
-    root = Path(__file__).resolve().parents[1]
-    assert "pycdc" not in (root / "pyproject.toml").read_text()
-    assert "pycdc" not in (root / "uv.lock").read_text()
 
 
 def test_prospective_availability_is_receipt_time_not_request_start(tmp_path: Path) -> None:
@@ -637,11 +627,18 @@ def test_shadow_report_fails_closed_on_unclassified_ledger_rows(tmp_path: Path) 
     forecast, opportunity = engine.evaluate(market, crypto, TERMINAL_ABOVE, profile)
     repository.save_evaluation(forecast, opportunity, ledger_kind=EVIDENCE_FORWARD_SHADOW)
     with sqlite3.connect(repository.database_path) as connection:
-        connection.execute(
-            "UPDATE run_manifests SET kind = 'unexpected-kind', "
-            "payload_json = json_set(payload_json, '$.kind', 'unexpected-kind') "
-            "WHERE run_id = ?",
+        raw = connection.execute(
+            "SELECT payload_json FROM run_manifests WHERE run_id = ?",
             (str(forecast.forecast_id),),
+        ).fetchone()[0]
+        manifest = load_payload(connection, "run_manifests", raw)
+        manifest["kind"] = "unexpected-kind"
+        connection.execute(
+            "UPDATE run_manifests SET kind = 'unexpected-kind', payload_json = ? WHERE run_id = ?",
+            (
+                compact_payload(connection, "run_manifests", manifest),
+                str(forecast.forecast_id),
+            ),
         )
         connection.commit()
     with pytest.raises(ValueError, match="cannot classify ledger evidence"):

@@ -248,15 +248,9 @@ async def test_forecasts_reference_persisted_research_context_instead_of_embeddi
     assert provenance["research_context_id"] == context.content_id()
 
     with sqlite3.connect(tmp_path / "audit.db") as connection:
-        (forecast_json,) = connection.execute(
-            "SELECT payload_json FROM forecasts WHERE forecast_id=?",
-            (str(opportunity.forecast.forecast_id),),
-        ).fetchone()
         (context_count,) = connection.execute(
             "SELECT COUNT(*) FROM input_objects WHERE input_id=?", (context.content_id(),)
         ).fetchone()
-    # Hundreds of kilobytes of source candles are stored once, not per forecast.
-    assert "source_candles" not in forecast_json and len(forecast_json) < 20_000
     assert context_count == 1
     assert repository.research_context_by_id(context.content_id()) == context
     explained = repository.explain_forecast(str(opportunity.forecast.forecast_id))

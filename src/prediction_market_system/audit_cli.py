@@ -15,6 +15,10 @@ from prediction_market_system.experiment_cli import register_experiment_commands
 from prediction_market_system.operations import backup_database, database_health, restore_database
 from prediction_market_system.redaction import redact_payload, redact_secrets
 from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.storage_migration import (
+    assert_migration_source_unchanged,
+    migrate_storage,
+)
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -114,6 +118,44 @@ def register_audit_commands(app: typer.Typer) -> None:
         except (OSError, ValueError, sqlite3.DatabaseError) as exc:
             raise typer.BadParameter(redact_secrets(str(exc))) from None
         _emit(report)
+
+    @app.command("db-migrate-storage")
+    def db_migrate_storage(
+        source: Annotated[Path, typer.Option(help="Sound source database; opened read-only.")],
+        destination: Annotated[
+            Path, typer.Option(help="New compact database path; never overwrites or activates.")
+        ],
+        batch_size: Annotated[
+            int, typer.Option(min=1, help="Maximum source rows per copy batch.")
+        ] = 1000,
+    ) -> None:
+        """Losslessly compact evidence into a NEW database and verify logical preservation."""
+        try:
+            report = migrate_storage(source, destination, batch_size=batch_size)
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            raise typer.BadParameter(redact_secrets(str(exc))) from None
+        _emit(report)
+
+    @app.command("db-verify-storage")
+    def db_verify_storage(
+        manifest: Annotated[Path, typer.Option(help="Successful migration JSON sidecar.")],
+    ) -> None:
+        """Check source freshness before manual activation; writers must remain stopped."""
+        try:
+            report = json.loads(manifest.read_text(encoding="utf-8"))
+            if not isinstance(report, dict):
+                raise ValueError("migration manifest must be a JSON object")
+            assert_migration_source_unchanged(report)
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            raise typer.BadParameter(redact_secrets(str(exc))) from None
+        _emit(
+            {
+                "status": "source-unchanged",
+                "source": report["source"],
+                "destination": report["destination"],
+                "activation_requires_stopped_writers": True,
+            }
+        )
 
     @app.command("explain-forecast")
     def explain_forecast(forecast_id: Annotated[str, typer.Argument()]) -> None:

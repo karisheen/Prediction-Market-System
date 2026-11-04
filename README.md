@@ -97,11 +97,32 @@ The database defaults to `data/prediction_markets.db`. A Discord webhook is
 optional; local evaluation, ingestion, backtesting, and shadow operation do not
 require one.
 
+Populated databases created before `compact_evidence_v1` require an explicit
+offline storage migration; `init-db` refuses to rewrite them in place. Stop the
+writers, retain the source and its backups, and migrate a sound database:
+
+```bash
+uv run pms db-migrate-storage \
+  --source /absolute/path/to/verified-source.db \
+  --destination /absolute/path/to/new-compact.db
+```
+
+The destination must not exist. Success publishes a `.migration.json` sidecar
+with row counts, logical content hashes, integrity results, and before/after
+sizes. The command never activates the destination or changes configuration.
+Review verification and any preexisting foreign-key violations before a cutover.
+While writers remain stopped, check source freshness immediately before activation:
+`uv run pms db-verify-storage --manifest /absolute/path/to/new-compact.db.migration.json`.
+Migration verifies a consistent read snapshot; it does not prevent another
+process from writing to the source after that snapshot or after this check.
+Corrupt databases must be recovered or restored separately, not compacted in place.
+See [storage and retention details](docs/operations-hardening.md#compact-evidence-storage).
+
 ## CLI map
 
 | Command | Purpose |
 | --- | --- |
-| `init-db` | Initialize or migrate the SQLite audit store |
+| `init-db` | Initialize a new/current-format audit store; refuse populated legacy-format writes |
 | `evaluate` | Evaluate a manually supplied binary market snapshot |
 | `kalshi-markets` / `kalshi-inspect` | Browse public live Kalshi markets and metadata |
 | `kalshi-evaluate` | Evaluate one live Kalshi contract |
@@ -121,6 +142,8 @@ require one.
 | `shadow-report` / `campaign-report` / `compare-runs` | Forward ledger scoring, frozen campaign and holdout audit, paired run comparison |
 | `phase1-report` | Frozen structural/blend/YES-ask comparison, with optional research-only recorded-order cost sensitivity |
 | `db-snapshot` / `db-restore` | One-off uncompressed SQLite snapshot with a restore drill; restore to a new path only |
+| `db-migrate-storage` | Copy a sound database to a new compact store and verify logical evidence preservation |
+| `db-verify-storage` | Check a successful migration's source has not changed before manual activation |
 | `alerts-unresolved` / `alerts-reconcile` | List uncertain Discord deliveries and record the operator-observed outcome |
 
 ## Phase 1 frozen comparison and paper decisions
@@ -764,7 +787,8 @@ were excluded. Historical replay and manual research remain explainable but do
 not enter those counts. Notification activity lives in paper-alert status and
 Discord delivery records, not in `shadow-report`. Repeated scans of the
 same market do not inflate independent evidence counts. `db-restore` writes to a new path and never switches configuration.
-Initializing a legacy database takes a verified backup before migrating.
+Populated legacy databases require explicit `db-migrate-storage`; initialization
+does not perform a destructive or in-place storage conversion.
 
 ## Configuration
 

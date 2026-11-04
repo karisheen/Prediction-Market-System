@@ -45,6 +45,7 @@ from prediction_market_system.evidence import (
 )
 from prediction_market_system.research import ResearchDataUnavailable
 from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.storage_payloads import load_payload
 
 SOURCE_SYNTHETIC_FIXTURE = "synthetic-fixture"
 SOURCE_RETROSPECTIVE_LOCAL = "retrospective-local"
@@ -941,7 +942,7 @@ class _DatabaseReader:
             return _excluded(forecast_id, event_id, market_id, observed_at, reason)
 
         try:
-            payload = json.loads(str(row["payload_json"]))
+            payload = load_payload(self.connection, "forecast_ledger", row["payload_json"])
             opportunity = Opportunity.model_validate(payload)
         except ValueError as error:
             return excluded(f"malformed ledger payload: {_reason(error)}")
@@ -963,7 +964,7 @@ class _DatabaseReader:
             return excluded("legacy ledger row without recipe identity")
 
         try:
-            manifest = json.loads(str(row["manifest_json"]))
+            manifest = load_payload(self.connection, "run_manifests", row["manifest_json"])
             if not isinstance(manifest, dict) or content_id(manifest) != row["manifest_sha256"]:
                 return excluded("run manifest does not match its recorded hash")
             recorded_at = _utc(row["manifest_recorded_at"])
@@ -980,7 +981,7 @@ class _DatabaseReader:
                 return excluded("run manifest does not reference the ledger run and input")
             if row["inputs_json"] is None:
                 return excluded("recorded input object is missing")
-            inputs = json.loads(str(row["inputs_json"]))
+            inputs = load_payload(self.connection, "input_objects", row["inputs_json"])
             if not isinstance(inputs, dict) or content_id(inputs) != row["input_id"]:
                 return excluded("recorded input object does not match its identity")
         except ValueError as error:

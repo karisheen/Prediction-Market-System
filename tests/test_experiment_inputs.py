@@ -27,6 +27,7 @@ from prediction_market_system.evidence import (
 from prediction_market_system.experiment_inputs import load_fixture, load_local_database
 from prediction_market_system.research import ResearchContext
 from prediction_market_system.storage import SQLiteRepository
+from prediction_market_system.storage_payloads import compact_payload, load_payload
 
 FIXTURE = Path(__file__).resolve().parents[1] / "experiments" / "phase1" / "fixture-v1.json"
 PROTOCOL: dict[str, Any] = {
@@ -505,6 +506,8 @@ def test_database_outcomes_quotes_and_rows_respect_report_boundaries(
     ("defect", "reason"),
     [
         ("payload", "malformed ledger payload"),
+        ("compressed_payload", "malformed ledger payload"),
+        ("code_identity", "malformed run manifest or input object"),
         ("input", "recorded input object does not match its identity"),
         ("history", "research context not reproducible"),
         ("conflict", "conflicting resolution records"),
@@ -523,6 +526,14 @@ def test_database_defects_become_explicit_exclusions_not_silent_drops(
             "UPDATE forecast_ledger SET payload_json = '{\"truncated\"' WHERE forecast_id = ?",
             (forecast_id,),
         )
+    elif defect == "compressed_payload":
+        _execute(
+            path,
+            "UPDATE forecast_ledger SET payload_json = ? WHERE forecast_id = ?",
+            (b"invalid-zlib-payload", forecast_id),
+        )
+    elif defect == "code_identity":
+        _execute(path, "DELETE FROM code_identities", ())
     elif defect == "input":
         _execute(
             path,
@@ -652,12 +663,17 @@ def test_manifest_recording_time_must_match_payload_and_forecast(
         (payload_json,) = connection.execute(
             "SELECT payload_json FROM run_manifests WHERE run_id = ?", (forecast_id,)
         ).fetchone()
-        manifest = json.loads(payload_json)
+        manifest = load_payload(connection, "run_manifests", payload_json)
         manifest["recorded_at"] = payload_recorded_at
         connection.execute(
             "UPDATE run_manifests SET recorded_at = ?, payload_json = ?, manifest_sha256 = ? "
             "WHERE run_id = ?",
-            (column_recorded_at, json.dumps(manifest), content_id(manifest), forecast_id),
+            (
+                column_recorded_at,
+                compact_payload(connection, "run_manifests", manifest),
+                content_id(manifest),
+                forecast_id,
+            ),
         )
 
     (row,), metadata = load_local_database(path, PROTOCOL)

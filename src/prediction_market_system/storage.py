@@ -8,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Literal
 from uuid import UUID
 
 from prediction_market_system.alert_outcomes import (
@@ -38,7 +39,6 @@ from prediction_market_system.evidence import (
     save_research_context,
     save_venue_revision,
 )
-from prediction_market_system.operations import backup_database
 from prediction_market_system.recipe import MODEL_VERSION
 from prediction_market_system.redaction import redact_payload, redact_secrets
 from prediction_market_system.research import (
@@ -48,6 +48,12 @@ from prediction_market_system.research import (
     research_payload_hash,
 )
 from prediction_market_system.research_storage import RESEARCH_SCHEMA, ResearchRepositoryMixin
+from prediction_market_system.storage_payloads import (
+    STORAGE_SCHEMA_VERSION,
+    compact_payload,
+    load_payload,
+    payload_references_ledger,
+)
 from prediction_market_system.validation import campaign_matches_backtest
 from prediction_market_system.venues.kalshi import (
     CandlestickPeriod,
@@ -160,6 +166,21 @@ def _schema_objects(scripts: tuple[str, ...]) -> frozenset[tuple[str, str]]:
     return frozenset((str(object_type), str(name)) for object_type, name in rows)
 
 
+class _RepositoryConnection(sqlite3.Connection):
+    """Commit or roll back an operation, then release its SQLite handles."""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
     """Append-oriented forecast, alert, and venue-history audit storage."""
 
@@ -167,9 +188,17 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
         self.database_path = Path(database_path)
 
     def initialize(self) -> None:
+        self._require_compact_storage()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._backup_before_v2_migration()
         with self._connect() as connection:
+            check_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(paper_alert_market_checks)")
+            }
+            if check_columns and "opportunity_id" not in check_columns:
+                connection.execute(
+                    "ALTER TABLE paper_alert_market_checks ADD COLUMN opportunity_id TEXT"
+                )
             self._ensure_schema(
                 connection,
                 """
@@ -182,7 +211,7 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     forecast_id TEXT PRIMARY KEY,
                     market_id TEXT NOT NULL,
                     generated_at TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
+                    payload_json BLOB NOT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_forecasts_market_generated
@@ -194,7 +223,7 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     market_id TEXT NOT NULL,
                     state TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
+                    payload_json BLOB NOT NULL,
                     FOREIGN KEY (forecast_id) REFERENCES forecasts (forecast_id)
                 );
 
@@ -405,7 +434,8 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     observed_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     reason TEXT,
-                    payload_json TEXT NOT NULL,
+                    payload_json BLOB NOT NULL,
+                    opportunity_id TEXT,
                     PRIMARY KEY (cycle_id, market_id)
                 );
 
@@ -414,6 +444,9 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
 
                 CREATE INDEX IF NOT EXISTS idx_paper_checks_compaction
                 ON paper_alert_market_checks (series_ticker, status, observed_at);
+
+                CREATE INDEX IF NOT EXISTS idx_paper_checks_opportunity
+                ON paper_alert_market_checks (opportunity_id);
 
                 CREATE TABLE IF NOT EXISTS paper_alert_status_requests (
                     series_ticker TEXT NOT NULL,
@@ -446,30 +479,43 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
                     ("v2_evidence_foundation", _utc_now()),
                 )
+            compact_recorded = connection.execute(
+                "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+                (STORAGE_SCHEMA_VERSION,),
+            ).fetchone()
+            if compact_recorded is None:
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
+                    (STORAGE_SCHEMA_VERSION, _utc_now()),
+                )
 
-    def _backup_before_v2_migration(self) -> None:
+    def _require_compact_storage(self) -> None:
+        """Refuse legacy writes before opening a writable connection or changing schema."""
         if not self.database_path.exists() or self.database_path.stat().st_size == 0:
             return
         uri = self.database_path.resolve().as_uri() + "?mode=ro"
-        with sqlite3.connect(uri, uri=True) as connection:
-            has_schema = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='schema_migrations'"
-            ).fetchone()
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            tables = {
+                str(row[0])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
             if (
-                has_schema is not None
+                "schema_migrations" in tables
                 and connection.execute(
-                    "SELECT 1 FROM schema_migrations WHERE migration_name='v2_evidence_foundation'"
+                    "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+                    (STORAGE_SCHEMA_VERSION,),
                 ).fetchone()
                 is not None
             ):
                 return
-        destination = (
-            self.database_path.parent
-            / "backups"
-            / (f"{self.database_path.stem}-pre-v2-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}.sqlite3")
-        )
-        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        backup_database(self.database_path, destination)
+            for table in sorted(tables - {"schema_migrations", "sqlite_sequence"}):
+                quoted = '"' + table.replace('"', '""') + '"'
+                if connection.execute(f"SELECT 1 FROM {quoted} LIMIT 1").fetchone() is not None:
+                    raise RuntimeError(
+                        "legacy database requires offline compact storage migration; "
+                        "run pms db-migrate-storage --source SOURCE --destination NEW_PATH "
+                        "before writing"
+                    )
 
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection, *scripts: str) -> None:
@@ -568,6 +614,19 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
     ) -> None:
         created_at = forecast.generated_at.isoformat()
         with self._connect() as connection:
+            legacy = connection.execute(
+                """SELECT 1 WHERE (
+                       EXISTS (SELECT 1 FROM forecasts WHERE forecast_id = ?)
+                       OR EXISTS (SELECT 1 FROM opportunities WHERE forecast_id = ?)
+                   ) AND NOT EXISTS (
+                       SELECT 1 FROM forecast_ledger WHERE forecast_id = ?
+                   )""",
+                (str(forecast.forecast_id),) * 3,
+            ).fetchone()
+            if legacy is not None:
+                raise ValueError(
+                    "legacy evaluation lacks ledger evidence; refusing to reclassify it"
+                )
             save_ledger_evaluation(connection, forecast, opportunity, ledger_kind=ledger_kind)
             connection.execute(
                 """
@@ -579,7 +638,7 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     str(forecast.forecast_id),
                     forecast.market_id,
                     created_at,
-                    forecast.model_dump_json(),
+                    compact_payload(connection, "forecasts", forecast.model_dump(mode="json")),
                 ),
             )
             connection.execute(
@@ -595,7 +654,9 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     opportunity.market.market_id,
                     opportunity.state.value,
                     created_at,
-                    opportunity.model_dump_json(),
+                    compact_payload(
+                        connection, "opportunities", opportunity.model_dump(mode="json")
+                    ),
                 ),
             )
 
@@ -631,6 +692,11 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
         payload: dict[str, Any],
     ) -> None:
         with self._connect() as connection:
+            logical_payload = redact_payload(payload)
+            opportunity = logical_payload.get("opportunity")
+            opportunity_id = (
+                opportunity.get("opportunity_id") if isinstance(opportunity, dict) else None
+            )
             connection.execute(
                 """
                 INSERT INTO paper_alert_cycles (
@@ -645,13 +711,14 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 """
                 INSERT INTO paper_alert_market_checks (
                     cycle_id, market_id, series_ticker, event_ticker,
-                    observed_at, status, reason, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    observed_at, status, reason, payload_json, opportunity_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(cycle_id, market_id) DO UPDATE SET
                     observed_at = excluded.observed_at,
                     status = excluded.status,
                     reason = excluded.reason,
-                    payload_json = excluded.payload_json
+                    payload_json = excluded.payload_json,
+                    opportunity_id = excluded.opportunity_id
                 """,
                 (
                     cycle_id,
@@ -661,7 +728,8 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     observed_at.isoformat(),
                     status.value,
                     None if reason is None else redact_secrets(reason)[:1_000],
-                    canonical_json(redact_payload(payload)),
+                    compact_payload(connection, "paper_alert_market_checks", logical_payload),
+                    opportunity_id,
                 ),
             )
 
@@ -677,13 +745,13 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 """,
                 (cycle_id,),
             ).fetchall()
-        return [
-            {
-                **dict(row),
-                "payload": json.loads(str(row["payload_json"])),
-            }
-            for row in rows
-        ]
+            results = []
+            for row in rows:
+                payload = load_payload(connection, "paper_alert_market_checks", row["payload_json"])
+                results.append(
+                    {**dict(row), "payload_json": canonical_json(payload), "payload": payload}
+                )
+            return results
 
     def compact_watch_history(
         self,
@@ -782,6 +850,8 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     observed_at TEXT NOT NULL,
                     opportunity_id TEXT,
                     forecast_id TEXT,
+                    opportunity_redundant INTEGER NOT NULL DEFAULT 0,
+                    forecast_redundant INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (cycle_id, market_id)
                 )
                 """
@@ -794,16 +864,11 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     opportunity_id, forecast_id
                 )
                 SELECT checks.cycle_id, checks.market_id, checks.series_ticker,
-                       checks.observed_at,
-                       json_extract(
-                           checks.payload_json, '$.opportunity.opportunity_id'
-                       ),
+                       checks.observed_at, checks.opportunity_id,
                        opportunities.forecast_id
                 FROM paper_alert_market_checks AS checks
                 LEFT JOIN opportunities
-                  ON opportunities.opportunity_id = json_extract(
-                      checks.payload_json, '$.opportunity.opportunity_id'
-                  )
+                  ON opportunities.opportunity_id = checks.opportunity_id
                 WHERE checks.series_ticker = ?
                   AND checks.status = ?
                   AND checks.observed_at < ?
@@ -830,6 +895,32 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 raise RuntimeError(
                     "refusing to compact WATCH history: "
                     f"{missing_count} checks lack linked evaluations"
+                )
+            linked_payloads = connection.execute(
+                """SELECT targets.cycle_id, targets.market_id,
+                          opportunities.payload_json AS opportunity_payload,
+                          forecasts.payload_json AS forecast_payload
+                   FROM watch_compaction_targets AS targets
+                   JOIN opportunities USING(opportunity_id)
+                   JOIN forecasts ON forecasts.forecast_id = opportunities.forecast_id"""
+            )
+            for row in linked_payloads:
+                opportunity_redundant = payload_references_ledger(row["opportunity_payload"])
+                forecast_redundant = payload_references_ledger(row["forecast_payload"])
+                if opportunity_redundant:
+                    load_payload(connection, "opportunities", row["opportunity_payload"])
+                if forecast_redundant:
+                    load_payload(connection, "forecasts", row["forecast_payload"])
+                connection.execute(
+                    """UPDATE watch_compaction_targets
+                       SET opportunity_redundant = ?, forecast_redundant = ?
+                       WHERE cycle_id = ? AND market_id = ?""",
+                    (
+                        opportunity_redundant,
+                        forecast_redundant,
+                        row["cycle_id"],
+                        row["market_id"],
+                    ),
                 )
 
             connection.execute(
@@ -878,12 +969,18 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 DELETE FROM opportunities
                 WHERE opportunity_id IN (
                     SELECT opportunity_id FROM watch_compaction_targets
+                    WHERE opportunity_redundant = 1
                 )
                   AND state = 'WATCH'
                   AND NOT EXISTS (
                       SELECT 1
                       FROM alert_events
                       WHERE alert_events.opportunity_id = opportunities.opportunity_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM paper_alert_market_checks AS checks
+                      WHERE checks.opportunity_id = opportunities.opportunity_id
                   )
                 """
             ).rowcount
@@ -892,6 +989,7 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 DELETE FROM forecasts
                 WHERE forecast_id IN (
                     SELECT forecast_id FROM watch_compaction_targets
+                    WHERE forecast_redundant = 1
                 )
                   AND NOT EXISTS (
                       SELECT 1
@@ -1007,6 +1105,15 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     requested_text,
                 ),
             ).fetchall()
+            alert_rows = [
+                {
+                    **dict(row),
+                    "payload": load_payload(
+                        connection, "paper_alert_market_checks", row["payload_json"]
+                    ),
+                }
+                for row in alert_rows
+            ]
             connection.execute(
                 """
                 INSERT INTO paper_alert_status_requests (
@@ -1024,7 +1131,7 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
             market_id = str(row["market_id"])
             if row["result"]:
                 stored_results[market_id] = str(row["result"]).casefold()
-            opportunity = json.loads(str(row["payload_json"])).get("opportunity") or {}
+            opportunity = row["payload"].get("opportunity") or {}
             alert = parse_delivered_alert(
                 opportunity_id=str(
                     opportunity.get("opportunity_id") or f"{row['cycle_id']}:{market_id}"
@@ -2196,10 +2303,12 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                 """,
                 (limit,),
             ).fetchall()
-        return [json.loads(str(row["payload_json"])) for row in rows]
+            return [load_payload(connection, "opportunities", row["payload_json"]) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=120.0)
+        connection = sqlite3.connect(
+            self.database_path, timeout=120.0, factory=_RepositoryConnection
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 120000")
