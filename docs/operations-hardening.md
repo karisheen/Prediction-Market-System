@@ -83,6 +83,29 @@ database and release before restarting agents. If activation fails, restore
 both database and application pointers before any restart; rolling back only
 the code would pair the old reader with the new BLOB format.
 
+Release `63f8a0e` was activated with the compact database at 13:18 UTC on
+November 4. The staged release passed 489 tests, Ruff lint/format checks, and
+strict Mypy. A production-sized research refresh and shadow scan evaluated
+318 markets with zero runtime failures and zero Discord entries. All remained
+WATCH-only because calibration was missing; the CLI's exit code 1 reflected
+that existing eligibility gate, which was not bypassed.
+
+The fresh online backup, `prediction_markets-20261104T131854Z.db.gz`, passed
+`quick_check` and occupies 3.71 GiB. This is larger than the older October 28
+gzip archive: compact live storage does not guarantee smaller compressed
+archives. All three older archives were retained for this cutover; the existing
+scheduled three-backup rotation remains unchanged. The heartbeat subsequently
+reported live scans, research refresh, validation archives, and backup health OK.
+
+After that backup succeeded, the operator-approved expanded backup and temporary
+recovery clone were removed. Cleanup reclaimed approximately 41.24 GiB and left
+214.17 GiB free at observation time. The 51.8 GiB damaged original remains
+preserved, along with the compressed restore points. The operational receipt at
+`data/storage-recovery-20261104.json` records the exact retained paths, recovery
+gap, verification evidence, and decision rationale. The migration manifest is
+now a historical verification record, not a reusable activation authorization:
+its temporary source was removed and its destination became the active store.
+
 ### Bounded detailed WATCH retention
 
 `pms paper-alert-maintain` compacts detailed `WATCH` evaluations older than a configured UTC
