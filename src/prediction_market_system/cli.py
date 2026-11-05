@@ -24,7 +24,7 @@ from prediction_market_system.alert_outcomes import (
     score_alerts,
     summary_payload,
 )
-from prediction_market_system.archive import archive_window_complete
+from prediction_market_system.archive import ARCHIVE_COVERAGE_VERSION, archive_window_issues
 from prediction_market_system.audit_cli import register_audit_commands
 from prediction_market_system.backtest import (
     BacktestConfig,
@@ -164,10 +164,12 @@ _OUTCOME_REQUEST_SPACING_SECONDS = 0.15
 class _KalshiHistoryBatch:
     observed_at: datetime
     markets: list[KalshiMarket]
+    selected_markets: list[KalshiMarket]
     candlesticks: dict[str, list[KalshiCandlestick]]
     series_fee_changes: list[KalshiSeriesFeeChange]
     event_fee_changes: list[KalshiEventFeeChange]
     discovery_complete: bool = False
+    discovery_issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -531,21 +533,17 @@ def paper_alert_archive(
     repository.initialize()
 
     archived = 0
-    skipped = 0
     failed_days: list[str] = []
-    window_start = first_day
-    while window_start < today and archived + len(failed_days) < catch_up_days:
+    work_days, skipped = repository.validation_archive_work(
+        series_ticker=normalized_series,
+        symbol=normalized_symbol,
+        period_interval=period_interval,
+        campaign_start=first_day,
+        completed_before=today,
+        max_days=catch_up_days,
+    )
+    for window_start in work_days:
         window_end = window_start + timedelta(days=1)
-        if repository.validation_archive_succeeded(
-            series_ticker=normalized_series,
-            symbol=normalized_symbol,
-            start_at=window_start,
-            end_at=window_end,
-            period_interval=period_interval,
-        ):
-            skipped += 1
-            window_start = window_end
-            continue
         repository.begin_validation_archive(
             series_ticker=normalized_series,
             symbol=normalized_symbol,
@@ -553,6 +551,10 @@ def paper_alert_archive(
             end_at=window_end,
             period_interval=period_interval,
         )
+        counts: dict[str, int] = {
+            "coverage_complete": 0,
+            "coverage_version": ARCHIVE_COVERAGE_VERSION,
+        }
         try:
             market_batch = asyncio.run(
                 _fetch_kalshi_history(
@@ -566,10 +568,6 @@ def paper_alert_archive(
                 )
             )
             candle_count = sum(len(candles) for candles in market_batch.candlesticks.values())
-            if market_batch.markets and candle_count == 0:
-                raise ValueError(
-                    "Kalshi returned settled markets but no point-in-time candlesticks"
-                )
             market_written = repository.save_kalshi_history(
                 series_ticker=normalized_series,
                 observed_at=market_batch.observed_at,
@@ -578,6 +576,13 @@ def paper_alert_archive(
                 period_interval=period_interval,
                 series_fee_changes=market_batch.series_fee_changes,
                 event_fee_changes=market_batch.event_fee_changes,
+            )
+            counts.update(
+                market_snapshots=market_written.market_snapshots,
+                candlesticks=candle_count,
+                resolutions=market_written.resolutions,
+                selected_markets=len(market_batch.selected_markets),
+                discovery_complete=int(market_batch.discovery_complete),
             )
             research_batch = asyncio.run(
                 _fetch_research_data(
@@ -594,30 +599,25 @@ def paper_alert_archive(
                 funding_observations=research_batch.funding_observations,
                 derivatives_snapshots=research_batch.derivatives_snapshots,
             )
-            counts = {
-                "market_snapshots": market_written.market_snapshots,
-                "candlesticks": candle_count,
-                "resolutions": market_written.resolutions,
-                "spot_candles": research_written.spot_candles,
-                "volatility_observations": research_written.volatility_observations,
-                "funding_observations": research_written.funding_observations,
-                "coverage_complete": int(
-                    archive_window_complete(
-                        start=window_start,
-                        end=window_end,
-                        period_minutes=period_interval,
-                        discovery_complete=market_batch.discovery_complete,
-                        markets=[
-                            market
-                            for market in market_batch.markets
-                            if market.ticker in market_batch.candlesticks
-                        ],
-                        candlesticks=market_batch.candlesticks,
-                        spot_candles=research_batch.spot_candles,
-                        history_hours=history_hours,
-                    )
-                ),
-            }
+            counts.update(
+                spot_candles=research_written.spot_candles,
+                volatility_observations=research_written.volatility_observations,
+                funding_observations=research_written.funding_observations,
+                fetched_spot_candles=len(research_batch.spot_candles),
+            )
+            issues = archive_window_issues(
+                start=window_start,
+                end=window_end,
+                period_minutes=period_interval,
+                discovery_complete=market_batch.discovery_complete,
+                markets=market_batch.selected_markets,
+                candlesticks=market_batch.candlesticks,
+                spot_candles=research_batch.spot_candles,
+                history_hours=history_hours,
+            )
+            if issues:
+                raise ValueError("; ".join((*market_batch.discovery_issues, *issues)))
+            counts["coverage_complete"] = 1
             repository.complete_validation_archive(
                 series_ticker=normalized_series,
                 symbol=normalized_symbol,
@@ -639,6 +639,7 @@ def paper_alert_archive(
                 start_at=window_start,
                 end_at=window_end,
                 period_interval=period_interval,
+                counts=counts,
                 error=redact_secrets(str(exc)),
             )
             if isinstance(
@@ -652,9 +653,8 @@ def paper_alert_archive(
                 failed_days.append(window_start.date().isoformat())
             else:
                 raise
-        window_start = window_end
 
-    console.print(f"Validation archive complete • {archived} archived • {skipped} already stored")
+    console.print(f"Validation archive finished • {archived} archived • {skipped} already stored")
     if failed_days:
         console.print(
             f"[red]Validation archive incomplete • {len(failed_days)} failed: "
@@ -2185,8 +2185,10 @@ async def _fetch_kalshi_history(
     )
     try:
         events: list[KalshiEvent] = []
+        discovery_issues: list[str] = []
+        seen_events: set[str] = set()
         cursor: str | None = None
-        while len(events) < max_events:
+        while len(events) <= max_events:
             page = await client.list_events(
                 status="settled",
                 series_ticker=series_ticker,
@@ -2196,34 +2198,83 @@ async def _fetch_kalshi_history(
             )
             for event in page.events:
                 if event.strike_date is None:
+                    discovery_issues.append(
+                        f"Kalshi {event.event_ticker}: missing strike_date for window discovery"
+                    )
                     continue
-                if start_at <= event.strike_date <= end_at:
+                if (
+                    start_at <= event.strike_date <= end_at
+                    and event.event_ticker not in seen_events
+                ):
+                    seen_events.add(event.event_ticker)
                     events.append(event)
-                    if len(events) == max_events:
+                    if len(events) > max_events:
                         break
-            if not page.cursor or not page.events:
+            if len(events) > max_events or not page.cursor:
+                break
+            if not page.events:
+                discovery_issues.append(
+                    "Kalshi event pagination returned an empty nonterminal page"
+                )
                 break
             if page.cursor == cursor:
                 raise KalshiAPIError("Kalshi repeated an event cursor")
             cursor = page.cursor
+        if len(events) > max_events:
+            discovery_issues.append(f"Kalshi event discovery exceeds max_events={max_events}")
+            events = events[:max_events]
 
         markets: list[KalshiMarket] = []
-        selected_by_event: dict[str, list[KalshiMarket]] = {}
+        selected_markets: list[KalshiMarket] = []
         for event in events:
             response = await client.get_event(event.event_ticker)
-            event_markets = [market for market in response.markets if market.close_time <= end_at]
-            selected_markets = _select_history_markets(
-                event_markets,
+            # Events remain on the live endpoint after their nested markets migrate.
+            # Merge the paginated historical universe before selecting any contracts.
+            event_market_by_ticker: dict[str, KalshiMarket] = {}
+            historical_cursor: str | None = None
+            seen_cursors: set[str] = set()
+            while True:
+                historical_page = await client.list_historical_markets(
+                    event_ticker=event.event_ticker, cursor=historical_cursor, limit=1000
+                )
+                event_market_by_ticker.update(
+                    (market.ticker, market) for market in historical_page.markets
+                )
+                if not historical_page.cursor:
+                    break
+                if not historical_page.markets:
+                    discovery_issues.append(
+                        f"Kalshi {event.event_ticker}: empty nonterminal historical market page"
+                    )
+                    break
+                if historical_page.cursor in seen_cursors:
+                    raise KalshiAPIError("Kalshi repeated a historical market cursor")
+                seen_cursors.add(historical_page.cursor)
+                historical_cursor = historical_page.cursor
+            event_market_by_ticker.update((market.ticker, market) for market in response.markets)
+            if not event_market_by_ticker:
+                discovery_issues.append(
+                    f"Kalshi {event.event_ticker}: settled event has no live or historical markets"
+                )
+            event_markets = [
+                market for market in event_market_by_ticker.values() if market.close_time <= end_at
+            ]
+            # A close exactly at the left boundary has no completed candle in
+            # (start, end]; retain its metadata, but do not request zero-length history.
+            event_sample = _select_history_markets(
+                [market for market in event_markets if market.close_time > start_at],
                 range_contracts_per_event=range_contracts_per_event,
             )
             markets.extend(event_markets)
-            selected_by_event[event.event_ticker] = selected_markets
+            selected_markets.extend(event_sample)
 
         semaphore = asyncio.Semaphore(8)
 
         async def fetch_candles(market: KalshiMarket) -> tuple[str, list[KalshiCandlestick]]:
             async with semaphore:
                 candle_start = max(start_at, market.close_time - timedelta(hours=history_hours))
+                if market.open_time is not None:
+                    candle_start = max(candle_start, market.open_time)
                 candles = await client.get_candlesticks(
                     series_ticker,
                     market.ticker,
@@ -2234,11 +2285,7 @@ async def _fetch_kalshi_history(
                 return market.ticker, candles
 
         candle_results = await asyncio.gather(
-            *(
-                fetch_candles(market)
-                for event_markets in selected_by_event.values()
-                for market in event_markets
-            )
+            *(fetch_candles(market) for market in selected_markets)
         )
         candlesticks = dict(candle_results)
         series_fee_changes = await client.get_series_fee_changes(series_ticker)
@@ -2260,10 +2307,12 @@ async def _fetch_kalshi_history(
         return _KalshiHistoryBatch(
             observed_at=datetime.now(UTC),
             markets=markets,
+            selected_markets=selected_markets,
             candlesticks=candlesticks,
             series_fee_changes=series_fee_changes,
             event_fee_changes=event_fee_changes,
-            discovery_complete=len(events) < max_events,
+            discovery_complete=not discovery_issues,
+            discovery_issues=tuple(discovery_issues),
         )
     finally:
         await client.close()

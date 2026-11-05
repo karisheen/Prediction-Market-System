@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from prediction_market_system.archive import ARCHIVE_COVERAGE_VERSION
 from prediction_market_system.db_backup import last_attempt, latest_manifest
 
 SendNotice = Callable[[str], Awaitable[object]]
@@ -72,6 +73,179 @@ def _connect_read_only(database_path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _campaign_archive_check(
+    connection: sqlite3.Connection,
+    configuration_json: str,
+    *,
+    series: str,
+    symbol: str,
+    now: datetime,
+) -> HeartbeatCheck:
+    configuration = json.loads(configuration_json)
+    if not isinstance(configuration, dict):
+        raise ValueError("active campaign configuration is not an object")
+    start = datetime.fromisoformat(configuration["campaign_start"].replace("Z", "+00:00"))
+    if start.tzinfo is None or start.utcoffset() != timedelta(0):
+        raise ValueError("active campaign start must be timezone-aware UTC")
+    if start != start.replace(hour=0, minute=0, second=0, microsecond=0):
+        raise ValueError("active campaign start must be midnight UTC")
+    period = configuration["period_minutes"]
+    if type(period) is not int or period not in (1, 60, 1440):
+        raise ValueError("active campaign has an invalid archive period")
+    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    expected_days = max((today - start).days, 0)
+    rows = connection.execute(
+        """
+        SELECT start_at, end_at, status, counts_json, error
+        FROM paper_validation_archive_runs
+        WHERE series_ticker = ? AND symbol = ? AND period_interval_minutes = ?
+          AND start_at >= ? AND start_at < ?
+        ORDER BY start_at
+        """,
+        (series, symbol, period, start.isoformat(), today.isoformat()),
+    ).fetchall()
+    windows: dict[datetime, str | None] = {}
+    failed_windows: set[datetime] = set()
+    for row in rows:
+        window_start = datetime.fromisoformat(str(row["start_at"]).replace("Z", "+00:00"))
+        window_end = datetime.fromisoformat(str(row["end_at"]).replace("Z", "+00:00"))
+        if (
+            window_start.utcoffset() != timedelta(0)
+            or window_end.utcoffset() != timedelta(0)
+            or window_start != window_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            or window_end - window_start != timedelta(days=1)
+            or window_start in windows
+        ):
+            raise ValueError(f"invalid or ambiguous archive window at {row['start_at']}")
+        if row["status"] not in ("succeeded", "failed", "running"):
+            raise ValueError(f"invalid archive status at {row['start_at']}")
+        if row["status"] == "failed":
+            failed_windows.add(window_start)
+        counts = json.loads(row["counts_json"]) if row["counts_json"] is not None else {}
+        if not isinstance(counts, dict):
+            raise ValueError(f"archive counts are not an object at {row['start_at']}")
+        if (
+            row["status"] == "succeeded"
+            and counts.get("coverage_complete") == 1
+            and counts.get("coverage_version") == ARCHIVE_COVERAGE_VERSION
+        ):
+            windows[window_start] = None
+        else:
+            reason = (
+                "incomplete or unverified coverage"
+                if row["status"] == "succeeded"
+                else str(row["status"])
+            )
+            if row["error"]:
+                error = str(row["error"]).split(" for url ")[0]
+                reason += f": {error[:200]}"
+            windows[window_start] = reason
+
+    missing = incomplete = pending = 0
+    first_gap: datetime | None = None
+    examples: list[str] = []
+    for offset in range(expected_days):
+        day = start + timedelta(days=offset)
+        # The daily collector runs after UTC midnight. Give the newest completed
+        # day one scheduling cycle, but never defer a recorded failure.
+        if (
+            windows.get(day, "missing") is not None
+            and day not in failed_windows
+            and now < day + timedelta(days=2)
+        ):
+            pending += 1
+            continue
+        if day not in windows:
+            missing += 1
+            reason = "missing"
+        elif windows[day] is not None:
+            incomplete += 1
+            reason = str(windows[day])
+        else:
+            continue
+        if first_gap is None:
+            first_gap = day
+        if len(examples) < 5:
+            examples.append(f"{day.date().isoformat()} ({reason})")
+    covered = expected_days - missing - incomplete - pending
+    pending_detail = (
+        f"{pending} completed UTC day pending within 24h daily scheduling grace; "
+        if pending
+        else ""
+    )
+    if first_gap is not None:
+        return HeartbeatCheck(
+            "archive",
+            "Validation archive",
+            False,
+            f"active campaign coverage backlog: {covered}/{expected_days} completed UTC days "
+            f"certified at {period}m; {missing} missing, {incomplete} incomplete; "
+            f"{pending_detail}awaiting catch-up: {', '.join(examples)}",
+            since=first_gap + timedelta(days=1),
+        )
+    return HeartbeatCheck(
+        "archive",
+        "Validation archive",
+        True,
+        f"active campaign collection current: {covered}/{expected_days} completed UTC days "
+        f"certified at {period}m; {pending_detail}accumulating evidence is not model approval",
+    )
+
+
+def _archive_check(
+    connection: sqlite3.Connection,
+    *,
+    series: str,
+    symbol: str,
+    now: datetime,
+    lookback: timedelta,
+) -> HeartbeatCheck:
+    try:
+        campaigns = connection.execute(
+            """
+            SELECT configuration_json FROM validation_campaign_registrations
+            WHERE series_ticker = ? AND symbol = ? AND superseded_at IS NULL
+            LIMIT 2
+            """,
+            (series, symbol),
+        ).fetchall()
+        if len(campaigns) > 1:
+            raise ValueError("multiple active campaign registrations")
+        if campaigns:
+            return _campaign_archive_check(
+                connection,
+                campaigns[0]["configuration_json"],
+                series=series,
+                symbol=symbol,
+                now=now,
+            )
+        rows = connection.execute(
+            """
+            SELECT start_at, error FROM paper_validation_archive_runs
+            WHERE series_ticker = ? AND symbol = ? AND status = 'failed' AND start_at >= ?
+            ORDER BY start_at
+            """,
+            (series, symbol, (now - lookback).isoformat()),
+        ).fetchall()
+        if rows:
+            days = ", ".join(_parse(row["start_at"]).date().isoformat() for row in rows)
+            error = str(rows[-1]["error"] or "unknown error").split(" for url ")[0]
+            return HeartbeatCheck(
+                "archive",
+                "Validation archive",
+                False,
+                f"failed days awaiting catch-up: {days} (latest error: {error[:200]})",
+            )
+    except (sqlite3.Error, ValueError, TypeError, KeyError, AttributeError) as exc:
+        return HeartbeatCheck(
+            "archive",
+            "Validation archive",
+            False,
+            f"cannot establish archive coverage from metadata: {exc}",
+        )
+    return HeartbeatCheck("archive", "Validation archive", True, "no unrecovered failed days")
+
+
 def collect_checks(
     database_path: Path,
     *,
@@ -99,15 +273,13 @@ def collect_checks(
             """,
             (normalized_symbol,),
         ).fetchone()
-        archive_rows = connection.execute(
-            """
-            SELECT start_at, error
-            FROM paper_validation_archive_runs
-            WHERE series_ticker = ? AND symbol = ? AND status = 'failed' AND start_at >= ?
-            ORDER BY start_at
-            """,
-            (series, normalized_symbol, (now - archive_lookback).isoformat()),
-        ).fetchall()
+        archive = _archive_check(
+            connection,
+            series=series,
+            symbol=normalized_symbol,
+            now=now,
+            lookback=archive_lookback,
+        )
 
     checks: list[HeartbeatCheck] = []
 
@@ -143,21 +315,7 @@ def collect_checks(
             )
         )
 
-    if archive_rows:
-        days = ", ".join(_parse(row["start_at"]).date().isoformat() for row in archive_rows)
-        error = str(archive_rows[-1]["error"] or "unknown error").split(" for url ")[0]
-        checks.append(
-            HeartbeatCheck(
-                "archive",
-                "Validation archive",
-                False,
-                f"failed days awaiting catch-up: {days} (latest error: {error[:200]})",
-            )
-        )
-    else:
-        checks.append(
-            HeartbeatCheck("archive", "Validation archive", True, "no unrecovered failed days")
-        )
+    checks.append(archive)
     checks.append(backup_check(backup_dir, now=now, max_age=max_backup_age))
     return checks
 

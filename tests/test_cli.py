@@ -1,10 +1,12 @@
 import asyncio
+import json
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from prediction_market_system.calibration import (
@@ -12,6 +14,7 @@ from prediction_market_system.calibration import (
     UncertaintyCalibrationProfile,
 )
 from prediction_market_system.cli import (
+    _fetch_kalshi_history,
     _fetch_kalshi_markets,
     _KalshiHistoryBatch,
     _ResearchDataBatch,
@@ -30,7 +33,13 @@ from prediction_market_system.research import (
 from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.venues.kalshi import (
     KalshiAPIError,
+    KalshiCandlestick,
+    KalshiEvent,
+    KalshiEventFeeChangesResponse,
+    KalshiEventResponse,
+    KalshiEventsResponse,
     KalshiMarket,
+    KalshiMarketsResponse,
     KalshiOrderBook,
     to_market_snapshot,
 )
@@ -611,14 +620,18 @@ def test_archive_continues_after_failed_day_and_leaves_it_for_catch_up(
         return _KalshiHistoryBatch(
             observed_at=start_at + timedelta(days=1),
             markets=[],
+            selected_markets=[],
             candlesticks={},
             series_fee_changes=[],
             event_fee_changes=[],
+            discovery_complete=True,
         )
 
-    async def fake_research(*args: object, **kwargs: object) -> _ResearchDataBatch:
+    async def fake_research(
+        symbol: str, start: datetime, end: datetime, *args: object
+    ) -> _ResearchDataBatch:
         return _ResearchDataBatch(
-            spot_candles=[],
+            spot_candles=_archive_spot_candles(start, end),
             volatility_observations=[],
             funding_observations=[],
             derivatives_snapshots=[],
@@ -642,6 +655,8 @@ def test_archive_continues_after_failed_day_and_leaves_it_for_catch_up(
             (today - timedelta(days=3)).isoformat(),
             "--catch-up-days",
             "3",
+            "--period",
+            "60",
         ],
     )
 
@@ -661,3 +676,254 @@ def test_archive_continues_after_failed_day_and_leaves_it_for_catch_up(
         failing_day: "failed",
         today - timedelta(days=1): "succeeded",
     }
+
+
+def _archive_spot_candles(start: datetime, end: datetime) -> list[SpotCandle]:
+    return [
+        SpotCandle(
+            provider="coinbase",
+            product_id="BTC-USD",
+            interval_seconds=3600,
+            start_at=start + timedelta(hours=hour),
+            end_at=start + timedelta(hours=hour + 1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("10"),
+            retrieved_at=end + timedelta(days=1),
+            raw_payload={"hour": hour},
+        )
+        for hour in range(24)
+    ]
+
+
+def test_archive_incomplete_retry_uses_fetched_not_inserted_spot_counts(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    from pytest import MonkeyPatch
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    day = _utc_day(datetime.now(UTC)) - timedelta(days=1)
+    end = day + timedelta(days=1)
+    market = kalshi_market().model_copy(
+        update={"close_time": end, "open_time": day, "status": "settled"}
+    )
+    missing_market = True
+    fetched = 0
+
+    async def fake_history(*args: object) -> _KalshiHistoryBatch:
+        nonlocal fetched
+        fetched += 1
+        return _KalshiHistoryBatch(
+            observed_at=end + timedelta(days=1),
+            markets=[market],
+            selected_markets=[market],
+            candlesticks=({} if missing_market else {market.ticker: _archive_market_candles(day)}),
+            series_fee_changes=[],
+            event_fee_changes=[],
+            discovery_complete=True,
+        )
+
+    async def fake_research(*args: object) -> _ResearchDataBatch:
+        return _ResearchDataBatch(
+            spot_candles=_archive_spot_candles(day, end),
+            volatility_observations=[],
+            funding_observations=[],
+            derivatives_snapshots=[],
+            event_snapshots=[],
+        )
+
+    database_path = tmp_path / "archive-retry.db"
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+    monkeypatch.setattr("prediction_market_system.cli._fetch_kalshi_history", fake_history)
+    monkeypatch.setattr("prediction_market_system.cli._fetch_research_data", fake_research)
+    arguments = [
+        "paper-alert-archive",
+        "--series",
+        "KXBTC",
+        "--symbol",
+        "BTC",
+        "--campaign-start",
+        day.isoformat(),
+        "--period",
+        "60",
+        "--catch-up-days",
+        "1",
+    ]
+    failed = runner.invoke(app, arguments)
+    assert failed.exit_code == 1, failed.output
+    assert "0 archived" in failed.output
+    with closing(sqlite3.connect(database_path)) as connection:
+        status, counts_json, error = connection.execute(
+            "SELECT status, counts_json, error FROM paper_validation_archive_runs"
+        ).fetchone()
+    counts = json.loads(counts_json)
+    assert status == "failed"
+    assert counts["coverage_complete"] == 0
+    assert counts["spot_candles"] == counts["fetched_spot_candles"] == 24
+    assert market.ticker in error
+    assert "missing=24" in error
+    assert day.replace(hour=1).isoformat() in error
+
+    missing_market = False
+    repaired = runner.invoke(app, arguments)
+    assert repaired.exit_code == 0, repaired.output
+    assert "1 archived" in repaired.output
+    with closing(sqlite3.connect(database_path)) as connection:
+        status, counts_json, error = connection.execute(
+            "SELECT status, counts_json, error FROM paper_validation_archive_runs"
+        ).fetchone()
+    counts = json.loads(counts_json)
+    assert status == "succeeded" and error is None
+    assert counts["coverage_complete"] == 1
+    assert counts["spot_candles"] == 0
+    assert counts["fetched_spot_candles"] == 24
+    skipped = runner.invoke(app, arguments)
+    assert skipped.exit_code == 0, skipped.output
+    assert "0 archived" in skipped.output and "1 already stored" in skipped.output
+    assert fetched == 2
+
+
+def _archive_market_candles(start: datetime) -> list[KalshiCandlestick]:
+    return [
+        KalshiCandlestick.model_validate(
+            {
+                "end_period_ts": int((start + timedelta(hours=hour + 1)).timestamp()),
+                "yes_bid": dict.fromkeys(("open", "high", "low", "close"), "0.40"),
+                "yes_ask": dict.fromkeys(("open", "high", "low", "close"), "0.42"),
+                "price": {},
+                "volume": "10",
+                "open_interest": "100",
+            }
+        )
+        for hour in range(24)
+    ]
+
+
+@pytest.mark.parametrize(("historical_empty", "event_count"), [(False, 1), (True, 1), (False, 2)])
+def test_history_discovers_migrated_markets_and_respects_interval_boundaries(
+    monkeypatch: pytest.MonkeyPatch, historical_empty: bool, event_count: int
+) -> None:
+    start = datetime(2026, 8, 20, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    market = kalshi_market().model_copy(
+        update={
+            "close_time": end,
+            "open_time": end - timedelta(hours=2),
+            "status": "settled",
+        }
+    )
+    boundary_market = market.model_copy(
+        update={"ticker": "BOUNDARY", "close_time": start, "open_time": start - timedelta(hours=1)}
+    )
+    event = KalshiEvent(
+        event_ticker=market.event_ticker,
+        series_ticker="KXBTC",
+        title="Bitcoin",
+        sub_title="",
+        mutually_exclusive=True,
+        strike_date=end,
+    )
+    requested_starts: list[int] = []
+    historical_cursors: list[object] = []
+
+    class MigratedClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def list_events(self, **kwargs: object) -> KalshiEventsResponse:
+            events = [event]
+            if event_count > 1:
+                events.append(event.model_copy(update={"event_ticker": "OVER-BUDGET"}))
+            return KalshiEventsResponse(events=events)
+
+        async def get_event(self, ticker: str) -> KalshiEventResponse:
+            return KalshiEventResponse(event=event, markets=[])
+
+        async def list_historical_markets(self, **kwargs: object) -> KalshiMarketsResponse:
+            assert kwargs["event_ticker"] == event.event_ticker
+            historical_cursors.append(kwargs["cursor"])
+            if historical_empty:
+                return KalshiMarketsResponse(markets=[])
+            if kwargs["cursor"] is None:
+                return KalshiMarketsResponse(markets=[boundary_market], cursor="next")
+            return KalshiMarketsResponse(markets=[market])
+
+        async def get_candlesticks(
+            self, series: str, ticker: str, **kwargs: object
+        ) -> list[KalshiCandlestick]:
+            assert ticker == market.ticker
+            requested_starts.append(int(str(kwargs["start_ts"])))
+            return _archive_market_candles(start)[22:]
+
+        async def get_series_fee_changes(self, series: str) -> list[object]:
+            return []
+
+        async def get_event_fee_changes(
+            self, ticker: str, **kwargs: object
+        ) -> KalshiEventFeeChangesResponse:
+            return KalshiEventFeeChangesResponse(event_fee_changes=[])
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("prediction_market_system.cli.KalshiClient", MigratedClient)
+    batch = asyncio.run(_fetch_kalshi_history("KXBTC", start, end, 60, 1, 3, 24))
+    assert batch.discovery_complete == (not historical_empty and event_count == 1)
+    if historical_empty:
+        assert "no live or historical markets" in "; ".join(batch.discovery_issues)
+        assert batch.selected_markets == []
+        assert requested_starts == []
+    else:
+        assert historical_cursors == [None, "next"]
+        assert {item.ticker for item in batch.markets} == {market.ticker, "BOUNDARY"}
+        assert batch.selected_markets == [market]
+        assert requested_starts == [int((end - timedelta(hours=2)).timestamp())]
+        if event_count > 1:
+            assert "exceeds max_events=1" in "; ".join(batch.discovery_issues)
+        # Exactly max_events is not truncation when the provider exhausted the cursor.
+        from prediction_market_system.archive import archive_window_complete
+
+        assert archive_window_complete(
+            start=start,
+            end=end,
+            period_minutes=60,
+            discovery_complete=batch.discovery_complete,
+            markets=batch.selected_markets,
+            candlesticks=batch.candlesticks,
+            spot_candles=_archive_spot_candles(start, end),
+            history_hours=24,
+        ) == (event_count == 1)
+
+
+def test_archive_bounded_retries_do_not_starve_later_completed_days(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    today = _utc_day(datetime.now(UTC))
+    start = today - timedelta(days=3)
+    fetched_days: list[datetime] = []
+
+    async def unavailable_history(series: str, day: datetime, *args: object) -> _KalshiHistoryBatch:
+        fetched_days.append(day)
+        raise KalshiAPIError("provider still lacks required intervals")
+
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(tmp_path / "fair-archive.db"))
+    monkeypatch.setattr("prediction_market_system.cli._fetch_kalshi_history", unavailable_history)
+    arguments = [
+        "paper-alert-archive",
+        "--series",
+        "KXBTC",
+        "--symbol",
+        "BTC",
+        "--campaign-start",
+        start.isoformat(),
+        "--catch-up-days",
+        "1",
+    ]
+    for attempt in range(4):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 1, result.output
+        assert len(fetched_days) == attempt + 1
+    assert fetched_days == [start, start + timedelta(days=1), start + timedelta(days=2), start]
+    assert today not in fetched_days

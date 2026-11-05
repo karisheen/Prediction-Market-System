@@ -9,6 +9,7 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+from prediction_market_system.archive import ARCHIVE_COVERAGE_VERSION
 from prediction_market_system.cli import app
 from prediction_market_system.db_backup import LAST_ATTEMPT_NAME
 from prediction_market_system.discord import DiscordWebhookClient
@@ -21,6 +22,9 @@ from prediction_market_system.heartbeat import (
 from prediction_market_system.storage import SQLiteRepository
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+COMPLETE_COUNTS = json.dumps(
+    {"coverage_complete": 1, "coverage_version": ARCHIVE_COVERAGE_VERSION, "spot_candles": 0}
+)
 
 runner = CliRunner()
 
@@ -61,24 +65,79 @@ def record_research(path: Path, completed_at: datetime, status: str = "succeeded
     )
 
 
-def record_archive(path: Path, day: datetime, status: str, error: str | None = None) -> None:
+def record_archive(
+    path: Path,
+    day: datetime,
+    status: str,
+    error: str | None = None,
+    *,
+    counts_json: str | None = None,
+    series: str = "KXBTC",
+    symbol: str = "BTC",
+    period: int = 1,
+    end_at: datetime | None = None,
+    started_at: datetime = NOW,
+) -> None:
     execute(
         path,
         """
             INSERT OR REPLACE INTO paper_validation_archive_runs (
                 series_ticker, symbol, start_at, end_at, period_interval_minutes,
-                status, started_at, completed_at, error
-            ) VALUES ('KXBTC', 'BTC', ?, ?, 1, ?, ?, ?, ?)
+                status, started_at, completed_at, error, counts_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
         (
+            series,
+            symbol,
             day.isoformat(),
-            (day + timedelta(days=1)).isoformat(),
+            (end_at or day + timedelta(days=1)).isoformat(),
+            period,
             status,
-            NOW.isoformat(),
-            NOW.isoformat(),
+            started_at.isoformat(),
+            None if status == "running" else NOW.isoformat(),
             error,
+            counts_json,
         ),
     )
+
+
+def record_campaign(
+    path: Path,
+    start: datetime,
+    *,
+    period: int = 1,
+    series: str = "KXBTC",
+    symbol: str = "BTC",
+    superseded_at: datetime | None = None,
+    campaign_id: str = "campaign",
+) -> None:
+    execute(
+        path,
+        "INSERT INTO validation_campaign_registrations VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            campaign_id,
+            series,
+            symbol,
+            start.isoformat(),
+            None if superseded_at is None else superseded_at.isoformat(),
+            json.dumps(
+                {
+                    "campaign_start": start.isoformat(),
+                    "period_minutes": period,
+                    "train_days": 90,
+                    "test_days": 30,
+                    "step_days": 30,
+                    "minimum_validation_folds": 2,
+                    "minimum_validation_events": 20,
+                    "minimum_calibration_samples": 30,
+                }
+            ),
+        ),
+    )
+
+
+def archive_check_at(path: Path, now: datetime = NOW) -> HeartbeatCheck:
+    return next(check for check in checks_at(path, now) if check.key == "archive")
 
 
 def record_backup(backup_dir: Path, created_at: datetime) -> None:
@@ -238,6 +297,354 @@ async def test_failed_archive_day_is_reported_until_caught_up(tmp_path: Path) ->
     assert "2026-10-16" in send.messages[0]
     assert "429 Too Many Requests" in send.messages[0]
     assert "Validation archive recovered" in send.messages[1]
+
+
+@pytest.mark.parametrize(
+    ("status", "counts_json"),
+    [
+        (
+            "succeeded",
+            json.dumps({"coverage_complete": 0, "coverage_version": ARCHIVE_COVERAGE_VERSION}),
+        ),
+        ("succeeded", None),
+        ("succeeded", '{"candlesticks": 100}'),
+        (
+            "succeeded",
+            json.dumps({"coverage_complete": "1", "coverage_version": ARCHIVE_COVERAGE_VERSION}),
+        ),
+        ("succeeded", '{"coverage_complete": 1}'),
+        (
+            "succeeded",
+            json.dumps({"coverage_complete": 1, "coverage_version": ARCHIVE_COVERAGE_VERSION - 1}),
+        ),
+        ("failed", COMPLETE_COUNTS),
+        ("running", None),
+    ],
+)
+def test_old_campaign_gap_is_unhealthy_outside_error_lookback(
+    tmp_path: Path, status: str, counts_json: str | None
+) -> None:
+    path = healthy_database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=13)
+    record_campaign(path, start)
+    for offset in range(1, 13):
+        record_archive(
+            path,
+            start + timedelta(days=offset),
+            "succeeded",
+            counts_json=COMPLETE_COUNTS,
+        )
+    record_archive(
+        path,
+        start,
+        status,
+        counts_json=counts_json,
+        started_at=start + timedelta(days=1),
+    )
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "coverage backlog" in check.detail
+    assert "12/13 completed UTC days" in check.detail
+    assert "0 missing, 1 incomplete" in check.detail
+    assert start.date().isoformat() in check.detail
+    assert check.since == start + timedelta(days=1)
+    if status != "succeeded":
+        assert status in check.detail
+
+
+def test_current_campaign_collection_is_healthy_before_validation_maturity(tmp_path: Path) -> None:
+    path = healthy_database(tmp_path)
+    today = NOW.replace(hour=0)
+    start = today - timedelta(days=13)
+    record_campaign(path, start)
+    for offset in range(13):
+        record_archive(
+            path,
+            start + timedelta(days=offset),
+            "succeeded",
+            counts_json=COMPLETE_COUNTS,
+        )
+    # Neither future/in-progress UTC dates nor pre-campaign failures are due coverage.
+    for day in (start - timedelta(days=1), today, today + timedelta(days=1)):
+        record_archive(path, day, "failed", "outside campaign completed dates")
+
+    check = archive_check_at(path)
+
+    assert check.healthy
+    assert "collection current: 13/13 completed UTC days" in check.detail
+    assert "accumulating evidence is not model approval" in check.detail
+
+
+@pytest.mark.parametrize("start_offset", [0, 1])
+def test_campaign_without_completed_dates_has_no_backlog(tmp_path: Path, start_offset: int) -> None:
+    path = healthy_database(tmp_path)
+    record_campaign(path, NOW.replace(hour=0) + timedelta(days=start_offset))
+
+    check = archive_check_at(path)
+
+    assert check.healthy
+    assert "0/0 completed UTC days" in check.detail
+
+
+def test_campaign_completed_dates_use_utc_not_local_calendar(tmp_path: Path) -> None:
+    path = database(tmp_path)
+    start = datetime(2026, 10, 16, tzinfo=UTC)
+    record_campaign(path, start)
+    record_archive(path, start, "succeeded", counts_json=COMPLETE_COUNTS)
+    record_archive(path, start + timedelta(days=1), "failed", "UTC day still in progress")
+
+    check = archive_check_at(path, datetime.fromisoformat("2026-10-18T00:30:00+02:00"))
+
+    assert check.healthy
+    assert "1/1 completed UTC days" in check.detail
+
+
+@pytest.mark.parametrize("status", [None, "running", "succeeded"])
+def test_latest_completed_day_has_one_daily_scheduling_cycle(
+    tmp_path: Path, status: str | None
+) -> None:
+    path = database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    closed_at = start + timedelta(days=1)
+    record_campaign(path, start)
+    if status is not None:
+        record_archive(path, start, status, started_at=closed_at)
+
+    for elapsed in (timedelta(0), timedelta(hours=7), timedelta(hours=23, minutes=59)):
+        check = archive_check_at(path, closed_at + elapsed)
+        assert check.healthy
+        assert "0/1 completed UTC days certified" in check.detail
+        assert "1 completed UTC day pending within 24h daily scheduling grace" in check.detail
+
+    overdue = archive_check_at(path, closed_at + timedelta(hours=24))
+
+    assert not overdue.healthy
+    assert "coverage backlog" in overdue.detail
+    assert start.date().isoformat() in overdue.detail
+    assert "1 completed UTC day pending" in overdue.detail
+
+
+def test_actual_latest_day_archive_failure_is_not_hidden_by_scheduling_grace(
+    tmp_path: Path,
+) -> None:
+    path = database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    record_campaign(path, start)
+    record_archive(path, start, "failed", "provider failure")
+
+    check = archive_check_at(path, start + timedelta(days=1, hours=1))
+
+    assert not check.healthy
+    assert "provider failure" in check.detail
+    assert "1 incomplete" in check.detail
+    assert "pending" not in check.detail
+
+
+@pytest.mark.parametrize(
+    ("series", "symbol", "period"),
+    [("KXETH", "BTC", 1), ("KXBTC", "ETH", 1), ("KXBTC", "BTC", 60)],
+)
+def test_other_archive_scope_does_not_fill_campaign_gap(
+    tmp_path: Path, series: str, symbol: str, period: int
+) -> None:
+    path = database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=2)
+    record_campaign(path, start)
+    record_archive(
+        path,
+        start,
+        "succeeded",
+        counts_json=COMPLETE_COUNTS,
+        series=series,
+        symbol=symbol,
+        period=period,
+    )
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "1 missing, 0 incomplete" in check.detail
+    assert f"{start.date().isoformat()} (missing)" in check.detail
+
+
+def test_frozen_period_is_used_and_unrelated_failures_are_ignored(tmp_path: Path) -> None:
+    path = database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    record_campaign(path, start, period=60)
+    record_archive(path, start, "failed", "wrong period", period=1)
+    record_archive(path, start, "succeeded", period=60, counts_json=COMPLETE_COUNTS)
+    record_archive(path, start, "failed", "wrong series", series="KXETH", period=60)
+
+    check = archive_check_at(path)
+
+    assert check.healthy
+    assert "1/1 completed UTC days certified at 60m" in check.detail
+
+
+@pytest.mark.parametrize(
+    ("series", "symbol", "superseded_at"),
+    [("KXETH", "BTC", None), ("KXBTC", "ETH", None), ("KXBTC", "BTC", NOW)],
+)
+def test_unrelated_or_superseded_campaign_preserves_recent_error_reporting(
+    tmp_path: Path, series: str, symbol: str, superseded_at: datetime | None
+) -> None:
+    path = healthy_database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=30)
+    record_campaign(path, start, series=series, symbol=symbol, superseded_at=superseded_at)
+    assert archive_check_at(path).healthy
+    record_archive(path, NOW.replace(hour=0) - timedelta(days=2), "failed", "provider failure")
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "failed days awaiting catch-up" in check.detail
+    assert "provider failure" in check.detail
+
+
+@pytest.mark.parametrize(
+    "configuration_json",
+    [
+        "{",
+        "[]",
+        "{}",
+        '{"campaign_start": null, "period_minutes": 1}',
+        '{"campaign_start": "2026-10-17", "period_minutes": 1}',
+        '{"campaign_start": "2026-10-17T01:00:00+00:00", "period_minutes": 1}',
+        '{"campaign_start": "2026-10-17T00:00:00+00:00", "period_minutes": "1"}',
+        '{"campaign_start": "2026-10-17T00:00:00+00:00", "period_minutes": true}',
+        '{"campaign_start": "2026-10-17T00:00:00+00:00", "period_minutes": 5}',
+    ],
+)
+def test_malformed_campaign_metadata_fails_closed(tmp_path: Path, configuration_json: str) -> None:
+    path = healthy_database(tmp_path)
+    record_campaign(path, NOW.replace(hour=0) - timedelta(days=1))
+    execute(
+        path,
+        "UPDATE validation_campaign_registrations SET configuration_json = ?",
+        (configuration_json,),
+    )
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "cannot establish archive coverage from metadata" in check.detail
+
+
+@pytest.mark.parametrize("counts_json", ["{", "[]", "null"])
+def test_malformed_archive_metadata_fails_closed(tmp_path: Path, counts_json: str) -> None:
+    path = healthy_database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    record_campaign(path, start)
+    record_archive(path, start, "succeeded", counts_json=counts_json)
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "cannot establish archive coverage from metadata" in check.detail
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_non_daily_or_ambiguous_archive_windows_fail_closed(
+    tmp_path: Path, duplicate: bool
+) -> None:
+    path = database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    record_campaign(path, start)
+    if duplicate:
+        record_archive(path, start, "succeeded", counts_json=COMPLETE_COUNTS)
+    record_archive(
+        path,
+        start,
+        "succeeded",
+        counts_json=COMPLETE_COUNTS,
+        end_at=start + timedelta(hours=12),
+    )
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "invalid or ambiguous archive window" in check.detail
+
+
+@pytest.mark.parametrize(
+    "table", ["validation_campaign_registrations", "paper_validation_archive_runs"]
+)
+def test_missing_metadata_table_does_not_claim_healthy_legacy_coverage(
+    tmp_path: Path, table: str
+) -> None:
+    path = healthy_database(tmp_path)
+    execute(path, f"DROP TABLE {table}", ())
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "cannot establish archive coverage from metadata" in check.detail
+
+
+def test_naive_archive_window_is_not_certified(tmp_path: Path) -> None:
+    path = database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    record_campaign(path, start)
+    record_archive(path, start, "succeeded", counts_json=COMPLETE_COUNTS)
+    execute(
+        path,
+        "UPDATE paper_validation_archive_runs SET end_at = ?",
+        ((start + timedelta(days=1)).replace(tzinfo=None).isoformat(),),
+    )
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "invalid or ambiguous archive window" in check.detail
+
+
+def test_multiple_active_campaigns_fail_closed(tmp_path: Path) -> None:
+    path = healthy_database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=1)
+    record_campaign(path, start)
+    record_campaign(path, start, campaign_id="other-campaign")
+
+    check = archive_check_at(path)
+
+    assert not check.healthy
+    assert "multiple active campaign registrations" in check.detail
+
+
+@pytest.mark.asyncio
+async def test_campaign_gap_notices_alert_once_and_recover_only_when_certified(
+    tmp_path: Path,
+) -> None:
+    path = healthy_database(tmp_path)
+    start = NOW.replace(hour=0) - timedelta(days=2)
+    record_campaign(path, start)
+    record_archive(path, start + timedelta(days=1), "succeeded", counts_json=COMPLETE_COUNTS)
+    state_path = tmp_path / "state.json"
+    send = Recorder()
+
+    async def beat() -> None:
+        await run_heartbeat(
+            checks=checks_at(path),
+            state_path=state_path,
+            series_ticker="KXBTC",
+            now=NOW,
+            send=send,
+        )
+
+    await beat()
+    await beat()
+    record_archive(path, start, "succeeded", counts_json='{"coverage_complete": 0}')
+    await beat()
+    assert len(send.messages) == 1
+    assert "Validation archive problem" in send.messages[0]
+    record_archive(path, start, "succeeded", counts_json=COMPLETE_COUNTS)
+    await beat()
+    await beat()
+
+    assert len(send.messages) == 2
+    assert "Validation archive recovered" in send.messages[1]
+    assert json.loads(state_path.read_text())["active"] == {}
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from prediction_market_system.alert_outcomes import (
     score_alerts,
     summarize,
 )
+from prediction_market_system.archive import ARCHIVE_COVERAGE_VERSION
 from prediction_market_system.backtest import (
     BacktestResult,
     EffectiveFee,
@@ -1837,7 +1838,8 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT status, json_extract(counts_json,'$.coverage_complete') AS complete
+                SELECT status, json_extract(counts_json,'$.coverage_complete') AS complete,
+                       json_extract(counts_json,'$.coverage_version') AS coverage_version
                 FROM paper_validation_archive_runs
                 WHERE series_ticker = ? AND symbol = ?
                   AND start_at = ? AND end_at = ?
@@ -1851,7 +1853,74 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                     period_interval,
                 ),
             ).fetchone()
-        return row is not None and str(row["status"]) == "succeeded" and row["complete"] == 1
+        return (
+            row is not None
+            and str(row["status"]) == "succeeded"
+            and row["complete"] == 1
+            and row["coverage_version"] == ARCHIVE_COVERAGE_VERSION
+        )
+
+    def validation_archive_work(
+        self,
+        *,
+        series_ticker: str,
+        symbol: str,
+        period_interval: CandlestickPeriod,
+        campaign_start: datetime,
+        completed_before: datetime,
+        max_days: int,
+    ) -> tuple[list[datetime], int]:
+        """Bounded oldest-attempt-first work; persistent provider gaps cannot starve new days."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT start_at, end_at, started_at, status,
+                          json_extract(counts_json,'$.coverage_complete') AS complete,
+                          json_extract(counts_json,'$.coverage_version') AS coverage_version
+                   FROM paper_validation_archive_runs
+                   WHERE series_ticker=? AND symbol=? AND period_interval_minutes=?
+                     AND start_at>=? AND start_at<?""",
+                (
+                    series_ticker.upper(),
+                    symbol.upper(),
+                    period_interval,
+                    campaign_start.isoformat(),
+                    completed_before.isoformat(),
+                ),
+            ).fetchall()
+        by_window = {
+            (
+                datetime.fromisoformat(str(row["start_at"])),
+                datetime.fromisoformat(str(row["end_at"])),
+            ): row
+            for row in rows
+        }
+        pending: list[tuple[datetime, datetime]] = []
+        skipped = 0
+        start = campaign_start
+        while start + timedelta(days=1) <= completed_before:
+            end = start + timedelta(days=1)
+            row = by_window.get((start, end))
+            if (
+                row is not None
+                and row["status"] == "succeeded"
+                and row["complete"] == 1
+                and row["coverage_version"] == ARCHIVE_COVERAGE_VERSION
+            ):
+                skipped += 1
+            else:
+                attempted = datetime.min.replace(tzinfo=UTC)
+                if row is not None:
+                    try:
+                        recorded_attempt = datetime.fromisoformat(str(row["started_at"]))
+                    except ValueError:
+                        pass
+                    else:
+                        if recorded_attempt.tzinfo is not None:
+                            attempted = recorded_attempt
+                pending.append((attempted, start))
+            start = end
+        pending.sort()
+        return [start for _, start in pending[:max_days]], skipped
 
     def begin_validation_archive(
         self,
@@ -1902,6 +1971,12 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
         counts: dict[str, int] | None = None,
         error: str | None = None,
     ) -> None:
+        if error is None and (
+            counts is None
+            or counts.get("coverage_complete") != 1
+            or counts.get("coverage_version") != ARCHIVE_COVERAGE_VERSION
+        ):
+            error = "Archive coverage incomplete: current coverage certificate is missing or false"
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1938,12 +2013,14 @@ class SQLiteRepository(ResearchRepositoryMixin, EvidenceRepositoryMixin):
                    WHERE series_ticker=? AND symbol=? AND period_interval_minutes=?
                      AND start_at>=? AND status='succeeded'
                      AND json_extract(counts_json,'$.coverage_complete')=1
+                     AND json_extract(counts_json,'$.coverage_version')=?
                    ORDER BY start_at""",
                 (
                     series_ticker.upper(),
                     symbol.upper(),
                     period_interval,
                     campaign_start.isoformat(),
+                    ARCHIVE_COVERAGE_VERSION,
                 ),
             ).fetchall()
         coverage_end = campaign_start

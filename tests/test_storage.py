@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from prediction_market_system.archive import ARCHIVE_COVERAGE_VERSION
 from prediction_market_system.domain import (
     CryptoSnapshot,
     MarketSnapshot,
@@ -243,7 +245,11 @@ def test_tracks_validation_archive_and_campaign(tmp_path: Path) -> None:
     repository.begin_validation_archive(**archive)
     repository.complete_validation_archive(
         **archive,
-        counts={"candlesticks": 42, "coverage_complete": 1},
+        counts={
+            "candlesticks": 42,
+            "coverage_complete": 1,
+            "coverage_version": ARCHIVE_COVERAGE_VERSION,
+        },
     )
 
     assert repository.validation_archive_succeeded(**archive) is True
@@ -428,3 +434,95 @@ def test_schema_change_waits_for_concurrent_writer_within_busy_timeout(
         assert connection.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE migration_name = 'writer'"
         ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    "certificate",
+    [
+        {},
+        {"coverage_complete": 0, "coverage_version": ARCHIVE_COVERAGE_VERSION},
+        {"coverage_complete": 1},
+        {"coverage_complete": 1, "coverage_version": ARCHIVE_COVERAGE_VERSION - 1},
+    ],
+)
+def test_archive_completion_rejects_missing_or_stale_certificate(
+    tmp_path: Path, certificate: dict[str, int]
+) -> None:
+    path = tmp_path / "archive-certificate.db"
+    repository = SQLiteRepository(path)
+    repository.initialize()
+    start = datetime(2026, 8, 20, tzinfo=UTC)
+    archive = dict(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        start_at=start,
+        end_at=start + timedelta(days=1),
+        period_interval=1,
+    )
+    counts = {"candlesticks": 103, "spot_candles": 0, **certificate}
+    repository.begin_validation_archive(**archive)
+    repository.complete_validation_archive(**archive, counts=counts)
+    assert not repository.validation_archive_succeeded(**archive)
+    with sqlite3.connect(path) as connection:
+        status, stored, error = connection.execute(
+            "SELECT status, counts_json, error FROM paper_validation_archive_runs"
+        ).fetchone()
+    assert status == "failed"
+    assert json.loads(stored) == counts
+    assert "coverage" in error
+
+
+def test_legacy_success_requires_recertification_without_rewriting_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "archive-legacy.db"
+    repository = SQLiteRepository(path)
+    repository.initialize()
+    start = datetime(2026, 8, 20, tzinfo=UTC)
+    archive = dict(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        start_at=start,
+        end_at=start + timedelta(days=1),
+        period_interval=1,
+    )
+    repository.begin_validation_archive(**archive)
+    legacy_counts = '{"coverage_complete":1,"candlesticks":0}'
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE paper_validation_archive_runs SET status='succeeded', counts_json=?",
+            (legacy_counts,),
+        )
+    assert not repository.validation_archive_succeeded(**archive)
+    assert repository.validation_archive_coverage(
+        series_ticker="KXBTC", symbol="BTC", period_interval=1, campaign_start=start
+    ) == (0, start)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT status, counts_json FROM paper_validation_archive_runs"
+        ).fetchone() == ("succeeded", legacy_counts)
+
+
+@pytest.mark.parametrize("started_at", ["", "not-a-date", "2026-08-20T12:00:00"])
+def test_archive_work_keeps_malformed_running_attempts_retryable(
+    tmp_path: Path, started_at: str
+) -> None:
+    path = tmp_path / "archive-running.db"
+    repository = SQLiteRepository(path)
+    repository.initialize()
+    start = datetime(2026, 8, 20, tzinfo=UTC)
+    repository.begin_validation_archive(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        start_at=start,
+        end_at=start + timedelta(days=1),
+        period_interval=1,
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE paper_validation_archive_runs SET started_at=?", (started_at,))
+    assert repository.validation_archive_work(
+        series_ticker="KXBTC",
+        symbol="BTC",
+        period_interval=1,
+        campaign_start=start,
+        completed_before=start + timedelta(days=2),
+        max_days=1,
+    ) == ([start], 0)

@@ -690,13 +690,27 @@ uv run pms paper-alert-maintain \
   --watch-retention-days 14
 ```
 
-Archive completed UTC days daily. The archive treats its catch-up size as a work
-budget: it repairs the oldest missing or incomplete windows first instead of
-permanently abandoning them, and a window is complete only when its market and
-spot series are contiguous. Validation can run weekly: before the configured
-chronological window is complete it updates one Discord readiness message; once
-ready, it runs the walk-forward backtest and replaces that message with the exact
-per-model approval gates and decisions.
+Archive completed UTC days daily. The catch-up size is a work budget: never-attempted
+days come first, then the oldest attempts, with chronological ties. Persistent old
+provider gaps therefore cannot starve newer days. Discovery merges each event's
+live markets with its paginated historical markets before outcome-independent
+sampling. A window is certified only when discovery is complete and its requested
+market and spot intervals are contiguous; incomplete attempts retain recovered
+data and diagnostic counts, report failure, and remain retryable.
+
+Certification now requires `coverage_version=2` as well as `coverage_complete=1`.
+Older certificates must be rechecked rather than trusted after historical markets
+have moved out of live event responses. Inserted-row counts can be zero on an
+idempotent retry; completeness uses fetched observations, not insert counts.
+Heartbeat checks the active campaign's missing and uncertified days, including
+old gaps. A newly completed day gets a 24-hour scheduling grace period, not a
+certificate; an explicit failed attempt is unhealthy immediately.
+
+Validation can run weekly: before the configured chronological window is complete
+it updates one Discord readiness message; once ready, it runs the walk-forward
+backtest and replaces that message with the exact per-model approval gates and
+decisions. Neither sparse provider responses nor a healthy collector justify
+inventing candles, marking gaps complete, or relaxing the frozen validation gates.
 
 The first `paper-alert-validate` run preregisters the campaign: the start date,
 fold geometry, latency and participation assumptions, every approval gate, the

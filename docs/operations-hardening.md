@@ -296,6 +296,46 @@ active frozen campaign plus a matching deployment-policy fingerprint can make a
 profile eligible for managed delivery. Changing fees, slippage, sizing, or other
 operational policy after approval cannot reuse that approval.
 
+### Historical archive discovery and completeness repair
+
+Kalshi keeps old events on the events endpoint, but removes their nested markets
+after moving them into its historical tier. The collector now merges live event
+markets with paginated historical markets for that same event before selecting
+contracts. It keeps selected contracts explicit, respects market opening times,
+and does not request zero-length history for contracts closing at the left
+window boundary. Exhausted discovery at the exact event limit is distinguished
+from a genuinely truncated universe.
+
+An incomplete window is no longer reported or stored as a successful archive.
+Recovered source rows and diagnostic counts are retained, while the error identifies
+missing/duplicate/unexpected intervals and their provider or ticker. Zero newly
+inserted rows on a retry do not imply missing fetched data. Only current-version
+certificates (`coverage_version=2`, `coverage_complete=1`, successful status)
+advance contiguous campaign coverage. Legacy certificates remain in the database
+but must be rechecked; no old records are silently promoted.
+
+The bounded work queue prioritizes never-attempted days and then the oldest
+attempts, with chronological ties. This avoids repeatedly spending every daily
+budget on the same unavailable historical intervals. Heartbeat checks missing
+and uncertified days for the active campaign, not merely recent exceptions.
+A newly completed UTC day has a 24-hour scheduling grace period, allowing the
+daily local-time archive job to run; it remains uncertified during that grace.
+Explicit failures are unhealthy immediately, and older gaps are never excused.
+
+Real-provider reproduction on November 5 found zero live nested markets but 188
+historical markets for event `KXBTC-26AUG2020`. The old CLI incorrectly certified
+August 20 with zero market candles. The repaired CLI retrieved the historical
+universe and reported genuine gaps instead. For example, the historical endpoint
+returned no candle ending at August 20 23:04 UTC for
+`KXBTC-26AUG2020-T73299.99`, even with an exact-minute request; the corresponding
+live endpoint returned 404. Complete Coinbase spot data did not repair that
+independent venue gap. Such windows remain blocked: no candles are synthesized,
+historical receipt times are preserved, and reconstructed data is not forward
+evidence. The frozen campaign and its statistical thresholds remain unchanged.
+
+References: [Kalshi historical partitioning](https://docs.kalshi.com/getting_started/historical_data)
+and [historical candle semantics](https://docs.kalshi.com/api-reference/historical/get-historical-market-candlesticks).
+
 ### Self-healing research inputs after host downtime
 
 `paper-alerts` depends on hourly research inputs written by the separate research launch

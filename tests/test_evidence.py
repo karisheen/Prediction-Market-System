@@ -10,6 +10,7 @@ from test_backtest import FixedResearchSource, config, historical_market
 from test_storage import build_evaluation
 from typer.testing import CliRunner
 
+from prediction_market_system.archive import ARCHIVE_COVERAGE_VERSION
 from prediction_market_system.cli import app
 from prediction_market_system.domain import (
     CryptoSnapshot,
@@ -147,7 +148,12 @@ def test_archive_coverage_stops_at_gap_and_repairs_old_incomplete_window(tmp_pat
         )
         repository.begin_validation_archive(**archive)
         repository.complete_validation_archive(
-            **archive, counts={"candlesticks": 100, "coverage_complete": 1}
+            **archive,
+            counts={
+                "candlesticks": 100,
+                "coverage_complete": 1,
+                "coverage_version": ARCHIVE_COVERAGE_VERSION,
+            },
         )
     assert repository.validation_archive_coverage(
         series_ticker="KXBTC",
@@ -167,7 +173,12 @@ def test_archive_coverage_stops_at_gap_and_repairs_old_incomplete_window(tmp_pat
     assert not repository.validation_archive_succeeded(**missing)
     repository.begin_validation_archive(**missing)
     repository.complete_validation_archive(
-        **missing, counts={"candlesticks": 100, "coverage_complete": 1}
+        **missing,
+        counts={
+            "candlesticks": 100,
+            "coverage_complete": 1,
+            "coverage_version": ARCHIVE_COVERAGE_VERSION,
+        },
     )
     assert repository.validation_archive_coverage(
         series_ticker="KXBTC",
@@ -381,3 +392,45 @@ def test_paper_alert_validate_cli_refuses_changed_campaign_gates(
     assert registrations[1]["configuration"]["maximum_brier_score"] == 0.5
     assert "model_version" in registrations[1]["configuration"]
     assert "engine" in registrations[1]["configuration"]
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing_spot", "duplicate_spot", "missing_market", "discovery"]
+)
+def test_archive_diagnostics_share_the_strict_completeness_rule(damage: str) -> None:
+    from test_cli import _archive_market_candles, _archive_spot_candles, kalshi_market
+
+    from prediction_market_system.archive import archive_window_complete, archive_window_issues
+
+    start = datetime(2026, 8, 20, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    market = kalshi_market().model_copy(update={"close_time": end, "open_time": start})
+    spot = _archive_spot_candles(start, end)
+    candles = {market.ticker: _archive_market_candles(start)}
+    arguments = dict(
+        start=start,
+        end=end,
+        period_minutes=60,
+        discovery_complete=True,
+        markets=[market],
+        candlesticks=candles,
+        spot_candles=spot,
+        history_hours=24,
+    )
+    assert archive_window_complete(**arguments)
+    assert archive_window_issues(**arguments) == []
+    if damage == "missing_spot":
+        spot.pop(4)
+        expected = "Coinbase spot: expected=24, received=23, missing=1"
+    elif damage == "duplicate_spot":
+        spot.append(spot[0])
+        expected = "duplicates=1"
+    elif damage == "missing_market":
+        # The expected market survives even if a provider omits its dictionary key.
+        candles.clear()
+        expected = f"Kalshi {market.ticker}: expected=24, received=0, missing=24"
+    else:
+        arguments["discovery_complete"] = False
+        expected = "Kalshi event discovery incomplete"
+    assert not archive_window_complete(**arguments)
+    assert expected in "; ".join(archive_window_issues(**arguments))
