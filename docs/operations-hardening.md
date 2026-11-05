@@ -440,7 +440,7 @@ certificate, restarted campaign or replacement for Phase 1. Its identity is
 The existing campaign, original protocol files and pinned model sources remain unchanged.
 
 The KXBTC/BTC deployment adds `com.karisheen.prediction-market-forward`, scheduled hourly
-at minute 45 without `RunAtLoad`, logging to `data/paper-alert-forward.log`. The study has
+at minute 45 without `RunAtLoad`, logging to `data/forward-capture.log`. The study has
 1,440 slots from November 6 through January 4 inclusive, split into two fixed 30-day folds.
 The first capture is **2026-11-06 00:45 UTC** (November 5, 18:45 Central). The deployment
 must register before study start; later deployment accepts only an identical existing
@@ -477,6 +477,16 @@ production had no forward tables afterward. Temporary-database CLI smoke also ve
 idempotent registration, pre-start no-op capture, empty resolution, embargoed coverage,
 future-`--as-of` refusal and database-output overwrite refusal; reporting left that
 database byte-identical.
+
+Release `20261105T144900Z-dc80295` passed 781 tests, Ruff lint/format checks and strict
+Mypy, then registered the study at **2026-11-05 14:50:14 UTC**. All eight launch agents
+were loaded. An actual forward-agent invocation returned `not-started`, and a deployed
+live diagnostic again captured three decisions and nine latency books without failures.
+The production study store still contained only its original registration afterward.
+The original campaign identity, registration time, configuration hash and 90 failed
+archive-day statuses were unchanged. Existing broad alert scans can still reject inputs
+that become stale during a scan; one post-deployment scan reported 25 such failures.
+Those failures and the historical archive gap were not suppressed or declared healthy.
 
 Before **2027-01-07 00:00 UTC**, reports expose no outcomes, scores, P&L or directional
 conclusions. Later reports always use that same fixed evidence cutoff. A directional
