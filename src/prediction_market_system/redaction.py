@@ -26,11 +26,15 @@ def redact_secrets(text: str) -> str:
 
 
 def redact_payload(value: Any) -> Any:
-    """Sanitize nested persisted diagnostics without corrupting JSON encoding."""
+    """Redact credentials while retaining boolean/null JSON flags and absent values."""
     if isinstance(value, dict):
         return {
             str(key): (
-                "[REDACTED]" if _SECRET_VALUE.match(f"{key}=value") else redact_payload(item)
+                "[REDACTED]"
+                if item is not None
+                and not isinstance(item, bool)
+                and _SECRET_VALUE.match(f"{key}=value")
+                else redact_payload(item)
             )
             for key, item in value.items()
         }

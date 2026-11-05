@@ -54,6 +54,7 @@ from prediction_market_system.domain import (
 )
 from prediction_market_system.engine import CryptoThresholdEngine, EngineConfig
 from prediction_market_system.evidence import EVIDENCE_MANUAL_RESEARCH
+from prediction_market_system.forward_cli import register_forward_commands
 from prediction_market_system.heartbeat import (
     HeartbeatCheck,
     HeartbeatResult,
@@ -117,6 +118,7 @@ app = typer.Typer(
 )
 console = Console()
 register_audit_commands(app)
+register_forward_commands(app)
 
 
 def availability_after_receipt(

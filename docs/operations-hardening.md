@@ -156,17 +156,26 @@ exclusive rewrite of the database.
 `ops/deploy_macos.py` replaces manual source copying. It:
 
 1. Refuses to deploy a dirty Git working tree.
-2. Stops the managed launch agents.
+2. Snapshots prior launch-agent definitions and loaded membership.
 3. Moves runtime data and `.env` to shared paths outside a code release on the first run.
 4. Copies source into a revision-labelled release directory without secrets, data, caches, or
    Git metadata.
 5. Runs `uv sync --frozen`, the full test suite, Ruff lint and formatting checks, and strict
-   Mypy checks inside the staged release, matching the GitHub quality gate.
-6. Switches the stable `app` symlink to the verified release.
-7. Initializes the current-format schema once while all managed agents remain stopped.
-8. Rewrites and reloads the alert, research, archive, validation, maintenance, backup, and
-   heartbeat launch agents.
-9. Restores the previous application pointer and agents if activation fails.
+   Mypy checks inside the staged release, matching the GitHub quality gate. Existing jobs
+   continue while these gates run.
+6. Stops the jobs requiring replacement, then switches the stable `app` symlink.
+   An identical loaded forward-study job remains loaded throughout: an in-flight process
+   keeps its old release while the next invocation uses the new application pointer.
+7. Initializes the current-format schema and, for KXBTC/BTC, preregisters the frozen study.
+8. Installs the alert, research, archive, validation, maintenance, backup, heartbeat and
+   applicable forward-study jobs without changing the original seven schedules.
+9. On activation failure, restores the previous application pointer, exact plist contents
+   and prior loaded membership; newly introduced plists are removed.
+
+A changed loaded forward-job definition is refused before activation rather than killing
+an irreversible capture attempt. Switching away from KXBTC/BTC removes the obsolete forward
+job only when it is not running. A rollback failure is reported explicitly with the original
+deployment error retained; it is never presented as a successful recovery.
 
 Scheduled commands still initialize the store on startup, but they compare `sqlite_master` with
 the tables and indexes the schema defines and run DDL only when an object is missing. Applied
@@ -401,10 +410,20 @@ with `coverage_complete=0`, as required.
 This does not clear the Kalshi requirement. Sampled missing Kalshi intervals had
 no trades, but a zero-volume interval can still carry quote OHLC used by research
 and probability scoring. No-trade evidence alone therefore does not justify
-inventing quotes or exempting intervals. Predexon and Oddpool archive access both
-required authenticated accounts; no usable free key or authenticated browser was
-available, so alternate archive coverage remains untested. No subscription was
-purchased and no provider gap was silently waived.
+inventing quotes or exempting intervals. Initial Predexon and Oddpool archive access
+required authenticated accounts. A subsequently supplied free Predexon key was verified:
+the sampled August 7 gap had snapshots in only 5 of 51 missing minutes, and the sampled
+August 20 gap had none in its three missing minutes. A complete Kalshi control hour also
+disagreed with diagnostic snapshot-derived OHLC in 29 of 54 comparable minutes.
+Those snapshots are not a verified replacement for venue candles. No subscription was
+purchased, no synthetic Kalshi candles were inserted, and no provider gap was waived.
+
+Kalshi's published candle documentation does not specify the whole-candle omission rule.
+Observed no-trade minutes can have quoted, zero-volume candles, so inactivity alone does
+not explain all omissions. A precise inquiry and reproducible public URLs are retained in
+`data/kalshi-omission-inquiry-20261105.txt`; the support-access audit is
+`data/kalshi-support-access-20261105.json`. No authenticated support channel was accessible,
+so the inquiry was **not submitted** and no authoritative provider answer is claimed.
 
 The original campaign and its clock policy remain unchanged. Newly received
 historical data cannot become evidence available to past decisions. Any separate
@@ -412,6 +431,60 @@ retrospective protocol would need explicit preregistration and separation from
 forward evidence; neither a protocol replacement nor a campaign restart is part
 of this repair.
 
+
+### Independent prospective study operations
+
+`experiments/forward/protocol-v1.json` is a separate immutable registration, not a repair
+certificate, restarted campaign or replacement for Phase 1. Its identity is
+`sha256:e7f440c05ac51bdc8a13456bfa8185e15cc6420c9bffa60a6053cd1103e0056f`.
+The existing campaign, original protocol files and pinned model sources remain unchanged.
+
+The KXBTC/BTC deployment adds `com.karisheen.prediction-market-forward`, scheduled hourly
+at minute 45 without `RunAtLoad`, logging to `data/paper-alert-forward.log`. The study has
+1,440 slots from November 6 through January 4 inclusive, split into two fixed 30-day folds.
+The first capture is **2026-11-06 00:45 UTC** (November 5, 18:45 Central). The deployment
+must register before study start; later deployment accepts only an identical existing
+registration. The hourly local minute-45 trigger matches UTC minute 45 in the current
+Central timezone. A move to a timezone with a fractional-hour offset requires explicit
+schedule review, not an assumed UTC match.
+
+Keep the host awake and connected for scheduled captures. A missed launch cannot be
+backfilled as prospective evidence. The first persisted attempt owns its slot, including
+failure or interruption; later invocations cannot replace it. `forward-report` reports
+missing, late, partial, no-market and failed slots separately, with future slots excluded
+from elapsed coverage. These study-specific checks are not an extension of the existing
+campaign heartbeat; use the forward report and its dedicated log to inspect collection.
+
+Each attempt retains complete market discovery and deterministic selection before books,
+actual request/receipt/decision/persistence clocks, forecasts, original metadata and fees,
+and separately requested +30/+60/+120-second books. Source proofs survive ordinary WATCH
+cleanup. Objects use compressed content-addressed storage; hourly collection looks up only
+its own attempt, and outcome resolution streams indexed candidates rather than repeatedly
+hydrating all prior study payloads. This avoids a growing full-history load on each capture.
+It does not promise a fixed total database size.
+
+```bash
+cd "$HOME/Library/Application Support/PredictionMarketSystem/app"
+uv run pms forward-report
+uv run pms forward-capture --dry-run
+uv run pms forward-resolve
+```
+
+The diagnostic is explicitly ineligible, uses temporary storage and actual current clocks,
+and does not rewrite the protocol or register a study. A November 5 live CLI smoke captured
+three valid decisions and all nine latency books with zero capture/execution failures;
+production had no forward tables afterward. Temporary-database CLI smoke also verified
+idempotent registration, pre-start no-op capture, empty resolution, embargoed coverage,
+future-`--as-of` refusal and database-output overwrite refusal; reporting left that
+database byte-identical.
+
+Before **2027-01-07 00:00 UTC**, reports expose no outcomes, scores, P&L or directional
+conclusions. Later reports always use that same fixed evidence cutoff. A directional
+probability result needs at least 95% valid slots overall and in each fold plus the
+preregistered event/date and paired-bootstrap gates. A directional execution simulation
+also needs 100% valid slots, every entry's scenario books and every fill's resolution.
+Missing execution is unavailable evidence, never a zero loss. Results remain research-only;
+there is no trade execution, calibration approval or Discord entry authorization.
 
 ### Self-healing research inputs after host downtime
 

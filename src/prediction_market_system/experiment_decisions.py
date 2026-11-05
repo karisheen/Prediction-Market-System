@@ -38,7 +38,11 @@ def _finite(value: Any) -> bool:
 
 
 def _population(
-    observations: list[dict[str, Any]], comparison: dict[str, Any], protocol: dict[str, Any]
+    observations: list[dict[str, Any]],
+    comparison: dict[str, Any],
+    protocol: dict[str, Any],
+    *,
+    forward: bool = False,
 ) -> list[tuple[dict[str, Any], dict[str, Any], Opportunity]]:
     """Bind to the already selected rows, without selecting or scoring a new population."""
     try:
@@ -46,15 +50,20 @@ def _population(
         rows = comparison["observations"]
         source = comparison["source_kind"]
         cutoff = _timestamp(protocol["report_as_of"])
+        version = "pms-forward-v1" if forward else "pms-phase1-v2"
+        schema = "pms-forward-comparison-v1" if forward else REPORT_SCHEMA
+        sources = (
+            {"prospective-forward"} if forward else {"synthetic-fixture", "retrospective-local"}
+        )
         if (
-            protocol["protocol_version"] != "pms-phase1-v2"
+            protocol["protocol_version"] != version
             or protocol["protocol_id"] != protocol_identity(protocol)
-            or comparison["report_schema"] != REPORT_SCHEMA
+            or comparison["report_schema"] != schema
             or comparison["protocol_id"] != protocol["protocol_id"]
             or identities["protocol_id"] != protocol["protocol_id"]
             or comparison["protocol_version"] != protocol["protocol_version"]
             or identities["protocol_version"] != protocol["protocol_version"]
-            or source not in {"synthetic-fixture", "retrospective-local"}
+            or source not in sources
             or identities["source_kind"] != source
             or any(
                 _timestamp(value) != cutoff
@@ -575,4 +584,142 @@ def assess_decisions(
                 "and is an explicit nonfill."
             ),
         ],
+    }
+
+
+def assess_forward_decisions(
+    observations: list[dict[str, Any]],
+    comparison: dict[str, Any],
+    protocol: dict[str, Any],
+    *,
+    executions: dict[str, dict[str, dict[str, Any]]],
+    complete_slots: bool,
+) -> dict[str, Any]:
+    """Use the existing cost engine on independently validated scenario-specific books.
+
+    Missing capture proof is unavailable evidence, unlike an observed limit/liquidity
+    nonfill. No scenario may borrow another scenario's earlier or later response.
+    Unavailable entry books cannot establish that all simulated fills are resolved.
+    """
+    from prediction_market_system.forward_protocol import validate_forward_protocol
+
+    validate_forward_protocol(protocol)
+    population = _population(observations, comparison, protocol, forward=True)
+    scenarios: list[dict[str, Any]] = []
+    for scenario in protocol["cost_scenarios"]:
+        config = _scenario_config(protocol, scenario)
+        engine = CryptoThresholdEngine(config)
+        event_spend: dict[str, Decimal] = {}
+        market_spend: dict[str, Decimal] = {}
+        decisions = []
+        for raw, row, opportunity in population:
+            captured = executions.get(scenario["name"], {}).get(row["observation_id"], {})
+            snapshot = captured.get("snapshot")
+            scenario_raw = {**raw, "execution": [] if snapshot is None else [snapshot]}
+            decision = _decision(
+                scenario_raw,
+                row,
+                opportunity,
+                scenario,
+                protocol,
+                engine,
+                event_spend,
+                market_spend,
+            )
+            unavailable = snapshot is None or decision["reason"] in {
+                "no_execution_snapshot",
+                "invalid_execution_snapshot",
+                "inactive_execution_snapshot",
+                "execution_snapshot_conflict",
+            }
+            if row["state"] in _ENTRIES and unavailable:
+                decision.update(
+                    status="unavailable",
+                    reason=captured.get("reason") or "missing_execution_capture",
+                    requested_contracts=None,
+                    filled_contracts=None,
+                    fee_dollars=None,
+                    slippage_dollars=None,
+                    cost_dollars=None,
+                )
+            decisions.append(decision)
+        summary = _summary(decisions)
+        unavailable_rows = [row for row in decisions if row["status"] == "unavailable"]
+        observed_orders = [row for row in decisions if row["status"] in {"nonfill", "filled"}]
+        summary.update(
+            unavailable_orders=len(unavailable_rows),
+            unavailable_reasons=dict(
+                sorted(Counter(row["reason"] for row in unavailable_rows).items())
+            ),
+            all_entry_books_available=not unavailable_rows,
+            all_fills_resolved=not unavailable_rows and summary["filled_unresolved_orders"] == 0,
+            no_trade_count=sum(row["status"] in {"no-order", "nonfill"} for row in decisions),
+            no_trade_frequency=(
+                sum(row["status"] in {"no-order", "nonfill"} for row in decisions) / len(decisions)
+                if decisions
+                else None
+            ),
+        )
+        if not observed_orders:
+            for key in (
+                "total_cost_dollars",
+                "resolved_cost_dollars",
+                "open_cost_dollars",
+                "fee_dollars",
+                "slippage_dollars",
+            ):
+                summary[key] = None
+        elif all(row["status"] == "nonfill" for row in observed_orders):
+            # A genuinely observed nonfill is measured no trade, not absent evidence.
+            summary["raw_pnl_dollars"] = 0.0
+            summary["haircut_adjusted_pnl_dollars"] = 0.0
+        summary["complete"] = (
+            complete_slots and not unavailable_rows and summary["all_fills_resolved"]
+        )
+        scenarios.append(
+            {
+                "name": scenario["name"],
+                "configuration": {**scenario, "engine_config": config.model_dump(mode="json")},
+                "summary": summary,
+                "decisions": decisions,
+            }
+        )
+    complete = complete_slots and all(row["summary"]["complete"] for row in scenarios)
+    measured = [
+        row for row in scenarios if row["summary"]["haircut_adjusted_pnl_dollars"] is not None
+    ]
+    worst = min(
+        measured,
+        key=lambda row: row["summary"]["haircut_adjusted_pnl_dollars"],
+        default=None,
+    )
+    direction = None
+    if complete and len(measured) == len(scenarios) and worst is not None:
+        pnl = worst["summary"]["haircut_adjusted_pnl_dollars"]
+        direction = "positive" if pnl > 0 else "negative" if pnl < 0 else "zero"
+    return {
+        "schema": "pms-forward-decisions-v1",
+        "protocol_id": protocol["protocol_id"],
+        "as_of": protocol["report_as_of"],
+        "population_sha256": comparison["identities"]["eligible_observations_sha256"],
+        "interpretation": (
+            "Research-only after-cost book-observable simulations; not actual fills, "
+            "queue priority, deployable edge, trading or approval."
+        ),
+        "scenarios": scenarios,
+        "conclusion": {
+            "status": "descriptive-complete" if complete else "descriptive-incomplete",
+            "direction": direction,
+            "directional_gate": complete,
+            "all_slots_valid": complete_slots,
+            "all_entry_books_available": all(
+                row["summary"]["all_entry_books_available"] for row in scenarios
+            ),
+            "all_fills_resolved": all(row["summary"]["all_fills_resolved"] for row in scenarios),
+            "most_adverse_scenario": worst["name"] if worst is not None else None,
+            "basis": (
+                "Use the least favorable observed after-cost scenario; absent evidence "
+                "is never a zero return or non-loss. No unconditional policy-profit claim."
+            ),
+        },
     }

@@ -141,10 +141,42 @@ See [storage and retention details](docs/operations-hardening.md#compact-evidenc
 | `explain-forecast` | Replay one forecast's manifest, contract snapshot, and research-input context |
 | `shadow-report` / `campaign-report` / `compare-runs` | Forward ledger scoring, frozen campaign and holdout audit, paired run comparison |
 | `phase1-report` | Frozen structural/blend/YES-ask comparison, with optional research-only recorded-order cost sensitivity |
+| `forward-register` / `forward-capture` | Register the independent prospective study; capture deterministic live decisions and separate latency books |
+| `forward-resolve` / `forward-report` | Retain subsequently received outcomes; report coverage only until the frozen final cutoff |
 | `db-snapshot` / `db-restore` | One-off uncompressed SQLite snapshot with a restore drill; restore to a new path only |
 | `db-migrate-storage` | Copy a sound database to a new compact store and verify logical evidence preservation |
 | `db-verify-storage` | Check a successful migration's source has not changed before manual activation |
 | `alerts-unresolved` / `alerts-reconcile` | List uncertain Discord deliveries and record the operator-observed outcome |
+
+## Independent prospective study
+
+The separate [forward protocol](docs/forward-protocol-v1.md) captures new evidence
+without replacing Phase 1 or the original validation campaign. It uses free public
+Kalshi, Coinbase and Deribit data; it neither trades nor authorizes Discord entries.
+
+- Window: **2026-11-06 00:00 UTC to 2027-01-05 00:00 UTC**, hourly at minute 45.
+- Population: up to three deterministically selected KXBTC terminal ranges per
+  slot, with decisions persisted before outcomes and separate books at +30/+60/+120 seconds.
+- Missing, failed, late and interrupted slots remain visible; retries cannot replace
+  the first attempt. Legacy records and reconstructed historical data never qualify.
+- Reports expose coverage only until **2027-01-07 00:00 UTC**. Probability conclusions
+  require the frozen sample, coverage and paired-bootstrap gates; execution conclusions
+  additionally require complete scheduled capture and entry evidence. Neither is guaranteed.
+- Evidence is compressed and content-addressed, including source proofs retained
+  independently of ordinary WATCH retention.
+
+From the deployed application directory:
+
+```bash
+uv run pms forward-report
+uv run pms forward-capture --dry-run
+```
+
+The diagnostic uses actual live requests and clocks, takes roughly two minutes for
+the latency observations, and writes no eligible study evidence. Standard KXBTC/BTC
+macOS deployment preregisters the study and installs its independent hourly agent.
+See [operations guidance](docs/operations-hardening.md#independent-prospective-study-operations)
+for schedule, outage and deployment behavior.
 
 ## Phase 1 frozen comparison and paper decisions
 

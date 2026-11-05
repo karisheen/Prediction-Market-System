@@ -41,10 +41,12 @@ REPORT_SCHEMA = "pms-phase1-comparison-v1"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"pms-phase1-v2"})
 SOURCE_SYNTHETIC = "synthetic-fixture"
 SOURCE_RETROSPECTIVE = "retrospective-local"
+SOURCE_FORWARD = "prospective-forward"
 # Synthetic manifests must never carry the forward-evaluation class.
 MANIFEST_KIND_BY_SOURCE = {
     SOURCE_SYNTHETIC: "synthetic-fixture",
     SOURCE_RETROSPECTIVE: EVIDENCE_FORWARD_SHADOW,
+    SOURCE_FORWARD: EVIDENCE_FORWARD_SHADOW,
 }
 # Manual features are exempt from production pinning only with this explicit label, which
 # is part of the feature recipe and therefore of the recipe identity.
@@ -1150,7 +1152,7 @@ def compare_observations(
     source_kind: str,
     as_of: datetime,
 ) -> dict[str, Any]:
-    if source_kind not in MANIFEST_KIND_BY_SOURCE:
+    if source_kind not in {SOURCE_SYNTHETIC, SOURCE_RETROSPECTIVE}:
         raise ValueError(f"unsupported source kind: {source_kind!r}")
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("report timestamp must include a timezone")
@@ -1159,6 +1161,13 @@ def compare_observations(
     if as_of != settings.report_as_of:
         raise ValueError("report timestamp must match protocol report_as_of")
 
+    return _compare_validated_observations(observations, settings, source_kind, as_of)
+
+
+def _compare_validated_observations(
+    observations: list[dict[str, Any]], settings: _Settings, source_kind: str, as_of: datetime
+) -> dict[str, Any]:
+    """Shared row validation and statistics; study adapters own population provenance."""
     ordered = sorted(observations, key=_sort_key)
     duplicates = _duplicate_exclusions(ordered)
     excluded: list[dict[str, Any]] = []
@@ -1448,3 +1457,84 @@ def _limitations(settings: _Settings, source_kind: str, counts: dict[str, Any]) 
             f"{counts['excluded']} observations were excluded; see the excluded reasons."
         )
     return limitations
+
+
+def _forward_settings(protocol: dict[str, Any]) -> _Settings:
+    """Adapt the separate prospective registration, without impersonating Phase 1."""
+    from prediction_market_system.forward_protocol import validate_forward_protocol
+
+    validate_forward_protocol(protocol)
+    start = datetime.fromisoformat(protocol["study_start"])
+    return _Settings(
+        protocol_id=protocol["protocol_id"],
+        protocol_version=protocol["protocol_version"],
+        series=protocol["series"],
+        symbol=protocol["symbol"],
+        model_name=protocol["model_name"],
+        model_version=protocol["model_version"],
+        structural_weight=protocol["structural_weight"],
+        expected_annual_return=protocol["expected_annual_return"],
+        production_features=protocol["production_features"],
+        settlement_window_seconds=protocol["settlement_window_seconds"],
+        maximum_input_age_seconds=protocol["maximum_input_age_seconds"],
+        minimum_ask_size=protocol["minimum_ask_size"],
+        minimum_seconds_to_entry_horizon=protocol["minimum_seconds_to_entry_horizon"],
+        report_as_of=datetime.fromisoformat(protocol["report_as_of"]),
+        archive_start=start,
+        archive_end=datetime.fromisoformat(protocol["study_end"]),
+        # Forward evidence supplies no training/calibration population.
+        training_start=start,
+        training_end=start,
+        folds=tuple(
+            _Fold(
+                name=fold["name"],
+                kind="validation",
+                start=datetime.fromisoformat(fold["start"]),
+                end=datetime.fromisoformat(fold["end"]),
+            )
+            for fold in protocol["folds"]
+        ),
+        log_loss_epsilon=protocol["log_loss_epsilon"],
+        calibration_bins=protocol["calibration_bins"],
+        bootstrap_replicates=protocol["bootstrap_replicates"],
+        bootstrap_seed=protocol["bootstrap_seed"],
+        confidence=protocol["confidence"],
+        minimum_resolved_events=protocol["minimum_resolved_events"],
+        minimum_dates=protocol["minimum_dates"],
+        minimum_calibration_events=protocol["minimum_resolved_events"],
+        minimum_validation_folds=protocol["minimum_validation_folds"],
+        minimum_fold_resolved_events=protocol["minimum_fold_resolved_events"],
+    )
+
+
+def validate_forward_observation(observation: dict[str, Any], protocol: dict[str, Any]) -> None:
+    """Validate/reproduce a capture without computing scores or inspecting outcomes."""
+    settings = _forward_settings(protocol)
+    if observation.get("resolution") is not None:
+        raise ValueError("forward capture must not embed an outcome")
+    try:
+        _evaluate_row(observation, settings, SOURCE_FORWARD, settings.report_as_of)
+    except _Excluded as error:
+        raise ValueError(f"{error.code}: {error.reason}") from error
+
+
+def compare_forward_observations(
+    observations: list[dict[str, Any]], protocol: dict[str, Any]
+) -> dict[str, Any]:
+    """Score an already provenance-validated prospective population at its fixed cutoff."""
+    settings = _forward_settings(protocol)
+    report = _compare_validated_observations(
+        observations, settings, SOURCE_FORWARD, settings.report_as_of
+    )
+    report["report_schema"] = "pms-forward-comparison-v1"
+    report["conclusion"] = {
+        "status": "inconclusive",
+        "basis": "The forward adapter must apply scheduled-slot and paired-interval gates.",
+    }
+    report["limitations"] = [
+        "Conditional on captured prospective forecasts; not unconditional policy profit.",
+        "Recorded midpoint anchor, regimes and source branches are descriptive only.",
+        "Event-weighted calibration bins are descriptive, not deployment calibration.",
+        "Unresolved forecasts remain in coverage but are not scored.",
+    ]
+    return report

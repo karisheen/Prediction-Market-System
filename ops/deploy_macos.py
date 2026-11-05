@@ -6,6 +6,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,13 @@ class AgentSpec:
         return f"{APP_LABEL_PREFIX}-{self.suffix}"
 
 
+@dataclass(frozen=True)
+class AgentState:
+    plist: bytes | None
+    loaded: bool
+    running: bool
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build, verify, and atomically activate the macOS paper system."
@@ -66,6 +74,7 @@ def _run(
     cwd: Path | None = None,
     check: bool = True,
     env: dict[str, str] | None = None,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         arguments,
@@ -73,6 +82,7 @@ def _run(
         check=check,
         env=env,
         text=True,
+        capture_output=capture_output,
     )
 
 
@@ -104,7 +114,7 @@ def _agent_specs(
     campaign_start: str,
     watch_retention_days: int,
 ) -> tuple[AgentSpec, ...]:
-    return (
+    specs = (
         AgentSpec(
             suffix="alerts",
             arguments=(
@@ -236,6 +246,16 @@ def _agent_specs(
             log_name="paper-alert-heartbeat.log",
         ),
     )
+    if series == "KXBTC" and symbol == "BTC":
+        specs += (
+            AgentSpec(
+                suffix="forward",
+                arguments=("forward-capture",),
+                schedule={"StartCalendarInterval": {"Minute": 45}},
+                log_name="forward-capture.log",
+            ),
+        )
+    return specs
 
 
 def _plist_payload(
@@ -257,32 +277,115 @@ def _plist_payload(
     return payload
 
 
-def _write_plist(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_suffix(".plist.new")
-    with temporary.open("wb") as file:
-        plistlib.dump(payload, file, sort_keys=False)
-    os.replace(temporary, path)
-
-
-def _stop_agents(uid: int, specs: tuple[AgentSpec, ...]) -> None:
-    for spec in specs:
-        _run(
-            ["launchctl", "bootout", f"gui/{uid}/{spec.label}"],
-            check=False,
-        )
-
-
-def _start_agents(uid: int, launch_agents: Path, specs: tuple[AgentSpec, ...]) -> None:
-    started: list[AgentSpec] = []
+def _write_plist_bytes(path: Path, contents: bytes) -> None:
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
     try:
-        for spec in specs:
-            _run(
-                ["launchctl", "bootstrap", f"gui/{uid}", str(launch_agents / f"{spec.label}.plist")]
-            )
-            started.append(spec)
-    except subprocess.CalledProcessError:
-        _stop_agents(uid, tuple(started))
-        raise
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(contents)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_plist(path: Path, payload: dict[str, Any]) -> None:
+    _write_plist_bytes(path, plistlib.dumps(payload, sort_keys=False))
+
+
+def _agent_status(uid: int, label: str) -> tuple[bool, bool]:
+    result = _run(
+        ["launchctl", "print", f"gui/{uid}/{label}"],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode == 113:
+        return False, False
+    result.check_returncode()
+    lines = (result.stdout or "").splitlines()
+    running = any(
+        line.strip() == "state = running" or line.strip().startswith("pid = ") for line in lines
+    )
+    return True, running
+
+
+def _snapshot_agents(
+    uid: int, launch_agents: Path, labels: tuple[str, ...]
+) -> dict[str, AgentState]:
+    states = {}
+    for label in labels:
+        path = launch_agents / f"{label}.plist"
+        loaded, running = _agent_status(uid, label)
+        contents = path.read_bytes() if path.exists() else None
+        if loaded and contents is None:
+            raise RuntimeError(f"cannot safely restore loaded agent without its plist: {label}")
+        states[label] = AgentState(contents, loaded, running)
+    return states
+
+
+def _restore_agents(
+    *,
+    uid: int,
+    launch_agents: Path,
+    states: dict[str, AgentState],
+    changed: set[str],
+    app_path: Path,
+    previous: Path | None,
+    pre_atomic: Path,
+    had_app: bool,
+) -> list[str]:
+    """Restore exact predeployment files and loaded membership, not desired specs."""
+    errors: list[str] = []
+    stopped: set[str] = set()
+    restored: set[str] = set()
+    for label in states:
+        if label not in changed:
+            continue
+        try:
+            loaded, _ = _agent_status(uid, label)
+            if loaded:
+                _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
+            stopped.add(label)
+        except Exception as exc:
+            errors.append(f"stopping {label}: {exc}")
+    pointer_restored = False
+    try:
+        if previous is not None and app_path.is_symlink():
+            if had_app:
+                _point_app_at(app_path, previous)
+            else:
+                app_path.unlink()
+        elif previous is None and pre_atomic.exists() and not app_path.exists():
+            pre_atomic.rename(app_path)
+        pointer_restored = True
+    except Exception as exc:
+        errors.append(f"application pointer: {exc}")
+    for label, state in states.items():
+        if label not in changed:
+            continue
+        path = launch_agents / f"{label}.plist"
+        try:
+            if state.plist is None:
+                path.unlink(missing_ok=True)
+            else:
+                _write_plist_bytes(path, state.plist)
+            restored.add(label)
+        except Exception as exc:
+            errors.append(f"plist {label}: {exc}")
+    if pointer_restored:
+        for label, state in states.items():
+            if state.loaded and label in stopped and label in restored:
+                try:
+                    _run(
+                        [
+                            "launchctl",
+                            "bootstrap",
+                            f"gui/{uid}",
+                            str(launch_agents / f"{label}.plist"),
+                        ]
+                    )
+                except Exception as exc:
+                    errors.append(f"loading {label}: {exc}")
+    return errors
 
 
 def _prepare_shared_state(app_root: Path, app_path: Path) -> tuple[Path, Path]:
@@ -391,9 +494,39 @@ def main() -> int:
     app_root.mkdir(parents=True, exist_ok=True)
     releases.mkdir(parents=True, exist_ok=True)
     launch_agents.mkdir(parents=True, exist_ok=True)
+    if release.exists():
+        raise RuntimeError(f"release already exists: {release}")
 
-    _stop_agents(uid, specs)
+    forward_label = f"{APP_LABEL_PREFIX}-forward"
+    labels = tuple(dict.fromkeys([*(spec.label for spec in specs), forward_label]))
+    states = _snapshot_agents(uid, launch_agents, labels)
+    desired = {
+        spec.label: _plist_payload(
+            spec, app_path=app_path, data_path=app_root / "data", uv_path=uv_path
+        )
+        for spec in specs
+    }
+    preserved: set[str] = set()
+    forward = states[forward_label]
+    if forward.loaded and forward_label in desired:
+        try:
+            matches = (
+                forward.plist is not None
+                and plistlib.loads(forward.plist) == desired[forward_label]
+            )
+        except (plistlib.InvalidFileException, ValueError):
+            matches = False
+        if not matches:
+            # Even an idle job can start while gates run. Never reload a loaded
+            # changed definition: an operator must first drain it safely.
+            raise RuntimeError("loaded forward agent definition changed; refusing unsafe reload")
+        preserved.add(forward_label)
+    if forward.loaded and forward_label not in desired and forward.running:
+        raise RuntimeError("forward capture is active; refusing to remove its agent")
+
     previous: Path | None = None
+    had_app = app_path.exists() or app_path.is_symlink()
+    changed: set[str] = set()
     try:
         shared_env, shared_data = _prepare_shared_state(app_root, app_path)
         _build_release(
@@ -404,32 +537,60 @@ def main() -> int:
             revision=revision,
             skip_checks=args.skip_checks,
         )
+        # Keep the existing forward job loaded through all gates and the atomic
+        # handoff. Its running process keeps the old cwd; its next run uses app.
+        if forward.loaded and forward_label not in desired:
+            _, running = _agent_status(uid, forward_label)
+            if running:
+                raise RuntimeError("forward capture is active; refusing to remove its agent")
+        for label, state in states.items():
+            if label in preserved:
+                continue
+            changed.add(label)
+            if state.loaded:
+                _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
         previous = _activate_release(app_path, release, releases, release_id)
         _run([uv_path, "run", "pms", "init-db"], cwd=app_path)
+        if args.series.upper() == "KXBTC" and args.symbol.upper() == "BTC":
+            # The release CLI resolves its own immutable protocol constant. A late
+            # deployment succeeds only if this study was already preregistered.
+            _run([uv_path, "run", "pms", "forward-register"], cwd=app_path)
+        for label, payload in desired.items():
+            if label not in preserved:
+                _write_plist(launch_agents / f"{label}.plist", payload)
+        if forward_label not in desired:
+            (launch_agents / f"{forward_label}.plist").unlink(missing_ok=True)
         for spec in specs:
-            _write_plist(
-                launch_agents / f"{spec.label}.plist",
-                _plist_payload(
-                    spec,
-                    app_path=app_path,
-                    data_path=shared_data,
-                    uv_path=uv_path,
-                ),
-            )
-        _start_agents(uid, launch_agents, specs)
-    except Exception:
-        pre_atomic = releases / f"pre-atomic-{release_id}"
-        if previous is not None and app_path.is_symlink():
-            _point_app_at(app_path, previous)
-        elif previous is None and pre_atomic.exists() and not app_path.exists():
-            pre_atomic.rename(app_path)
-        active_release = app_path.is_symlink() and app_path.resolve() == release
-        if release.exists() and release != previous and not active_release:
-            shutil.rmtree(release)
-        restorable_specs = tuple(
-            spec for spec in specs if (launch_agents / f"{spec.label}.plist").exists()
+            if spec.label not in preserved:
+                _run(
+                    [
+                        "launchctl",
+                        "bootstrap",
+                        f"gui/{uid}",
+                        str(launch_agents / f"{spec.label}.plist"),
+                    ]
+                )
+    except Exception as deployment_error:
+        errors = _restore_agents(
+            uid=uid,
+            launch_agents=launch_agents,
+            states=states,
+            changed=changed,
+            app_path=app_path,
+            previous=previous,
+            pre_atomic=releases / f"pre-atomic-{release_id}",
+            had_app=had_app,
         )
-        _start_agents(uid, launch_agents, restorable_specs)
+        active_release = app_path.is_symlink() and app_path.resolve() == release
+        if release.exists() and release != previous and not active_release and not errors:
+            try:
+                shutil.rmtree(release)
+            except Exception as exc:
+                errors.append(f"removing new release: {exc}")
+        if errors:
+            raise RuntimeError(
+                "deployment rollback failed: " + "; ".join(errors)
+            ) from deployment_error
         raise
 
     print(f"Activated {release_id}")

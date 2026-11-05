@@ -144,10 +144,14 @@ def candle(end_at: datetime, close: Decimal, interval_seconds: int) -> SpotCandl
 def research_context(
     as_of: datetime, *, window_seconds: int = PRODUCTION_WINDOW, implied: bool = False
 ) -> ResearchContext:
+    """Use completed UTC source grids while keeping spot fresh at the decision."""
+    as_of = as_of.astimezone(UTC)
+    hourly_end = as_of.replace(minute=0, second=0, microsecond=0)
+    spot_end = as_of.replace(second=0, microsecond=0)
     count = window_seconds // 3600 + 1
     hourly = [
         candle(
-            as_of - timedelta(hours=count - 1 - index),
+            hourly_end - timedelta(hours=count - 1 - index),
             Decimal(f"{60_000 + 40 * math.sin(index):.2f}"),
             3600,
         )
@@ -159,8 +163,8 @@ def research_context(
             symbol="BTC",
             kind="implied",
             window_seconds=3600,
-            source_start_at=as_of - timedelta(hours=1),
-            observed_at=as_of,
+            source_start_at=hourly_end - timedelta(hours=1),
+            observed_at=hourly_end,
             annualized_volatility=0.55,
             retrieved_at=as_of,
             raw_payload={"resolution_seconds": 3600},
@@ -172,7 +176,7 @@ def research_context(
         symbol="BTC",
         event_ticker=None,
         as_of=as_of,
-        spot=candle(as_of, Decimal("60000.00"), 60),
+        spot=candle(spot_end, Decimal("60000.00"), 60),
         realized_volatility=calculate_realized_volatility(
             hourly, symbol="BTC", as_of=as_of, window_seconds=window_seconds
         ),
