@@ -30,6 +30,7 @@ from prediction_market_system.research import (
     SpotCandle,
     VolatilityObservation,
 )
+from prediction_market_system.spot_repair import SpotCandleRepair, VerifiedSpotRepairBatch
 from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.venues.kalshi import (
     KalshiAPIError,
@@ -598,6 +599,128 @@ def test_research_sync_and_context_commands(
     assert "45.00%" in context.output
 
 
+@pytest.fixture
+def verified_spot_repair_batch() -> VerifiedSpotRepairBatch:
+    verified_at = datetime.now(UTC)
+    start_at = _utc_day(verified_at) - timedelta(days=1)
+    original = SpotCandle(
+        provider="coinbase",
+        product_id="BTC-USD",
+        interval_seconds=60,
+        start_at=start_at,
+        end_at=start_at + timedelta(minutes=1),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+        volume=Decimal("10"),
+        retrieved_at=verified_at,
+        raw_payload={"native": True},
+    )
+    derived = original.model_copy(
+        update={
+            "high": Decimal("102"),
+            "volume": Decimal("12"),
+            "raw_payload": {"method": "coinbase_exchange_trades"},
+        }
+    )
+    return VerifiedSpotRepairBatch(
+        repairs=(SpotCandleRepair(original=original, derived=derived),),
+        native_candles=(original,),
+        proof={"method": "coinbase_exchange_trades", "product": "BTC-USD"},
+        verified_at=verified_at,
+    )
+
+
+@pytest.mark.parametrize("existing_database", [False, True])
+def test_coinbase_repair_dry_run_never_opens_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verified_spot_repair_batch: VerifiedSpotRepairBatch,
+    existing_database: bool,
+) -> None:
+    database_path = tmp_path / "runtime" / "audit.db"
+    before = b""
+    if existing_database:
+        database_path.parent.mkdir()
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.execute("CREATE TABLE sentinel (value TEXT)")
+            connection.execute("INSERT INTO sentinel VALUES ('unchanged')")
+            connection.commit()
+        before = database_path.read_bytes()
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+
+    async def verify(*args: object, **kwargs: object) -> VerifiedSpotRepairBatch:
+        return verified_spot_repair_batch
+
+    def forbidden_repository(*args: object, **kwargs: object) -> None:
+        pytest.fail("Dry-run must not construct or open a repository")
+
+    monkeypatch.setattr("prediction_market_system.cli.verify_coinbase_repair_receipt", verify)
+    monkeypatch.setattr("prediction_market_system.cli.SQLiteRepository", forbidden_repository)
+    result = runner.invoke(app, ["coinbase-repair", "--receipt", str(receipt)])
+
+    assert result.exit_code == 0, result.output
+    if existing_database:
+        assert database_path.read_bytes() == before
+        assert set(database_path.parent.iterdir()) == {database_path}
+    else:
+        assert not database_path.parent.exists()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_coinbase_repair_verification_failure_cannot_initialize_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, apply: bool
+) -> None:
+    database_path = tmp_path / "runtime" / "audit.db"
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(database_path))
+
+    async def verify(*args: object, **kwargs: object) -> VerifiedSpotRepairBatch:
+        raise ValueError("Public trade IDs are not contiguous")
+
+    def forbidden_repository(*args: object, **kwargs: object) -> None:
+        pytest.fail("Failed fresh verification must precede repository construction")
+
+    monkeypatch.setattr("prediction_market_system.cli.verify_coinbase_repair_receipt", verify)
+    monkeypatch.setattr("prediction_market_system.cli.SQLiteRepository", forbidden_repository)
+    arguments = ["coinbase-repair", "--receipt", str(receipt)]
+    if apply:
+        arguments.append("--apply")
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 1, result.output
+    assert "not contiguous" in result.output
+    assert not database_path.parent.exists()
+
+
+def test_coinbase_repair_apply_failure_is_not_reported_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verified_spot_repair_batch: VerifiedSpotRepairBatch,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PMS_DATABASE_PATH", str(tmp_path / "audit.db"))
+
+    async def verify(*args: object, **kwargs: object) -> VerifiedSpotRepairBatch:
+        return verified_spot_repair_batch
+
+    def fail_apply(self: SQLiteRepository, batch: VerifiedSpotRepairBatch) -> int:
+        raise sqlite3.OperationalError("database is read-only")
+
+    monkeypatch.setattr("prediction_market_system.cli.verify_coinbase_repair_receipt", verify)
+    monkeypatch.setattr(SQLiteRepository, "apply_verified_spot_repairs", fail_apply)
+    result = runner.invoke(app, ["coinbase-repair", "--receipt", str(receipt), "--apply"])
+
+    assert result.exit_code == 1, result.output
+    assert "read-only" in result.output
+    assert "Applied " not in result.output
+
+
 def test_archive_continues_after_failed_day_and_leaves_it_for_catch_up(
     tmp_path: Path,
     monkeypatch: object,
@@ -691,15 +814,16 @@ def _archive_spot_candles(start: datetime, end: datetime) -> list[SpotCandle]:
             low=Decimal("99"),
             close=Decimal("100"),
             volume=Decimal("10"),
-            retrieved_at=end + timedelta(days=1),
+            retrieved_at=datetime.now(UTC),
             raw_payload={"hour": hour},
         )
         for hour in range(24)
     ]
 
 
-def test_archive_incomplete_retry_uses_fetched_not_inserted_spot_counts(
-    tmp_path: Path, monkeypatch: object
+@pytest.mark.parametrize("retry_fetches_spot", [True, False])
+def test_archive_incomplete_retry_uses_effective_spot_coverage(
+    tmp_path: Path, monkeypatch: object, retry_fetches_spot: bool
 ) -> None:
     from pytest import MonkeyPatch
 
@@ -727,7 +851,9 @@ def test_archive_incomplete_retry_uses_fetched_not_inserted_spot_counts(
 
     async def fake_research(*args: object) -> _ResearchDataBatch:
         return _ResearchDataBatch(
-            spot_candles=_archive_spot_candles(day, end),
+            spot_candles=(
+                _archive_spot_candles(day, end) if missing_market or retry_fetches_spot else []
+            ),
             volatility_observations=[],
             funding_observations=[],
             derivatives_snapshots=[],
@@ -762,6 +888,7 @@ def test_archive_incomplete_retry_uses_fetched_not_inserted_spot_counts(
     assert status == "failed"
     assert counts["coverage_complete"] == 0
     assert counts["spot_candles"] == counts["fetched_spot_candles"] == 24
+    assert counts["effective_spot_candles"] == 24
     assert market.ticker in error
     assert "missing=24" in error
     assert day.replace(hour=1).isoformat() in error
@@ -778,7 +905,8 @@ def test_archive_incomplete_retry_uses_fetched_not_inserted_spot_counts(
     assert status == "succeeded" and error is None
     assert counts["coverage_complete"] == 1
     assert counts["spot_candles"] == 0
-    assert counts["fetched_spot_candles"] == 24
+    assert counts["fetched_spot_candles"] == (24 if retry_fetches_spot else 0)
+    assert counts["effective_spot_candles"] == 24
     skipped = runner.invoke(app, arguments)
     assert skipped.exit_code == 0, skipped.output
     assert "0 archived" in skipped.output and "1 already stored" in skipped.output

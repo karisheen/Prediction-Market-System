@@ -369,6 +369,50 @@ either. Exact per-window counts and missing-interval diagnostics are retained in
 `data/archive-backfill-20261105.json` and the corresponding `.log`. These are
 historical recovery records, not independent forward forecasts or evidence of edge.
 
+#### Verified free Coinbase trade reconstruction
+
+The subsequent November 5 investigation recovered continuous public Coinbase
+Exchange trade tapes covering the missing minutes. All three absent minutes had
+trades, and four neighboring native candles represented only partial trade
+coverage. Four outer control candles matched full trade aggregation exactly.
+This rules out inactivity for these Coinbase gaps; it does not establish the
+provider's internal failure cause.
+
+`coinbase-repair` refetches the retained audit's bounded source windows before
+every dry-run or apply. It verifies trade-ID continuity, timestamp ordering,
+minute-boundary witnesses, exact-decimal OHLCV, and unchanged native controls.
+The seven derived rows are stored separately with actual receipt-time
+availability, retained native observations, and one compressed proof per batch.
+Reads validate proof integrity and reject unrecognized native revisions.
+Snapshots carry the same repair evidence; old native-only snapshots remain valid.
+Repeated apply is idempotent, including when some native candles have subsequently
+been corrected by Coinbase.
+
+A real-data dry-run created no database. An isolated CLI apply preserved all
+2,877 original candle values and restored 1,440 effective spot minutes on each of
+October 2 and October 30. All seven OHLCV results matched the independent trade
+audit. A second apply added zero repairs and no duplicate proof. The full suite
+passed 612 tests, Ruff lint/format checks, and strict Mypy.
+The actual archive CLI then refetched October 2: 1,439 native spot candles became
+1,440 effective spot candles through the verified repairs. Kalshi discovery
+completed, but missing Kalshi intervals still produced a failed archive attempt
+with `coverage_complete=0`, as required.
+
+This does not clear the Kalshi requirement. Sampled missing Kalshi intervals had
+no trades, but a zero-volume interval can still carry quote OHLC used by research
+and probability scoring. No-trade evidence alone therefore does not justify
+inventing quotes or exempting intervals. Predexon and Oddpool archive access both
+required authenticated accounts; no usable free key or authenticated browser was
+available, so alternate archive coverage remains untested. No subscription was
+purchased and no provider gap was silently waived.
+
+The original campaign and its clock policy remain unchanged. Newly received
+historical data cannot become evidence available to past decisions. Any separate
+retrospective protocol would need explicit preregistration and separation from
+forward evidence; neither a protocol replacement nor a campaign restart is part
+of this repair.
+
+
 ### Self-healing research inputs after host downtime
 
 `paper-alerts` depends on hourly research inputs written by the separate research launch

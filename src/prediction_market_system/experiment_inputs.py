@@ -75,7 +75,10 @@ _RESEARCH_TABLES = (
     "crypto_spot_candles",
     "research_provider_revisions",
     "research_revision_observations",
+    "spot_repair_proofs",
+    "spot_candle_repairs",
 )
+_SPOT_REPAIR_TABLES = frozenset(("spot_repair_proofs", "spot_candle_repairs"))
 _OPTIONAL_SCHEMA: dict[str, tuple[tuple[str, ...], str]] = {
     "kalshi_resolutions": (
         ("ticker", "observed_at", "result", "settlement_ts"),
@@ -1034,10 +1037,15 @@ class _DatabaseReader:
         if context_id not in self._context_cache:
             self.inventory["research_contexts_referenced"] += 1
             result: tuple[dict[str, Any] | None, str | None]
-            if self.unavailable.intersection(_RESEARCH_TABLES):
+            missing_research = self.unavailable.intersection(_RESEARCH_TABLES)
+            # Snapshots predating repair support remain reproducible. A partial
+            # repair schema is corruption, not permission to drop derived evidence.
+            if missing_research >= _SPOT_REPAIR_TABLES:
+                missing_research -= _SPOT_REPAIR_TABLES
+            if missing_research:
                 result = (None, "research context not reproducible: research tables missing")
             else:
-                self.tables_read.update(_RESEARCH_TABLES)
+                self.tables_read.update(set(_RESEARCH_TABLES) - self.unavailable)
                 try:
                     context = self.repository.research_context_by_id(context_id)
                 except (

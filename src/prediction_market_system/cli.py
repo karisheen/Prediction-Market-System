@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from contextlib import suppress
 from dataclasses import dataclass
@@ -85,6 +86,10 @@ from prediction_market_system.sources import (
     CoinbaseDataError,
     DeribitClient,
     DeribitDataError,
+)
+from prediction_market_system.spot_repair import (
+    candle_ohlcv,
+    verify_coinbase_repair_receipt,
 )
 from prediction_market_system.storage import SQLiteRepository
 from prediction_market_system.validation import (
@@ -599,11 +604,19 @@ def paper_alert_archive(
                 funding_observations=research_batch.funding_observations,
                 derivatives_snapshots=research_batch.derivatives_snapshots,
             )
+            effective_spot_candles = repository.effective_spot_candles(
+                symbol=normalized_symbol,
+                start_at=window_start,
+                end_at=window_end,
+                interval_seconds=period_interval * 60,
+                known_as_of=datetime.now(UTC),
+            )
             counts.update(
                 spot_candles=research_written.spot_candles,
                 volatility_observations=research_written.volatility_observations,
                 funding_observations=research_written.funding_observations,
                 fetched_spot_candles=len(research_batch.spot_candles),
+                effective_spot_candles=len(effective_spot_candles),
             )
             issues = archive_window_issues(
                 start=window_start,
@@ -612,7 +625,7 @@ def paper_alert_archive(
                 discovery_complete=market_batch.discovery_complete,
                 markets=market_batch.selected_markets,
                 candlesticks=market_batch.candlesticks,
-                spot_candles=research_batch.spot_candles,
+                spot_candles=effective_spot_candles,
                 history_hours=history_hours,
             )
             if issues:
@@ -661,6 +674,98 @@ def paper_alert_archive(
             f"{', '.join(failed_days)}[/red]"
         )
         raise typer.Exit(code=1)
+
+
+@app.command("coinbase-repair")
+def coinbase_repair(
+    receipt: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Investigation receipt guiding fresh public Coinbase verification.",
+        ),
+    ],
+    symbol: Annotated[str, typer.Option(help="Crypto symbol, such as BTC.")] = "BTC",
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Atomically persist verified repairs; otherwise dry-run."),
+    ] = False,
+) -> None:
+    """Verify bounded trade-derived candle repairs without changing routine ingestion."""
+    try:
+        batch = asyncio.run(verify_coinbase_repair_receipt(receipt, symbol=symbol.upper()))
+        proof_digest = hashlib.sha256(
+            json.dumps(
+                {key: value for key, value in batch.proof.items() if key != "proof_digest"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    except Exception as exc:
+        console.print(
+            f"Coinbase repair verification failed: {redact_secrets(str(exc))}",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="Verified Coinbase repairs (OHLCV)")
+    table.add_column("UTC interval", overflow="fold")
+    table.add_column("Field")
+    table.add_column("Native", justify="right")
+    table.add_column("Trade-derived", justify="right")
+    for repair in batch.repairs:
+        native = candle_ohlcv(repair.original) if repair.original is not None else None
+        for index, (field, derived) in enumerate(
+            zip(
+                ("open", "high", "low", "close", "volume"),
+                candle_ohlcv(repair.derived),
+                strict=True,
+            )
+        ):
+            table.add_row(
+                (
+                    f"{repair.derived.start_at.isoformat()}\n{repair.derived.end_at.isoformat()}"
+                    if index == 0
+                    else ""
+                ),
+                field,
+                str(native[index]) if native is not None else "absent",
+                str(derived),
+            )
+    console.print(table)
+    console.print(
+        f"Freshly verified at {batch.verified_at.isoformat()} • "
+        f"{len(batch.repairs)} repairs • {len(batch.native_candles)} native candles",
+        markup=False,
+    )
+    console.print(f"Provenance: coinbase_exchange_trades • proof SHA256 {proof_digest}")
+    console.print(
+        "Historical repair only: availability is the actual fresh receipt timestamp, "
+        "not the historical candle time. This does not create forward evidence or "
+        "change campaign eligibility.",
+        style="yellow",
+    )
+    if not apply:
+        console.print("Dry-run: no database opened or changed. Use --apply to persist.")
+        return
+
+    try:
+        settings = Settings()
+        repository = SQLiteRepository(settings.database_path)
+        repository.initialize()
+        applied = repository.apply_verified_spot_repairs(batch)
+    except Exception as exc:
+        console.print(
+            f"Coinbase repair apply failed: {redact_secrets(str(exc))}",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(code=1) from exc
+    console.print(f"Applied {applied} new Coinbase repairs atomically.", markup=False)
 
 
 @app.command("sync-research-data")

@@ -701,7 +701,9 @@ data and diagnostic counts, report failure, and remain retryable.
 Certification now requires `coverage_version=2` as well as `coverage_complete=1`.
 Older certificates must be rechecked rather than trusted after historical markets
 have moved out of live event responses. Inserted-row counts can be zero on an
-idempotent retry; completeness uses fetched observations, not insert counts.
+idempotent retry; completeness uses fetched market observations and effective stored
+spot observations, not insert counts. Effective spot data includes explicitly
+verified repairs available by the archive attempt's actual receipt time.
 Heartbeat checks the active campaign's missing and uncertified days, including
 old gaps. A newly completed day gets a 24-hour scheduling grace period, not a
 certificate; an explicit failed attempt is unhealthy immediately.
@@ -711,6 +713,27 @@ it updates one Discord readiness message; once ready, it runs the walk-forward
 backtest and replaces that message with the exact per-model approval gates and
 decisions. Neither sparse provider responses nor a healthy collector justify
 inventing candles, marking gaps complete, or relaxing the frozen validation gates.
+
+Coinbase minute repairs are explicit, not an automatic fallback. The retained audit
+receipt identifies bounded trade ranges and native control candles; the command
+refetches public Coinbase trades and candles, verifies continuous trade IDs and
+minute boundaries, and compares exact-decimal OHLCV before proposing changes:
+
+```bash
+receipt="$HOME/Library/Application Support/PredictionMarketSystem/data/archive-gap-investigation-20261105T041702Z.json.gz"
+uv run pms coinbase-repair --receipt "$receipt" --symbol BTC
+uv run pms coinbase-repair --receipt "$receipt" --symbol BTC --apply
+```
+
+The default dry-run never opens the database. `--apply` atomically stores derived
+candles and compressed, content-addressed source proof separately from immutable
+native rows. Repeated repairs do not duplicate proof; later native corrections
+matching the verified values can supersede them. Unknown native changes, missing
+proof, or corrupt proof fail closed. Research snapshots retain both forms of
+evidence. Repairs become available at their fresh verification timestamp, never
+retroactively at the candle's timestamp: they cannot create past decision inputs,
+independent forward evidence, or a campaign approval. No empty-minute candles are
+synthesized, and Coinbase repair cannot certify missing Kalshi intervals.
 
 The first `paper-alert-validate` run preregisters the campaign: the start date,
 fold geometry, latency and participation assumptions, every approval gate, the

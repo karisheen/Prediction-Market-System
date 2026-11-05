@@ -1,3 +1,6 @@
+import gzip
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +17,7 @@ from prediction_market_system.research import (
     VolatilityObservation,
     calculate_realized_volatility,
 )
+from prediction_market_system.spot_repair import SpotCandleRepair, VerifiedSpotRepairBatch
 from prediction_market_system.storage import SQLiteRepository
 
 
@@ -486,3 +490,414 @@ def test_evaluation_rechecks_selected_regime_inputs_after_network_delay() -> Non
     context.validate_at(as_of)
     with pytest.raises(ResearchDataUnavailable, match="funding"):
         context.validate_at(as_of + timedelta(seconds=45))
+
+
+def verified_repair_batch(
+    originals: tuple[SpotCandle | None, ...],
+    derived: tuple[SpotCandle, ...],
+    verified_at: datetime,
+) -> VerifiedSpotRepairBatch:
+    proof = {
+        "method": "coinbase_exchange_trades",
+        "product": "BTC-USD",
+        "verified_at": verified_at.isoformat(),
+        "requests": [{"sha256": "test-public-response", "retrieved_at": verified_at.isoformat()}],
+    }
+    digest = hashlib.sha256(
+        json.dumps(proof, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    proof["proof_digest"] = digest
+    return VerifiedSpotRepairBatch(
+        repairs=tuple(
+            SpotCandleRepair(
+                original=original,
+                derived=candle.model_copy(
+                    update={
+                        "retrieved_at": verified_at,
+                        "raw_payload": {
+                            "method": "coinbase_exchange_trades",
+                            "proof_digest": digest,
+                            "first_trade_id": 1,
+                            "last_trade_id": 2,
+                        },
+                    }
+                ),
+            )
+            for original, candle in zip(originals, derived, strict=True)
+        ),
+        native_candles=tuple(original for original in originals if original is not None),
+        proof=proof,
+        verified_at=verified_at,
+    )
+
+
+def _repair_counts(repository: SQLiteRepository) -> tuple[int, ...]:
+    with repository._connect() as connection:
+        return tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "crypto_spot_candles",
+                "research_provider_revisions",
+                "research_revision_observations",
+                "spot_candle_repairs",
+                "spot_repair_proofs",
+            )
+        )
+
+
+def test_verified_spot_repair_preserves_native_history_and_availability(tmp_path: Path) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    original = spot_candle(end, "100")
+    repository.save_research_data(spot_candles=[original])
+    verified_at = end + timedelta(days=1)
+    fresh_original = original.model_copy(update={"retrieved_at": verified_at})
+    batch = verified_repair_batch((fresh_original,), (spot_candle(end, "105"),), verified_at)
+    assert repository.apply_verified_spot_repairs(batch) == 1
+    counts = _repair_counts(repository)
+    assert repository.apply_verified_spot_repairs(batch) == 0
+    assert _repair_counts(repository) == counts
+    later_batch = verified_repair_batch(
+        (original.model_copy(update={"retrieved_at": verified_at + timedelta(seconds=1)}),),
+        (spot_candle(end, "105"),),
+        verified_at + timedelta(seconds=1),
+    )
+    assert repository.apply_verified_spot_repairs(later_batch) == 0
+    assert _repair_counts(repository) == counts
+
+    def selected(known_at: datetime) -> tuple[SpotCandle, ...]:
+        return repository.effective_spot_candles(
+            symbol="BTC",
+            start_at=original.start_at,
+            end_at=end,
+            interval_seconds=3600,
+            known_as_of=known_at,
+        )
+
+    assert selected(verified_at - timedelta(microseconds=1)) == (original,)
+    assert selected(verified_at) == (batch.repairs[0].derived,)
+    repository.save_research_data(
+        spot_candles=[
+            original.model_copy(update={"retrieved_at": verified_at + timedelta(hours=1)})
+        ]
+    )
+    assert selected(verified_at + timedelta(hours=1)) == (batch.repairs[0].derived,)
+    corrected = spot_candle(end, "105").model_copy(
+        update={"retrieved_at": verified_at + timedelta(hours=2)}
+    )
+    repository.save_research_data(spot_candles=[corrected])
+    assert selected(corrected.retrieved_at) == (corrected,)
+    repository.save_research_data(
+        spot_candles=[
+            original.model_copy(update={"retrieved_at": verified_at + timedelta(hours=3)})
+        ]
+    )
+    assert selected(verified_at + timedelta(hours=3)) == (corrected,)
+    with repository._connect() as connection:
+        legacy = connection.execute("SELECT payload_json FROM crypto_spot_candles").fetchone()
+        proof = connection.execute("SELECT * FROM spot_repair_proofs").fetchone()
+        repair = connection.execute("SELECT * FROM spot_candle_repairs").fetchone()
+    assert SpotCandle.model_validate_json(legacy["payload_json"]) == original
+    assert SpotCandle.model_validate_json(repair["original_json"]) == fresh_original
+    assert json.loads(gzip.decompress(proof["proof_json_gzip"])) == batch.proof
+    assert proof["proof_sha256"] == batch.proof["proof_digest"]
+
+
+def test_missing_spot_repair_is_bounded_and_not_available_before_receipt(tmp_path: Path) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    verified_at = end + timedelta(days=30)
+    batch = verified_repair_batch((None,), (spot_candle(end, "105"),), verified_at)
+    repository.apply_verified_spot_repairs(batch)
+    repository.save_research_data(spot_candles=[spot_candle(end + timedelta(days=1), "110")])
+    kwargs = dict(
+        symbol="BTC", start_at=end - timedelta(hours=1), end_at=end, interval_seconds=3600
+    )
+    assert (
+        repository.effective_spot_candles(**kwargs, known_as_of=verified_at - timedelta(seconds=1))
+        == ()
+    )
+    assert repository.effective_spot_candles(**kwargs, known_as_of=verified_at) == (
+        batch.repairs[0].derived,
+    )
+    with repository._connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM crypto_spot_candles WHERE end_at = ?", (end.isoformat(),)
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_repair_batch_conflict_rolls_back_every_candle(tmp_path: Path) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    original = spot_candle(end, "100")
+    batch = verified_repair_batch((original,), (spot_candle(end, "105"),), end + timedelta(days=1))
+    repository.apply_verified_spot_repairs(batch)
+    before = _repair_counts(repository)
+    conflict = verified_repair_batch(
+        (None, original),
+        (spot_candle(end + timedelta(hours=1), "110"), spot_candle(end, "106")),
+        end + timedelta(days=2),
+    )
+    with pytest.raises(ResearchDataUnavailable, match="conflicting verified"):
+        repository.apply_verified_spot_repairs(conflict)
+    assert _repair_counts(repository) == before
+
+
+@pytest.mark.parametrize("conflict_before_apply", [True, False])
+def test_unknown_native_revision_cannot_hide_behind_later_partial_refetch(
+    tmp_path: Path, conflict_before_apply: bool
+) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    original = spot_candle(end, "100")
+    batch = verified_repair_batch((original,), (spot_candle(end, "105"),), end + timedelta(hours=1))
+    repository.save_research_data(spot_candles=[original])
+    if not conflict_before_apply:
+        repository.apply_verified_spot_repairs(batch)
+    repository.save_research_data(
+        spot_candles=[
+            spot_candle(end, "103").model_copy(update={"retrieved_at": end + timedelta(hours=2)}),
+            original.model_copy(update={"retrieved_at": end + timedelta(hours=3)}),
+        ]
+    )
+    if conflict_before_apply:
+        before = _repair_counts(repository)
+        with pytest.raises(ResearchDataUnavailable, match="unknown native"):
+            repository.apply_verified_spot_repairs(batch)
+        assert _repair_counts(repository) == before
+    else:
+        with pytest.raises(ResearchDataUnavailable, match="unknown native"):
+            repository.effective_spot_candles(
+                symbol="BTC",
+                start_at=original.start_at,
+                end_at=end,
+                interval_seconds=3600,
+                known_as_of=end + timedelta(hours=3),
+            )
+        assert repository.effective_spot_candles(
+            symbol="BTC",
+            start_at=original.start_at,
+            end_at=end,
+            interval_seconds=3600,
+            known_as_of=end + timedelta(hours=1),
+        ) == (batch.repairs[0].derived,)
+
+
+def test_already_corrected_batch_records_native_receipt_without_duplicate_rows(
+    tmp_path: Path,
+) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    original = spot_candle(end, "100")
+    batch = verified_repair_batch((original,), (spot_candle(end, "105"),), end + timedelta(hours=1))
+    repository.apply_verified_spot_repairs(batch)
+    corrected = spot_candle(end, "105").model_copy(
+        update={"retrieved_at": end + timedelta(hours=2)}
+    )
+    native_batch = VerifiedSpotRepairBatch(
+        repairs=(),
+        native_candles=(corrected,),
+        proof=verified_repair_batch((), (), corrected.retrieved_at).proof,
+        verified_at=corrected.retrieved_at,
+    )
+    assert repository.apply_verified_spot_repairs(native_batch) == 0
+    counts = _repair_counts(repository)
+    assert repository.apply_verified_spot_repairs(native_batch) == 0
+    assert _repair_counts(repository) == counts
+    assert repository.effective_spot_candles(
+        symbol="BTC",
+        start_at=original.start_at,
+        end_at=end,
+        interval_seconds=3600,
+        known_as_of=corrected.retrieved_at,
+    ) == (corrected,)
+
+
+def test_late_native_conflict_rolls_back_inserted_proof_and_receipts(tmp_path: Path) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    repository.apply_verified_spot_repairs(
+        verified_repair_batch(
+            (spot_candle(end, "100"),), (spot_candle(end, "105"),), end + timedelta(hours=1)
+        )
+    )
+    batch = verified_repair_batch(
+        (None,), (spot_candle(end + timedelta(hours=1), "110"),), end + timedelta(hours=3)
+    )
+    batch = VerifiedSpotRepairBatch(
+        repairs=batch.repairs,
+        native_candles=(
+            spot_candle(end + timedelta(hours=2), "111"),
+            spot_candle(end, "103").model_copy(update={"retrieved_at": end + timedelta(hours=3)}),
+        ),
+        proof=batch.proof,
+        verified_at=batch.verified_at,
+    )
+    before = _repair_counts(repository)
+    with pytest.raises(ResearchDataUnavailable, match="unknown native"):
+        repository.apply_verified_spot_repairs(batch)
+    assert _repair_counts(repository) == before
+
+
+def test_repeat_repair_batch_keeps_fresh_native_correction_for_another_hour(
+    tmp_path: Path,
+) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    originals = (spot_candle(end, "100"), spot_candle(end + timedelta(hours=1), "110"))
+    repository.save_research_data(spot_candles=list(originals))
+    verified_at = end + timedelta(days=1)
+    batch = verified_repair_batch(
+        originals,
+        (spot_candle(end, "105"), spot_candle(end + timedelta(hours=1), "115")),
+        verified_at,
+    )
+    assert repository.apply_verified_spot_repairs(batch) == 2
+    before = _repair_counts(repository)
+    corrected_at = verified_at + timedelta(hours=1)
+    repeated = verified_repair_batch(
+        (originals[0].model_copy(update={"retrieved_at": corrected_at}),),
+        (spot_candle(end, "105"),),
+        corrected_at,
+    )
+    corrected = spot_candle(originals[1].end_at, "115").model_copy(
+        update={"retrieved_at": corrected_at}
+    )
+    mixed = VerifiedSpotRepairBatch(
+        repairs=repeated.repairs,
+        native_candles=(*repeated.native_candles, corrected),
+        proof=repeated.proof,
+        verified_at=corrected_at,
+    )
+    assert repository.apply_verified_spot_repairs(mixed) == 0
+    after = _repair_counts(repository)
+    assert after[-2:] == before[-2:]
+
+    def selected(known_at: datetime) -> tuple[SpotCandle, ...]:
+        return repository.effective_spot_candles(
+            symbol="BTC",
+            start_at=originals[0].start_at,
+            end_at=originals[1].end_at,
+            interval_seconds=3600,
+            known_as_of=known_at,
+        )
+
+    derived = tuple(repair.derived for repair in batch.repairs)
+    assert selected(verified_at - timedelta(microseconds=1)) == originals
+    assert selected(verified_at) == derived
+    assert selected(corrected_at - timedelta(microseconds=1)) == derived
+    assert selected(corrected_at) == (derived[0], corrected)
+    assert repository.apply_verified_spot_repairs(mixed) == 0
+    assert _repair_counts(repository) == after
+    assert selected(verified_at - timedelta(microseconds=1)) == originals
+    assert selected(verified_at) == derived
+    assert selected(corrected_at) == (derived[0], corrected)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "empty_blob",
+        "empty_gzip",
+        "invalid_gzip",
+        "invalid_json",
+        "empty_object",
+        "canonical_digest_mismatch",
+        "self_digest_mismatch",
+    ],
+)
+@pytest.mark.parametrize("corrected_before_corruption", [False, True])
+def test_corrupt_shared_repair_proof_fails_closed_on_reads_and_repeated_apply(
+    tmp_path: Path, corruption: str, corrected_before_corruption: bool
+) -> None:
+    end = datetime(2030, 1, 2, tzinfo=UTC)
+    repository = SQLiteRepository(tmp_path / "repair.db")
+    repository.initialize()
+    originals = (spot_candle(end, "100"), spot_candle(end + timedelta(hours=1), "110"))
+    verified_at = end + timedelta(days=1)
+    batch = verified_repair_batch(
+        originals,
+        (spot_candle(end, "105"), spot_candle(end + timedelta(hours=1), "115")),
+        verified_at,
+    )
+    assert repository.apply_verified_spot_repairs(batch) == 2
+
+    def selected(start_at: datetime, end_at: datetime) -> tuple[SpotCandle, ...]:
+        return repository.effective_spot_candles(
+            symbol="BTC",
+            start_at=start_at,
+            end_at=end_at,
+            interval_seconds=3600,
+            known_as_of=verified_at + timedelta(hours=1),
+        )
+
+    derived = tuple(repair.derived for repair in batch.repairs)
+    assert selected(originals[0].start_at, originals[1].end_at) == derived
+    for original, repair in zip(originals, batch.repairs, strict=True):
+        assert selected(original.start_at, original.end_at) == (repair.derived,)
+    assert repository.apply_verified_spot_repairs(batch) == 0
+
+    corrected = spot_candle(end, "105").model_copy(
+        update={"retrieved_at": verified_at + timedelta(hours=1)}
+    )
+    if corrected_before_corruption:
+        repository.save_research_data(spot_candles=[corrected])
+        assert selected(originals[0].start_at, originals[1].end_at) == (
+            corrected,
+            derived[1],
+        )
+
+    proof = dict(batch.proof)
+    if corruption == "empty_blob":
+        corrupted = b""
+    elif corruption == "empty_gzip":
+        corrupted = gzip.compress(b"")
+    elif corruption == "invalid_gzip":
+        corrupted = b"not a gzip stream"
+    elif corruption == "invalid_json":
+        corrupted = gzip.compress(b"{")
+    elif corruption == "empty_object":
+        corrupted = gzip.compress(b"{}")
+    else:
+        if corruption == "canonical_digest_mismatch":
+            proof["method"] = "tampered"
+        else:
+            proof["proof_digest"] = "0" * 64
+        corrupted = gzip.compress(json.dumps(proof, sort_keys=True).encode())
+    with repository._connect() as connection:
+        connection.execute(
+            "UPDATE spot_repair_proofs SET proof_json_gzip = ? WHERE proof_sha256 = ?",
+            (corrupted, batch.proof["proof_digest"]),
+        )
+
+    with pytest.raises(ResearchDataUnavailable):
+        selected(originals[0].start_at, originals[1].end_at)
+    for original in originals:
+        with pytest.raises(ResearchDataUnavailable):
+            selected(original.start_at, original.end_at)
+
+    before = _repair_counts(repository)
+    with pytest.raises(ResearchDataUnavailable):
+        repository.apply_verified_spot_repairs(batch)
+    assert _repair_counts(repository) == before
+    native_batch = VerifiedSpotRepairBatch(
+        repairs=(),
+        native_candles=(corrected,),
+        proof=verified_repair_batch((), (), corrected.retrieved_at).proof,
+        verified_at=corrected.retrieved_at,
+    )
+    with pytest.raises(ResearchDataUnavailable):
+        repository.apply_verified_spot_repairs(native_batch)
+    assert _repair_counts(repository) == before
+    with pytest.raises(ResearchDataUnavailable):
+        selected(originals[0].start_at, originals[1].end_at)

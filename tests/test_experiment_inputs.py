@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 import pytest
-from test_research import research_candles, research_context
+from test_research import research_candles, research_context, verified_repair_batch
 
 from prediction_market_system import experiment_inputs
 from prediction_market_system.domain import (
@@ -683,3 +683,74 @@ def test_manifest_recording_time_must_match_payload_and_forecast(
     assert row["exclusion_reason"].startswith(reason)
     assert metadata["inventory"]["observations_excluded_by_adapter"] == 1
     assert metadata["consumed"]["run_ids"] == []
+
+
+def test_native_snapshot_without_repair_schema_still_replays(tmp_path: Path) -> None:
+    path = tmp_path / "native-only.db"
+    _, context = _record_database(path)
+    _execute(path, "DROP TABLE spot_candle_repairs")
+    _execute(path, "DROP TABLE spot_repair_proofs")
+    (row,), metadata = load_local_database(path, PROTOCOL)
+    assert row["research_context"] == context.model_dump(mode="json")
+    assert metadata["inventory"]["research_contexts_reproduced"] == 1
+
+
+@pytest.mark.parametrize("missing_table", ["spot_candle_repairs", "spot_repair_proofs"])
+def test_partial_repair_schema_fails_closed(tmp_path: Path, missing_table: str) -> None:
+    path = tmp_path / "partial-repair.db"
+    _record_database(path)
+    _execute(path, f"DROP TABLE {missing_table}")
+    (row,), metadata = load_local_database(path, PROTOCOL)
+    assert "research tables missing" in row["exclusion_reason"]
+    assert metadata["inventory"]["research_contexts_unavailable"] == 1
+
+
+def test_repair_proof_and_original_context_survive_forensic_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "repaired.db"
+    _, context = _record_database(path)
+    repository = SQLiteRepository(path)
+    original = research_candles(AS_OF)[-1]
+    verified_at = DECISION + timedelta(days=1)
+    batch = verified_repair_batch(
+        (original.model_copy(update={"retrieved_at": verified_at}),),
+        (original.model_copy(update={"volume": original.volume + 1}),),
+        verified_at,
+    )
+    repository.apply_verified_spot_repairs(batch)
+    captured: list[bytes] = []
+    original_hash = experiment_inputs._sha256_file
+
+    def capture_snapshot(snapshot: Path) -> str:
+        captured.append(snapshot.read_bytes())
+        return original_hash(snapshot)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(experiment_inputs, "_sha256_file", capture_snapshot)
+        observations, metadata = load_local_database(path, PROTOCOL)
+    assert observations[0]["research_context"] == context.model_dump(mode="json")
+    replay_path = tmp_path / "captured-repair.db"
+    replay_path.write_bytes(captured[0])
+    replay, replay_metadata = load_local_database(replay_path, PROTOCOL)
+    assert replay == observations
+    assert replay_metadata["dataset_sha256"] == metadata["dataset_sha256"]
+    with closing(sqlite3.connect(path)) as source, closing(sqlite3.connect(replay_path)) as copy:
+        assert (
+            source.execute("SELECT * FROM spot_repair_proofs").fetchall()
+            == copy.execute("SELECT * FROM spot_repair_proofs").fetchall()
+        )
+        assert (
+            source.execute("SELECT * FROM spot_candle_repairs").fetchall()
+            == copy.execute("SELECT * FROM spot_candle_repairs").fetchall()
+        )
+    replay_repository = SQLiteRepository(replay_path)
+    kwargs = dict(
+        symbol="BTC",
+        start_at=original.start_at,
+        end_at=original.end_at,
+        interval_seconds=original.interval_seconds,
+        known_as_of=verified_at,
+    )
+    assert repository.effective_spot_candles(**kwargs) == (batch.repairs[0].derived,)
+    assert replay_repository.effective_spot_candles(**kwargs) == (batch.repairs[0].derived,)
