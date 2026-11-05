@@ -336,6 +336,39 @@ evidence. The frozen campaign and its statistical thresholds remain unchanged.
 References: [Kalshi historical partitioning](https://docs.kalshi.com/getting_started/historical_data)
 and [historical candle semantics](https://docs.kalshi.com/api-reference/historical/get-historical-market-candlesticks).
 
+#### November 5 production recheck
+
+Release `a1f96b6` passed 548 tests, Ruff lint/format checks, strict Mypy, and the
+GitHub quality gate, then was deployed with the unchanged shadow-only schedule.
+A subsequent recorded forecast replay matched the deployed source fingerprint.
+
+The production sweep rechecked every completed campaign day from August 7
+through November 4 in bounded batches of 31, 31, and 28. All 90 event universes
+were discovered, recovering 386,946 market snapshot rows and fetching 334,404
+market candles. Source timestamps and receipt provenance were preserved.
+Every day still had missing required Kalshi minute intervals; none received a
+version-2 completeness certificate. This was not a transport failure: all 90
+attempts produced interval diagnostics.
+
+Coinbase supplied complete minute spot coverage for 88 days. Three minute closes
+remained absent on October 2 (16:48 UTC) and October 30 (19:56 and 19:57 UTC);
+narrow requests returned their neighboring candles but not those missing minutes.
+No synthetic or alternate-source observations were inserted to hide either
+provider's gaps.
+
+The campaign was refreshed without Discord delivery and correctly remains
+`COLLECTING EVIDENCE`, with 0/150 certified contiguous days. Previous unversioned
+certificates do not override the new source checks. The original frozen campaign
+was not reset, and statistical gates were not weakened. The calendar-only January
+checkpoint is not a reliable readiness date while these data requirements remain
+unsatisfied.
+
+The daily archive agent was restored after the manual sweep. Its fair bounded
+queue continues collecting newer days and revisiting older gaps without starving
+either. Exact per-window counts and missing-interval diagnostics are retained in
+`data/archive-backfill-20261105.json` and the corresponding `.log`. These are
+historical recovery records, not independent forward forecasts or evidence of edge.
+
 ### Self-healing research inputs after host downtime
 
 `paper-alerts` depends on hourly research inputs written by the separate research launch
